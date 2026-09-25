@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# libexec/dune-usersettings DEFAULTS_DIR OVERRIDES_DIR DEST: every User*.ini default lands in DEST (Funcom's
+# apply-default-usersettings), an operator override of the same name replaces its default, re-runs are stable.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-us-test.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+d="$work/defaults" o="$work/overrides" dest="$work/Saved/UserSettings"
+mkdir -p "$d" "$o"
+printf '[URL]\nPort=7777\n' > "$d/UserEngine.ini"
+printf '[x]\ny=1\n' > "$d/UserGame.ini"
+printf '[/Script/DuneSandbox.UserServerCustomSettings]\nDifficultyLevel=Custom\nInventoryVolumeMultiplier=1.000000\n' > "$d/UserServerCustomSettings.ini"
+printf 'not an ini to copy\n' > "$d/README.txt"
+printf '[/Script/DuneSandbox.UserServerCustomSettings]\nDifficultyLevel=Custom\nInventoryVolumeMultiplier=10.000000\n' > "$o/UserServerCustomSettings.ini"
+
+out=$(libexec/dune-usersettings "$d" "$o" "$dest" 2>&1) || fail "run failed: $out"
+cmp -s "$d/UserEngine.ini" "$dest/UserEngine.ini" || fail "UserEngine.ini default not deployed"
+cmp -s "$d/UserGame.ini" "$dest/UserGame.ini" || fail "UserGame.ini default not deployed"
+cmp -s "$o/UserServerCustomSettings.ini" "$dest/UserServerCustomSettings.ini" || fail "override did not replace default"
+[ -e "$dest/README.txt" ] && fail "non-User*.ini file copied"
+out=$(libexec/dune-usersettings "$d" "$o" "$dest" 2>&1) || fail "re-run failed: $out"
+cmp -s "$o/UserServerCustomSettings.ini" "$dest/UserServerCustomSettings.ini" || fail "re-run changed the override"
+out=$(libexec/dune-usersettings "$d" "$work/no-such-dir" "$dest" 2>&1) || fail "missing overrides dir must be allowed: $out"
+cmp -s "$d/UserServerCustomSettings.ini" "$dest/UserServerCustomSettings.ini" || fail "without overrides, default should be restored"
+exit "$failures"

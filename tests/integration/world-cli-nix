@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Host tier: bin/dune-world run from a bare environment (no devShell variables, minimal PATH, another cwd) must
+# re-execute itself inside this project's nix develop and still work. Needs nix and the flake's inputs on the host.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-world-nix.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+mkdir -p -m 700 "$work/config"
+printf 'WORLD_UNIQUE_NAME=sh-abc-qwerty\nWORLD_DISPLAY_NAME=%q\nWORLD_REGION=%q\n' "Bare Env" "North America" > "$work/config/world.conf"
+# A component that is "up" only inside the real devShell (its glibc loader variable names an existing file).
+mkdir -p "$work/bin"
+printf '#!%s\n[ -e "${DUNE_GLIBC_LOADER:-/nonexistent}" ]\n' "$BASH" > "$work/bin/dune-postgres"
+chmod +x "$work/bin/dune-postgres"
+nix_dir=$(dirname -- "$(command -v nix)")
+luajit_dir=$(dirname -- "$(command -v luajit)")
+json=$(cd / && env -i HOME="$HOME" PATH="$nix_dir:$luajit_dir:/run/current-system/sw/bin" DUNE_CONFIG_DIR="$work/config" DUNE_COMPONENTS_DIR="$work/bin" \
+	DUNE_STATE_DIR="$work/state" DUNE_UNPACKED_DIR="$work/unpacked" "$OLDPWD/bin/dune-world" status --json 2>"$work/err"); rc=$?
+[ "$rc" -eq 1 ] || fail "bare-env status exited $rc (want 1: all down): $(tail -5 "$work/err")"
+[ "$(jq -r '.world.display_name' <<<"$json" 2>/dev/null)" = "Bare Env" ] || fail "bare-env status did not reach the world config through nix: $json"
+[ "$(jq -r '.components[0].up' <<<"$json" 2>/dev/null)" = true ] || fail "components did not run inside the devShell: $json"
+exit "$failures"

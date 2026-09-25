@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Funcom schema install via libexec/dune-db-setup against a throwaway cluster, using the local proprietary db-utils payload.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. tests/lib/ports.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+
+: "${DUNE_DB_UTILS_SRC:=$HOME/.local/share/dune_awakening_server/unpacked/server-db-utils/rootfs/root}"
+export DUNE_DB_UTILS_SRC
+[ -d "$DUNE_DB_UTILS_SRC/PSQL" ] || { printf 'FAIL payload missing: %s/PSQL\n' "$DUNE_DB_UTILS_SRC" >&2; exit 1; }
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-db-test.XXXXXX") || exit 1
+export DUNE_PG_DATA="$work/pgdata" DUNE_SECRETS_DIR="$work/secrets" DUNE_STATE_DIR="$work/state" DUNE_PG_PORT=$(pick_port_base 1)
+cleanup() { libexec/dune-postgres stop >/dev/null 2>&1; rm -r -- "$work"; }
+trap cleanup EXIT
+
+libexec/dune-postgres init >/dev/null 2>&1 && libexec/dune-postgres start >/dev/null 2>&1 || { fail "cluster did not start"; exit 1; }
+admin_pw=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password")
+sql() { PGPASSWORD="$admin_pw" psql -X -A -t -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "$1" -c "$2" 2>&1; }
+
+out=$(libexec/dune-db-setup 2>&1) || fail "first setup exited nonzero: $(printf '%s' "$out" | tail -20)"
+db=dune_sb_1_5_3_0
+[ "$(sql postgres "select pg_get_userbyid(datdba) from pg_database where datname = '$db'")" = dune ] || fail "database $db missing or not owned by dune"
+[ "$(sql postgres "select datlocprovider::text || ':' || coalesce(datlocale, '') || ':' || pg_encoding_to_char(encoding) from pg_database where datname = '$db'")" = b:C.UTF-8:UTF8 ] || fail "$db did not inherit builtin C.UTF-8 / UTF8"
+[ "$(sql "$db" "select string_agg(e.extname, ',' order by e.extname) from pg_extension e join pg_namespace n on n.oid = e.extnamespace where n.nspname = 'ext'")" = pg_trgm,pgcrypto ] || fail "pgcrypto/pg_trgm not installed in schema ext"
+patches=$(sql "$db" "select count(*) from dune.applied_patches")
+[ "${patches:-0}" -gt 0 ] 2>/dev/null || fail "no applied patches recorded: $patches"
+[ "$(stat -c %a "$DUNE_SECRETS_DIR/postgres_dune_password" 2>/dev/null)" = 600 ] || fail "dune password not 0600"
+[ "$(stat -c %a "$DUNE_STATE_DIR/db-utils/DuneSandbox/Config/UserGame.ini" 2>/dev/null)" = 600 ] || fail "credential ini not 0600"
+
+out=$(libexec/dune-db-setup 2>&1) || fail "second setup exited nonzero: $(printf '%s' "$out" | tail -20)"
+[ "$(sql "$db" "select count(*) from dune.applied_patches")" = "$patches" ] || fail "second setup changed applied patch count"
+
+exit "$failures"

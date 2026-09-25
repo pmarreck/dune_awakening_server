@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# Live-world admin commands through Funcom's server-command channel (UDuneServerCommandSubsystem). A command is a JSON
+# object {"ServerCommand": NAME, "PlayerId": <Funcom id or *>, ...named arguments}, wrapped in the Version 2 envelope
+# {"Version":2,"AuthToken":…,"MessageContent":"<inner json>"} and published by the game RabbitMQ node itself
+# (rabbitmqctl eval) into exchange heartbeats with routing key notifications, as user fls / app fls_backend, which
+# is what the map server accepts. The envelope goes through a 0600 file, so the token never appears on a command line.
+# Contract adapted from Red-Blink/dune-awakening-selfhost-docker (MIT) via DASH.
+set -u
+NAME=dune-admin VERSION=0.1.0
+: "${HOME:=$(cd ~ 2>/dev/null && pwd)}"
+DUNE_STATE_DIR=${DUNE_STATE_DIR:-$HOME/.local/share/dune_awakening_server/runtime}
+DUNE_SECRETS_DIR=${DUNE_SECRETS_DIR:-$DUNE_STATE_DIR/secrets}
+DUNE_PG_PORT=${DUNE_PG_PORT:-15431}
+DUNE_COMPONENTS_DIR=${DUNE_COMPONENTS_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}
+
+usage() {
+	cat <<EOF
+Usage: $NAME [options] <command> [args]
+
+Send commands to the running Dune world (map server must be up; commands for a player need them online).
+
+Commands:
+  players                         Characters with online state (read-only)
+  kick <player> | --all           Disconnect a player, or everyone online
+  teleport <player> X Y Z [YAW]   Move an online player (world coordinates, centimetres)
+  say <message> [--duration S]    On-screen broadcast to everyone (default 20 s)
+  worm <player>                   ServerExec "SandwormTargetPlayer <player>" in that player's context: sends a worm
+                                  that is already near them at them (experimental; needs them online on open sand)
+  water <player> AMOUNT           Fill the player's water containers (UpdateAllWaterFillables)
+  xp <player> AMOUNT [CATEGORY]   Award XP; CATEGORY is Combat (default), Crafting, Gathering, Exploration or Sabotage
+  exec <console command...>       World-level engine console command or variable via ServerExec, e.g.
+                                  \`exec t.MaxFPS 5\` (output is not returned; watch the server log)
+  raw <ServerCommand> [--player P] [Key=value[:int|:float]...]
+                                  Any other server command, for exploration (see the server log for the result)
+
+Options: --json (players), --about, -h/--help. A <player> is a character name.
+Environment: DUNE_STATE_DIR, DUNE_SECRETS_DIR, DUNE_PG_PORT, DUNE_DB_NAME (default: the newest dune_sb_* database).
+EOF
+}
+die() { printf '%s: %s\n' "$NAME" "$1" >&2; exit "${2:-1}"; }
+usage_error() { die "$1 (see --help)" 2; }
+
+sql() {
+	local db=${DUNE_DB_NAME:-}
+	PGPASSWORD=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password" 2>/dev/null) || die "no postgres admin password in $DUNE_SECRETS_DIR"
+	export PGPASSWORD
+	if [ -z "$db" ]; then
+		db=$(psql -X -A -t -q -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d postgres \
+			-c "select datname from pg_database where datname like 'dune\_sb\_%' order by 1 desc limit 1" 2>/dev/null) || die "cannot reach postgres"
+		[ -n "$db" ] || die "no dune_sb_* database found"
+	fi
+	psql -X -A -t -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "$db" "$@"
+}
+
+# Character name -> Funcom id (the PlayerId server commands expect). Name passed as a psql variable, never spliced.
+funcom_id() {
+	local id
+	id=$(sql -v name="$1" -f - <<<"select a.funcom_id from dune.player_state ps join dune.accounts a on a.id = ps.account_id where ps.character_name = :'name' limit 1;") ||
+		die "database lookup failed"
+	[ -n "$id" ] || die "no character named $1"
+	printf '%s' "$id"
+}
+
+# Publish one inner command object (JSON text) through the game broker.
+publish() {
+	local inner=$1 token body out
+	token=$(tr -d '\r\n' < "$DUNE_SECRETS_DIR/server_commands_token" 2>/dev/null) && [ -n "$token" ] ||
+		die "no server command token in $DUNE_SECRETS_DIR (start the world once with command support)"
+	body=$(mktemp "$DUNE_SECRETS_DIR/.XXXXXX.cmd.json") || die "cannot create a private temp file"
+	chmod 600 "$body"
+	jq -cn --arg t "$token" --arg m "$inner" '{Version: 2, AuthToken: $t, MessageContent: $m}' > "$body" || { rm -f -- "$body"; die "cannot build envelope"; }
+	out=$("$DUNE_COMPONENTS_DIR/dune-rabbitmq" ctl game eval \
+		"{ok, Outer} = file:read_file(\"$body\"), XName = rabbit_misc:r(<<\"/\">>, exchange, <<\"heartbeats\">>), X = rabbit_exchange:lookup_or_die(XName), MsgId = list_to_binary(\"dune-admin-\" ++ integer_to_list(erlang:system_time(millisecond))), P = {list_to_atom(\"P_basic\"), <<\"Content\">>, undefined, [], undefined, undefined, undefined, undefined, undefined, MsgId, undefined, undefined, <<\"fls\">>, <<\"fls_backend\">>, undefined}, Content = rabbit_basic:build_content(P, Outer), {ok, Msg} = rabbit_basic:message(XName, <<\"notifications\">>, Content), Result = rabbit_queue_type:publish_at_most_once(X, Msg), io:format(\"publish=~p~n\", [Result])." 2>&1)
+	rm -f -- "$body"
+	[[ "$out" == *publish=ok* ]] || die "publish failed (is the world up?): $(printf '%s' "$out" | tail -2)"
+	printf 'sent %s\n' "$(jq -r .ServerCommand <<<"$inner")" >&2
+}
+
+number() { [[ "$1" =~ ^-?[0-9]+([.][0-9]+)?$ ]] || usage_error "not a number: $1"; }
+
+json=false args=()
+for a in "$@"; do
+	case "$a" in
+		-h|--help) usage; exit 0 ;;
+		--about) printf '%s %s: Dune world admin commands via the server-command channel (%s %s)\n' "$NAME" "$VERSION" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)"; exit 0 ;;
+		--json) json=true ;;
+		*) args+=("$a") ;;
+	esac
+done
+set -- "${args[@]+"${args[@]}"}"
+cmd=${1:-}; [ $# -gt 0 ] && shift
+
+case "$cmd" in
+	players)
+		rows=$(sql -c "select coalesce(json_agg(json_build_object('name', ps.character_name, 'online', ps.online_status::text <> 'Offline') order by ps.character_name), '[]') from dune.player_state ps") || die "database lookup failed"
+		if $json; then printf '%s\n' "$rows"; else jq -r '.[] | (if .online then "● " else "○ " end) + .name' <<<"$rows"; fi ;;
+	kick)
+		[ $# -eq 1 ] || usage_error "kick needs a player or --all"
+		if [ "$1" = --all ]; then id='*'; else id=$(funcom_id "$1") || exit 1; fi
+		publish "$(jq -cn --arg p "$id" '{ServerCommand: "KickPlayer", PlayerId: $p}')" ;;
+	teleport)
+		[ $# -eq 4 ] || [ $# -eq 5 ] || usage_error "teleport needs <player> X Y Z [YAW]"
+		for n in "${@:2}"; do number "$n"; done
+		id=$(funcom_id "$1") || exit 1
+		publish "$(jq -cn --arg p "$id" --argjson x "$2" --argjson y "$3" --argjson z "$4" --argjson yaw "${5:-null}" \
+			'{ServerCommand: "TeleportTo", PlayerId: $p, X: $x, Y: $y, Z: $z} + (if $yaw == null then {} else {Yaw: $yaw} end)')" ;;
+	say)
+		msg="" duration=20
+		while [ $# -gt 0 ]; do
+			case "$1" in --duration) [ $# -ge 2 ] || usage_error "--duration needs seconds"; duration=$2; shift ;; *) msg=${msg:+$msg }$1 ;; esac
+			shift
+		done
+		[ -n "$msg" ] || usage_error "say needs a message"
+		[[ "$duration" =~ ^[0-9]+$ ]] || usage_error "--duration needs whole seconds"
+		publish "$(jq -cn --arg m "$msg" --argjson d "$duration" '{ServerCommand: "ServiceBroadcast", BroadcastType: "Generic",
+			BroadcastPayload: {BroadcastDuration: $d, LocalizedText: [{Key: "en", Title: "", Body: $m}, {Key: "en-US", Title: "", Body: $m}]}}')" ;;
+	worm)
+		[ $# -eq 1 ] || usage_error "worm needs a player"
+		id=$(funcom_id "$1") || exit 1
+		publish "$(jq -cn --arg p "$id" --arg e "SandwormTargetPlayer $1" '{ServerCommand: "ServerExec", PlayerId: $p, Exec: $e}')" ;;
+	exec)
+		[ $# -ge 1 ] || usage_error "exec needs a console command"
+		publish "$(jq -cn --arg e "$*" '{ServerCommand: "ServerExec", Exec: $e}')" ;;
+	water)
+		[ $# -eq 2 ] && [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || usage_error "water needs <player> and a positive whole AMOUNT"
+		id=$(funcom_id "$1") || exit 1
+		publish "$(jq -cn --arg p "$id" --argjson w "$2" '{ServerCommand: "UpdateAllWaterFillables", PlayerId: $p, WaterAmount: $w}')" ;;
+	xp)
+		{ [ $# -eq 2 ] || [ $# -eq 3 ]; } && [[ "$2" =~ ^[0-9]+$ ]] || usage_error "xp needs <player> AMOUNT [CATEGORY]"
+		case "${3:-Combat}" in Combat|Crafting|Gathering|Exploration|Sabotage) ;; *) usage_error "unknown XP category ${3}" ;; esac
+		id=$(funcom_id "$1") || exit 1
+		publish "$(jq -cn --arg p "$id" --argjson x "$2" --arg c "${3:-Combat}" '{ServerCommand: "AwardXP", PlayerId: $p, Experience: $x, Category: $c}')" ;;
+	raw)
+		[ $# -ge 1 ] || usage_error "raw needs a ServerCommand name"
+		obj=$(jq -cn --arg c "$1" '{ServerCommand: $c}'); shift
+		while [ $# -gt 0 ]; do
+			case "$1" in
+				--player) [ $# -ge 2 ] || usage_error "--player needs a name"; id=$(funcom_id "$2") || exit 1; obj=$(jq -c --arg p "$id" '. + {PlayerId: $p}' <<<"$obj"); shift ;;
+				*=*:int|*=*:float) k=${1%%=*} v=${1#*=}; v=${v%:*}; number "$v"; obj=$(jq -c --arg k "$k" --argjson v "$v" '. + {($k): $v}' <<<"$obj") ;;
+				*=*) k=${1%%=*} v=${1#*=}; obj=$(jq -c --arg k "$k" --arg v "$v" '. + {($k): $v}' <<<"$obj") ;;
+				*) usage_error "raw arguments are Key=value[:int|:float], got $1" ;;
+			esac
+			shift
+		done
+		publish "$obj" ;;
+	"") usage >&2; exit 2 ;;
+	*) usage_error "unknown command $cmd" ;;
+esac

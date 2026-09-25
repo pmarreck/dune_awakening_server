@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Host tier (systemd-analyze needs /run/systemd, absent in the Nix sandbox): the rendered units pass
+# systemd-analyze verify, the independent checker of unit syntax and references.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-units-verify.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+out="$work/units out"
+msg=$(libexec/dune-units render "$out" 2>&1) || fail "render failed: $msg"
+units=(); while IFS= read -r f; do units+=("$f"); done < <(find "$out" -type f | sort)
+msg=$(SYSTEMD_LOG_LEVEL=err systemd-analyze verify --man=no "${units[@]}" 2>&1) || fail "systemd-analyze verify: $msg"
+exit "$failures"

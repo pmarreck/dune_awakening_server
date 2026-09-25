@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# libexec/dune-backup against a throwaway cluster with a synthetic world database: create (0600 dumps + config tarball +
+# checksummed manifest), list, verify (restore drill into a scratch database), restore (guarded, with a safety
+# backup first), prune (to the trash, never deleted outright).
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. tests/lib/ports.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-backup-test.XXXXXX") || exit 1
+export DUNE_STATE_DIR="$work/state" DUNE_CONFIG_DIR="$work/config dir" DUNE_BACKUP_DIR="$work/backups" DUNE_TRASH_DIR="$work/trash"
+export DUNE_PG_DATA="$work/pg" DUNE_SECRETS_DIR="$work/state/secrets" DUNE_PG_PORT=$(pick_port_base 1)
+cleanup() { libexec/dune-postgres stop >/dev/null 2>&1; rm -r -- "$work"; }
+trap cleanup EXIT
+libexec/dune-postgres init >/dev/null 2>&1 && libexec/dune-postgres start >/dev/null 2>&1 || { fail "cluster"; exit 1; }
+admin_pw=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password")
+q() { PGPASSWORD="$admin_pw" psql -X -A -t -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "${2:-dune_sb_9_9_9_9}" -c "$1"; }
+q "create role dune login password 'dunepw'" postgres && q "create database dune_sb_9_9_9_9 owner dune" postgres
+q "create schema dune authorization dune; create table dune.actors (id bigint primary key, properties jsonb);
+	insert into dune.actors values (1, '{\"TechKnowledgePlayerComponent\": {\"m_TechKnowledgePoints\": 5}}'), (2, '{}');
+	alter table dune.actors owner to dune"
+mkdir -p -m 700 "$DUNE_CONFIG_DIR"
+printf 'token\n' > "$DUNE_CONFIG_DIR/fls_secret"; printf 'WORLD_UNIQUE_NAME=sh-x\n' > "$DUNE_CONFIG_DIR/world.conf"
+research() { q "select properties -> 'TechKnowledgePlayerComponent' ->> 'm_TechKnowledgePoints' from dune.actors where id = 1"; }
+
+out=$(libexec/dune-backup --about 2>&1) || fail "--about exited nonzero"
+[ "$(printf '%s\n' "$out" | wc -l)" -eq 1 ] && [[ "$out" == *dune-backup* ]] || fail "--about: $out"
+libexec/dune-backup --help >/dev/null 2>&1 || fail "--help exited nonzero"
+libexec/dune-backup bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown command did not exit 2"
+
+# create -----------------------------------------------------------------------------------------------------------
+b1=$(libexec/dune-backup create --label "first run" 2>"$work/err") || fail "create failed: $(cat "$work/err")"
+[ -d "$b1" ] || fail "create did not print the backup directory: $b1"
+[ "$(stat -c %a "$b1" 2>/dev/null)" = 700 ] || fail "backup dir not 0700"
+[ -z "$(find "$b1" -type f ! -perm 600)" ] || fail "backup files not all 0600: $(find "$b1" -type f ! -perm 600)"
+m="$b1/manifest.json"
+[ "$(jq -r '.label' "$m" 2>/dev/null)" = "first run" ] || fail "manifest label"
+[ "$(jq -r '[.databases[].name] | join(",")' "$m" 2>/dev/null)" = dune_sb_9_9_9_9 ] || fail "manifest databases: $(jq -c .databases "$m" 2>/dev/null)"
+f=$(jq -r '.databases[0].file' "$m" 2>/dev/null)
+[ "$(jq -r '.databases[0].sha256' "$m")" = "$(sha256sum "$b1/$f" | cut -d' ' -f1)" ] || fail "manifest sha256 does not match the dump"
+tar -tf "$b1/config.tar" 2>/dev/null | grep -q 'fls_secret$' || fail "config tarball lacks fls_secret"
+[ -s "$b1/globals.sql" ] && grep -q 'ROLE dune' "$b1/globals.sql" || fail "globals (roles) not captured"
+[ -s "$work/err" ] && fail "create wrote stderr: $(cat "$work/err")"
+
+# list / verify ----------------------------------------------------------------------------------------------------
+[ "$(libexec/dune-backup list --json | jq -r '.[0].label')" = "first run" ] || fail "list --json"
+out=$(libexec/dune-backup verify "$b1" 2>&1) || fail "verify (restore drill) failed: $out"
+out=$(libexec/dune-backup verify latest 2>&1) && [[ "$out" == *"✓"* ]] || fail "verify latest failed: $out"
+[ "$(q "select count(*) from pg_database where datname like 'dune_verify%'" postgres)" = 0 ] || fail "verify left its scratch database behind"
+printf 'x' >> "$b1/$f"
+out=$(libexec/dune-backup verify "$b1" 2>&1); [ $? -eq 1 ] && [[ "$out" == *sha256* ]] || fail "verify did not catch a corrupted dump: $out"
+truncate -s -1 "$b1/$f"
+
+# restore ----------------------------------------------------------------------------------------------------------
+q "update dune.actors set properties = '{\"TechKnowledgePlayerComponent\": {\"m_TechKnowledgePoints\": 99}}' where id = 1"
+out=$(libexec/dune-backup restore "$b1" 2>&1); [ $? -eq 2 ] && [[ "$out" == *--yes* ]] || fail "restore without --yes not refused: $out"
+[ "$(research)" = 99 ] || fail "refused restore changed data"
+mkdir -p "$DUNE_STATE_DIR/server"; echo $$ > "$DUNE_STATE_DIR/server/pid"
+out=$(libexec/dune-backup restore "$b1" --yes 2>&1); [ $? -eq 1 ] && [[ "$out" == *running* ]] || fail "restore while the map server runs not refused: $out"
+: > "$DUNE_STATE_DIR/server/pid"
+n_before=$(libexec/dune-backup list --json | jq length)
+out=$(libexec/dune-backup restore "$b1" --yes 2>&1) || fail "restore failed: $out"
+[ "$(research)" = 5 ] || fail "restore did not bring back the backed-up data: $(research)"
+[ "$(libexec/dune-backup list --json | jq length)" = $((n_before + 1)) ] || fail "restore did not take a safety backup first"
+[ "$(libexec/dune-backup list --json | jq -r '.[0].label')" = "before restore" ] || fail "safety backup not labelled"
+[ "$(q "select pg_get_userbyid(datdba) from pg_database where datname = 'dune_sb_9_9_9_9'" postgres)" = dune ] || fail "restored database not owned by dune"
+
+# prune ------------------------------------------------------------------------------------------------------------
+libexec/dune-backup create >/dev/null 2>&1 || fail "second create"
+total=$(libexec/dune-backup list --json | jq length)
+newest=$(libexec/dune-backup list --json | jq -r '.[0].path')
+libexec/dune-backup prune --keep 1 >/dev/null 2>&1 || fail "prune failed"
+[ "$(libexec/dune-backup list --json | jq -r '[.[].path] | join(",")')" = "$newest" ] || fail "prune kept the wrong backups"
+[ "$(find "$DUNE_TRASH_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)" = $((total - 1)) ] || fail "pruned backups not moved to the trash"
+
+# Default retention (prune with no --keep), as a classifier over a set of dated backups: everything from the last
+# 7 days, then the newest per ISO week for 3 months (91 days), older ones to the trash. "Now" is injected.
+(
+	export DUNE_BACKUP_DIR="$work/policy" DUNE_TRASH_DIR="$work/policy-trash" DUNE_NOW=$(date -u -d 2026-09-25T12:00:00Z +%s)
+	keep="20260925T110000.000Z 20260924T030000.000Z 20260919T040000.000Z-scheduled 20260916T040000.000Z 20260910T040000.000Z 20260628T040000.000Z"
+	drop="20260915T040000.000Z 20260909T040000.000Z 20260626T040000.000Z 20260601T040000.000Z 20250101T000000.000Z"
+	for b in $keep $drop; do mkdir -p "$DUNE_BACKUP_DIR/$b"; echo '{"label":"","created_at":"x","databases":[]}' > "$DUNE_BACKUP_DIR/$b/manifest.json"; done
+	out=$(libexec/dune-backup prune 2>&1) || fail "policy prune failed: $out"
+	got=$(find "$DUNE_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
+	want=$(printf '%s\n' $keep | sort | paste -sd' ' -)
+	[ "$got" = "$want" ] || fail "retention kept: $got (want: $want)"
+	gone=$(find "$DUNE_TRASH_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
+	[ "$gone" = "$(printf '%s\n' $drop | sort | paste -sd' ' -)" ] || fail "retention trashed: $gone"
+	# The policy is editable in DUNE_CONFIG_DIR/backup.conf (KEEP_ALL_DAYS, KEEP_WEEKLY_DAYS); bad input is rejected.
+	export DUNE_CONFIG_DIR="$work/policy-config" DUNE_BACKUP_DIR="$work/policy2" DUNE_TRASH_DIR="$work/policy2-trash"
+	mkdir -p "$DUNE_CONFIG_DIR"
+	for b in 20260925T110000.000Z 20260922T040000.000Z 20260916T040000.000Z 20260910T040000.000Z; do
+		mkdir -p "$DUNE_BACKUP_DIR/$b"; echo '{}' > "$DUNE_BACKUP_DIR/$b/manifest.json"
+	done
+	printf '# comment\nKEEP_ALL_DAYS=2\n\nKEEP_WEEKLY_DAYS=12\n' > "$DUNE_CONFIG_DIR/backup.conf"
+	libexec/dune-backup prune >/dev/null 2>&1 || fail "prune with backup.conf failed"
+	got=$(find "$DUNE_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
+	[ "$got" = "20260916T040000.000Z 20260922T040000.000Z 20260925T110000.000Z" ] || fail "backup.conf policy kept: $got"
+	for bad in 'KEEP_ALL_DAYS=seven' 'KEEP_WEEKLY=91' 'KEEP_ALL_DAYS=10
+KEEP_WEEKLY_DAYS=5'; do
+		printf '%s\n' "$bad" > "$DUNE_CONFIG_DIR/backup.conf"
+		out=$(libexec/dune-backup prune 2>&1); [ $? -eq 1 ] && [[ "$out" == *backup.conf* ]] || fail "bad backup.conf ($bad) not rejected clearly: $out"
+	done
+	[ "$(find "$DUNE_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)" = 3 ] || fail "a rejected config still pruned"
+	# Never prune the newest backup, however old.
+	export DUNE_BACKUP_DIR="$work/policy-old" DUNE_TRASH_DIR="$work/policy-old-trash"
+	mkdir -p "$DUNE_BACKUP_DIR/20250101T000000.000Z"; echo '{}' > "$DUNE_BACKUP_DIR/20250101T000000.000Z/manifest.json"
+	libexec/dune-backup prune >/dev/null 2>&1
+	[ -d "$DUNE_BACKUP_DIR/20250101T000000.000Z" ] || fail "prune removed the only (newest) backup"
+	exit "$failures"
+) || failures=$((failures + $?))
+
+libexec/dune-postgres stop >/dev/null 2>&1
+out=$(libexec/dune-backup create 2>&1); [ $? -eq 1 ] && [[ "$out" == *dune-backup:* ]] || fail "create with postgres down: $out"
+exit "$failures"

@@ -1,0 +1,591 @@
+#!/usr/bin/env luajit
+-- dune-character: view and edit Dune: Awakening characters in the self-hosted world's PostgreSQL database.
+-- Reads DB settings from the game's own ini chain (BaseGame -> DefaultGame -> Saved/Config/LinuxServer/Game.ini,
+-- expanding dune%_BRANCH% from perforce-keywords.json exactly as the server does), feature-detects the schema before
+-- any operation instead of trusting a schema version, never edits an online character (the server owns live state
+-- and would overwrite it), and writes a 0600 JSON backup of every actor it changes. libpq is used through LuaJIT FFI.
+local ffi = require("ffi")
+local cjson = require("cjson")
+cjson.encode_escape_forward_slash(false)
+
+local NAME, VERSION = "dune-character", "0.1.0"
+local EXIT_OK, EXIT_ERR, EXIT_USAGE = 0, 1, 2
+
+ffi.cdef [[
+typedef struct pg_conn PGconn;
+typedef struct pg_result PGresult;
+PGconn *PQconnectdbParams(const char *const *keywords, const char *const *values, int expand_dbname);
+int PQstatus(const PGconn *conn);
+char *PQerrorMessage(const PGconn *conn);
+void PQfinish(PGconn *conn);
+PGresult *PQexecParams(PGconn *conn, const char *command, int nParams, const unsigned int *paramTypes,
+	const char *const *paramValues, const int *paramLengths, const int *paramFormats, int resultFormat);
+int PQresultStatus(const PGresult *res);
+char *PQresultErrorMessage(const PGresult *res);
+int PQntuples(const PGresult *res);
+int PQnfields(const PGresult *res);
+char *PQfname(const PGresult *res, int field_num);
+char *PQgetvalue(const PGresult *res, int tup_num, int field_num);
+int PQgetisnull(const PGresult *res, int tup_num, int field_num);
+void PQclear(PGresult *res);
+int isatty(int fd);
+int open(const char *path, int flags, int mode);
+long write(int fd, const void *buf, unsigned long n);
+int close(int fd);
+int mkdir(const char *path, int mode);
+]]
+
+local PGRES_COMMAND_OK, PGRES_TUPLES_OK, CONNECTION_OK = 1, 2, 0
+local O_WRONLY, O_CREAT, O_EXCL = 1, 64, 128
+
+local function die(code, fmt, ...)
+	io.stderr:write(NAME, ": ", string.format(fmt, ...), "\n")
+	os.exit(code)
+end
+
+-- Reduce a PostgreSQL / PL/pgSQL error to one CLI line: drop the "ERROR:" severity and CONTEXT/LINE noise, and move
+-- Funcom's "sbXXX$ - " error code to a trailing note so the reason reads first.
+local function clean_error(msg)
+	local line = (tostring(msg):match("^[^\n]*")):gsub("^%u+:%s+", "")
+	local code, rest = line:match("^(sb%w+%$)%s*%-%s*(.*)$")
+	if code then line = rest .. " (server code " .. code .. ")" end
+	return line
+end
+
+-- Options -----------------------------------------------------------------------------------------------------
+
+local USAGE = [[
+Usage: dune-character [options] <command> [args]
+
+View and edit characters in the Dune: Awakening self-hosted world database.
+
+Commands:
+  list                        List characters with online state and research points
+  show <character>            Show one character (name or numeric id)
+  set-research <character> N  Set research points (Tech Knowledge / "Intel") to N (offline characters only)
+  add-skill-points <character> N  Add N skill points (unspent and lifetime total; offline characters only)
+  export <character>          Write the character's account as editable, indented JSON (Funcom's character
+                              transfer format plus a _dune_character header); -o FILE, default stdout
+  validate <file>             Check a transfer file against this world: header, offline account, then the
+                              server's own import run as a dry run (always rolled back). "-"/@stdin reads stdin
+  import <file>               Validate, back up the account as an export, then import through the server's own
+                              character_transfer_import (replaces the account's character; names re-encrypted)
+
+Options:
+  --server-root DIR   Server tree holding the game's ini chain (default: $DUNE_STATE_DIR/server/tree)
+  -o, --output FILE   export destination (default stdout; "-", @stdout and @stderr accepted); files are 0600
+  --json              Machine-readable JSON output
+  --text              Human-readable output (default; later of --json/--text wins)
+  --no-color          Disable ANSI color (also: NO_COLOR env, non-tty stdout)
+  --about             One-line description, version and platform
+  -h, --help          This help
+  --                  End of options
+
+Environment: DUNE_STATE_DIR, DUNE_CHARACTER_BACKUP_DIR (default $DUNE_STATE_DIR/char-backups), DUNE_LIBPQ.
+]]
+
+local function arch_name()
+	local map = { x64 = "x86_64", arm64 = "aarch64", x86 = "i686" }
+	return (jit.os or "unknown"):lower() .. " " .. (map[jit.arch] or jit.arch)
+end
+
+local function parse_args(argv)
+	local state = os.getenv("DUNE_STATE_DIR") or ((os.getenv("HOME") or "") .. "/.local/share/dune_awakening_server/runtime")
+	local opts = { json = false, color = true, server_root = state .. "/server/tree", state_dir = state, positional = {} }
+	local i, only_positional = 1, false
+	while i <= #argv do
+		local a = argv[i]
+		if only_positional or a:sub(1, 1) ~= "-" or a == "-" then
+			opts.positional[#opts.positional + 1] = a
+		elseif a == "--" then only_positional = true
+		elseif a == "--json" then opts.json = true
+		elseif a == "--text" then opts.json = false
+		elseif a == "--no-color" then opts.color = false
+		elseif a == "--server-root" then
+			i = i + 1
+			opts.server_root = argv[i] or die(EXIT_USAGE, "--server-root needs a directory")
+		elseif a:match("^%-%-server%-root=") then opts.server_root = a:match("=(.*)$")
+		elseif a == "-o" or a == "--output" then
+			i = i + 1
+			opts.output = argv[i] or die(EXIT_USAGE, "%s needs a file", a)
+		elseif a:match("^%-%-output=") then opts.output = a:match("=(.*)$")
+		elseif a == "-h" or a == "--help" then io.stdout:write(USAGE); os.exit(EXIT_OK)
+		elseif a == "--about" then
+			io.stdout:write(string.format("%s %s: Dune: Awakening self-host character viewer/editor (%s)\n", NAME, VERSION, arch_name()))
+			os.exit(EXIT_OK)
+		else die(EXIT_USAGE, "unknown option %s (see --help)", a) end
+		i = i + 1
+	end
+	if os.getenv("NO_COLOR") or ffi.C.isatty(1) == 0 then opts.color = false end
+	return opts
+end
+
+-- Game configuration (the server's own ini chain) ---------------------------------------------------------------
+
+local function read_file(path)
+	local f = io.open(path, "rb")
+	if not f then return nil end
+	local s = f:read("*a"); f:close(); return s
+end
+
+-- Parse UE-style ini into { [section] = { [key] = value } }; later files override earlier ones via merge.
+local function parse_ini(text, into)
+	local section
+	for line in (text .. "\n"):gmatch("([^\r\n]*)\r?\n") do
+		local s = line:match("^%s*%[%s*(.-)%s*%]%s*$")
+		if s then section = s; into[s] = into[s] or {}
+		elseif section and not line:match("^%s*[;#]") then
+			local k, v = line:match("^%s*([^=]-)%s*=%s*(.-)%s*$")
+			if k and k ~= "" then into[section][k] = v end
+		end
+	end
+	return into
+end
+
+local function db_settings(server_root)
+	local chain = {
+		server_root .. "/Engine/Config/BaseGame.ini",
+		server_root .. "/DuneSandbox/Config/DefaultGame.ini",
+		server_root .. "/DuneSandbox/Saved/Config/LinuxServer/Game.ini",
+	}
+	local ini, found = {}, 0
+	for _, p in ipairs(chain) do
+		local t = read_file(p)
+		if t then parse_ini(t, ini); found = found + 1 end
+	end
+	if found == 0 then die(EXIT_ERR, "no game ini files under %s (set --server-root)", server_root) end
+	local s = ini["DuneDatabaseInterfacePSQL"] or die(EXIT_ERR, "no [DuneDatabaseInterfacePSQL] section in the game ini chain")
+	local name = s.DatabaseName or die(EXIT_ERR, "game ini chain has no DatabaseName")
+	if name:find("%_BRANCH%", 1, true) then
+		local kw = read_file(server_root .. "/DuneSandbox/Config/perforce-keywords.json")
+			or die(EXIT_ERR, "DatabaseName uses %%_BRANCH%% but perforce-keywords.json is missing")
+		local branch = kw:match("//[^/]+/([^/]+)/") or die(EXIT_ERR, "cannot read branch from perforce-keywords.json")
+		name = name:gsub("%%_BRANCH%%", (("_" .. branch):gsub("[%.%-]", "_")))
+	end
+	local host, port = (s.DatabaseHost or "localhost:15431"):match("^(.-):(%d+)$")
+	return { host = host or s.DatabaseHost, port = port or "5432", user = s.DatabaseUser or "dune",
+		password = s.DatabasePassword or "", dbname = name }
+end
+
+-- libpq ---------------------------------------------------------------------------------------------------------
+
+local pq
+local function load_libpq()
+	local ok, lib = pcall(ffi.load, os.getenv("DUNE_LIBPQ") or "pq")
+	if not ok then die(EXIT_ERR, "cannot load libpq (%s); run inside the project's nix develop", lib) end
+	pq = lib
+end
+
+local Db = {}
+Db.__index = Db
+
+local function connect(cfg)
+	local keys = { "host", "port", "user", "password", "dbname", "application_name", "connect_timeout" }
+	local vals = { cfg.host, cfg.port, cfg.user, cfg.password, cfg.dbname, NAME, "10" }
+	local ck, cv = ffi.new("const char*[?]", #keys + 1), ffi.new("const char*[?]", #keys + 1)
+	for i = 1, #keys do ck[i - 1], cv[i - 1] = keys[i], vals[i] end
+	local conn = pq.PQconnectdbParams(ck, cv, 0)
+	if conn == nil or pq.PQstatus(conn) ~= CONNECTION_OK then
+		die(EXIT_ERR, "cannot connect to %s@%s:%s/%s: %s", cfg.user, cfg.host, cfg.port, cfg.dbname,
+			conn ~= nil and ffi.string(pq.PQerrorMessage(conn)):gsub("%s+$", "") or "out of memory")
+	end
+	return setmetatable({ conn = conn }, Db)
+end
+
+-- Run a parameterized query (text params); return rows as arrays of strings|nil keyed by column name too.
+function Db:query(sql, ...)
+	local params = { ... }
+	local n = select("#", ...)
+	local cp = ffi.new("const char*[?]", math.max(n, 1))
+	for i = 1, n do cp[i - 1] = params[i] ~= nil and tostring(params[i]) or nil end
+	local res = pq.PQexecParams(self.conn, sql, n, nil, cp, nil, nil, 0)
+	local st = pq.PQresultStatus(res)
+	if st ~= PGRES_TUPLES_OK and st ~= PGRES_COMMAND_OK then
+		local msg = ffi.string(pq.PQresultErrorMessage(res)):gsub("%s+$", "")
+		pq.PQclear(res)
+		error(msg, 0)
+	end
+	local rows, nf = {}, pq.PQnfields(res)
+	for r = 0, pq.PQntuples(res) - 1 do
+		local row = {}
+		for c = 0, nf - 1 do
+			if pq.PQgetisnull(res, r, c) == 0 then row[ffi.string(pq.PQfname(res, c))] = ffi.string(pq.PQgetvalue(res, r, c)) end
+		end
+		rows[#rows + 1] = row
+	end
+	pq.PQclear(res)
+	return rows
+end
+
+function Db:close() pq.PQfinish(self.conn) end
+
+-- Schema feature detection --------------------------------------------------------------------------------------
+
+-- Every column an operation relies on, checked by name and type instead of by schema version.
+local REQUIRED = {
+	{ "encrypted_player_state", "id" }, { "encrypted_player_state", "account_id" }, { "encrypted_player_state", "encrypted_character_name" },
+	{ "encrypted_player_state", "online_status" }, { "encrypted_player_state", "player_pawn_id" },
+	{ "actors", "id" }, { "actors", "properties", "jsonb" },
+}
+
+local function detect_schema(db)
+	local have = {}
+	for _, r in ipairs(db:query([[select table_name, column_name, data_type from information_schema.columns
+		where table_schema = 'dune' and table_name in ('encrypted_player_state', 'actors')]])) do
+		have[r.table_name .. "." .. r.column_name] = r.data_type
+	end
+	local missing = {}
+	for _, req in ipairs(REQUIRED) do
+		local t = have[req[1] .. "." .. req[2]]
+		if not t or (req[3] and t ~= req[3]) then missing[#missing + 1] = "dune." .. req[1] .. "." .. req[2] .. (req[3] and " (" .. req[3] .. ")" or "") end
+	end
+	if #missing > 0 then die(EXIT_ERR, "unexpected database schema; missing: %s", table.concat(missing, ", ")) end
+	local fn = db:query([[select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+		where n.nspname = 'dune' and p.proname = 'decrypt_user_data']])
+	-- Skills live on the character's FGL entity (actor_fgl_entities slot 'DuneCharacter' -> fgl_entities.components).
+	local fgl = db:query([[select count(*) as n from information_schema.columns where table_schema = 'dune' and
+		((table_name = 'fgl_entities' and column_name in ('entity_id', 'components')) or
+		 (table_name = 'actor_fgl_entities' and column_name in ('actor_id', 'entity_id', 'slot_name')))]])[1]
+	-- The server marks superseded rows (e.g. its first-login placeholder, left Online forever) character_state Deleted.
+	local deleted = have["encrypted_player_state.character_state"] and "%s.character_state::text = 'Deleted'" or "false"
+	return { name_expr = #fn > 0 and "dune.decrypt_user_data(ps.encrypted_character_name)"
+		or "convert_from(ps.encrypted_character_name, 'UTF8')", has_fgl = tonumber(fgl.n) == 5,
+		deleted = function(alias) return deleted:format(alias) end }
+end
+
+-- Characters ----------------------------------------------------------------------------------------------------
+
+local TK = "TechKnowledgePlayerComponent"
+local LEVEL = "FLevelComponent" -- fgl_entities.components.FLevelComponent = [version, {TotalSkillPoints, UnspentSkillPoints, ...}]
+
+local function characters(db, schema, where, ...)
+	local skills_sql = schema.has_fgl and [[, e.entity_id as level_entity,
+		e.components -> 'FLevelComponent' -> 1 ->> 'UnspentSkillPoints' as unspent,
+		e.components -> 'FLevelComponent' -> 1 ->> 'TotalSkillPoints' as total_skill,
+		e.components -> 'FLevelComponent' -> 1 ->> 'TotalXPEarned' as xp]] or ""
+	local skills_join = schema.has_fgl and [[ left join dune.actor_fgl_entities f
+		on f.actor_id = ps.player_pawn_id and f.slot_name = 'DuneCharacter' left join dune.fgl_entities e on e.entity_id = f.entity_id]] or ""
+	local rows = db:query(string.format([[select ps.id, %s as name, exists (select 1 from dune.encrypted_player_state o
+		where o.account_id = ps.account_id and o.online_status::text <> 'Offline' and not %s) as account_online,
+		ps.player_pawn_id as pawn, (a.properties ? '%s') as has_tk,
+		a.properties -> '%s' ->> 'm_TechKnowledgePoints' as research %s
+		from dune.encrypted_player_state ps left join dune.actors a on a.id = ps.player_pawn_id %s where not %s %s order by ps.id]],
+		schema.name_expr, schema.deleted("o"), TK, TK, skills_sql, skills_join, schema.deleted("ps"), where or ""), ...)
+	local out = {}
+	local function num(v) return v and tonumber(v) or cjson.null end
+	for _, r in ipairs(rows) do
+		out[#out + 1] = {
+			id = tonumber(r.id), name = r.name, online = r.account_online == "t", pawn_actor_id = tonumber(r.pawn),
+			research_points = r.has_tk == "t" and (tonumber(r.research) or 0) or cjson.null,
+			skill_points_unspent = num(r.unspent), skill_points_total = num(r.total_skill), xp_total = num(r.xp),
+			level_entity_id = r.level_entity or cjson.null,
+		}
+	end
+	return out
+end
+
+local function find_character(db, schema, ref)
+	local list = ref:match("^%d+$") and characters(db, schema, "and ps.id = $1", ref) or {}
+	if #list == 0 then list = characters(db, schema, "and " .. schema.name_expr .. " = $1", ref) end
+	if #list == 0 then die(EXIT_ERR, "no character %q", ref) end
+	if #list > 1 then die(EXIT_ERR, "character name %q is ambiguous; use the numeric id", ref) end
+	return list[1]
+end
+
+-- Output --------------------------------------------------------------------------------------------------------
+
+local function paint(opts, code, s) return opts.color and ("\27[" .. code .. "m" .. s .. "\27[0m") or s end
+
+local function print_characters(opts, list)
+	if opts.json then io.stdout:write(cjson.encode(list), "\n"); return end
+	for _, c in ipairs(list) do
+		local function fmt(v) return v == cjson.null and "n/a" or tostring(v) end
+		io.stdout:write(string.format("%s %-4d %-24s research %-5s skill points %s unspent / %s total  xp %s\n",
+			c.online and paint(opts, "32", "●") or paint(opts, "2", "○"), c.id, c.name, fmt(c.research_points),
+			fmt(c.skill_points_unspent), fmt(c.skill_points_total), fmt(c.xp_total)))
+	end
+end
+
+-- Backups -------------------------------------------------------------------------------------------------------
+
+local function write_private(path, data)
+	local fd = ffi.C.open(path, bit.bor(O_WRONLY, O_CREAT, O_EXCL), tonumber("600", 8))
+	if fd < 0 then die(EXIT_ERR, "cannot create %s", path) end
+	local n = ffi.C.write(fd, data, #data)
+	ffi.C.close(fd)
+	if n ~= #data then die(EXIT_ERR, "short write to %s", path) end
+end
+
+local function backup_dir(opts)
+	local dir = os.getenv("DUNE_CHARACTER_BACKUP_DIR") or (opts.state_dir .. "/char-backups")
+	ffi.C.mkdir(dir, tonumber("700", 8))
+	return dir
+end
+
+-- Commands ------------------------------------------------------------------------------------------------------
+
+-- Inside an open transaction: lock every player-state row of the character's account and fail unless all are
+-- offline. A login can surface through another row of the same account (the server's session placeholder), and the
+-- server may have logged the character in since we looked, so this must be re-checked under lock.
+local function lock_offline(db, schema, c)
+	local rows = db:query([[select id, online_status::text as s, player_pawn_id as pawn, ]] .. schema.deleted("ps") .. [[ as deleted
+		from dune.encrypted_player_state ps where account_id = (select account_id from dune.encrypted_player_state where id = $1) for update]], c.id)
+	local ps, any_online = nil, false
+	for _, r in ipairs(rows) do
+		if tonumber(r.id) == c.id then ps = r end
+		if r.s ~= "Offline" and r.deleted ~= "t" then any_online = true end
+	end
+	if not ps or any_online then error("character " .. c.name .. " is online; log it out first (the server would overwrite the edit)", 0) end
+	return ps
+end
+
+-- Run fn(db) in a transaction; roll back and exit on any error.
+local function transaction(db, fn)
+	local ok, err = pcall(function() db:query("begin"); fn(); db:query("commit") end)
+	if not ok then pcall(db.query, db, "rollback"); die(EXIT_ERR, "%s", clean_error(err)) end
+end
+
+local function report(opts, db, schema, c, backup, what)
+	local after = find_character(db, schema, tostring(c.id))
+	if opts.json then io.stdout:write(cjson.encode({ character = after, backup = backup }), "\n")
+	else io.stdout:write(string.format("%s %s (backup %s)\n", after.name, what(after), backup)) end
+end
+
+local function cmd_add_skill_points(opts, db, schema, ref, amount)
+	local n = tonumber(amount)
+	if not schema.has_fgl then die(EXIT_ERR, "unexpected database schema; missing: dune.fgl_entities / dune.actor_fgl_entities") end
+	local c = find_character(db, schema, ref)
+	local backup
+	transaction(db, function()
+		lock_offline(db, schema, c)
+		local ent = db:query([[select e.entity_id, e.components::text as components from dune.actor_fgl_entities f
+			join dune.fgl_entities e on e.entity_id = f.entity_id
+			where f.actor_id = (select player_pawn_id from dune.encrypted_player_state where id = $1) and f.slot_name = 'DuneCharacter'
+			for update of e]], c.id)[1]
+		if not ent then error("character " .. c.name .. " has no DuneCharacter entity", 0) end
+		local comps = cjson.decode(ent.components)
+		local lvl = type(comps[LEVEL]) == "table" and comps[LEVEL][2]
+		if type(lvl) ~= "table" or type(lvl.UnspentSkillPoints) ~= "number" or type(lvl.TotalSkillPoints) ~= "number" then
+			error("character " .. c.name .. " has no " .. LEVEL .. " with UnspentSkillPoints/TotalSkillPoints (unexpected entity shape)", 0)
+		end
+		backup = string.format("%s/%s-char%d-fgl%s.json", backup_dir(opts), os.date("!%Y%m%dT%H%M%SZ"), c.id, ent.entity_id)
+		write_private(backup, cjson.encode({ character_id = c.id, entity_id = ent.entity_id, components = comps,
+			reason = "before add-skill-points " .. n }))
+		-- Keep the game's bookkeeping consistent: both the unspent pool and the lifetime total grow by n.
+		db:query([[update dune.fgl_entities set components =
+			jsonb_set(jsonb_set(components, '{FLevelComponent,1,UnspentSkillPoints}', to_jsonb($2::int)),
+				'{FLevelComponent,1,TotalSkillPoints}', to_jsonb($3::int)) where entity_id = $1]],
+			ent.entity_id, lvl.UnspentSkillPoints + n, lvl.TotalSkillPoints + n)
+	end)
+	report(opts, db, schema, c, backup, function(a)
+		return string.format("skill points: %s unspent / %s total", tostring(a.skill_points_unspent), tostring(a.skill_points_total))
+	end)
+end
+
+local function cmd_set_research(opts, db, schema, ref, amount)
+	local n = tonumber(amount)
+	local c = find_character(db, schema, ref)
+	local backup
+	transaction(db, function()
+		local ps = lock_offline(db, schema, c)
+		local actor = db:query("select id, class, properties::text as properties from dune.actors where id = $1 for update", ps.pawn)[1]
+		if not actor then error("character " .. c.name .. " has no pawn actor", 0) end
+		local props = cjson.decode(actor.properties)
+		if type(props[TK]) ~= "table" then error("character " .. c.name .. " has no " .. TK .. " (unexpected actor shape)", 0) end
+		backup = string.format("%s/%s-char%d-actor%s.json", backup_dir(opts), os.date("!%Y%m%dT%H%M%SZ"), c.id, actor.id)
+		write_private(backup, cjson.encode({ character_id = c.id, actor_id = tonumber(actor.id), class = actor.class,
+			properties = props, reason = "before set-research " .. n }))
+		db:query(string.format("update dune.actors set properties = jsonb_set(properties, '{%s,m_TechKnowledgePoints}', to_jsonb($2::int), true) where id = $1", TK),
+			actor.id, n)
+	end)
+	report(opts, db, schema, c, backup, function(a) return "research points: " .. tostring(a.research_points) end)
+end
+
+-- Character transfer: export / validate / import --------------------------------------------------------------
+-- Built on Funcom's own stored procedures (character_transfers.sql, the code behind in-game character transfers):
+-- character_transfer_export(fls_id) serializes an account with portable transfer ids; character_transfer_import
+-- checks the schema-patch checksum, marks the old character Deleted and inserts the file's copy, re-encrypting
+-- names through encrypt_user_data. JSON stays in PostgreSQL end to end so 64-bit ids never pass through Lua doubles.
+
+local HEADER = "_dune_character"
+local TRANSFER_FUNCS = { "character_transfer_export", "character_transfer_import", "is_player_offline" }
+
+local function require_transfer(db)
+	local have = {}
+	for _, r in ipairs(db:query([[select distinct p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+		where n.nspname = 'dune' and p.proname = any($1::text[])]], "{" .. table.concat(TRANSFER_FUNCS, ",") .. "}")) do
+		have[r.proname] = true
+	end
+	local missing = {}
+	for _, fn in ipairs(TRANSFER_FUNCS) do if not have[fn] then missing[#missing + 1] = "dune." .. fn .. "()" end end
+	if #missing > 0 then die(EXIT_ERR, "unexpected database schema; missing: %s", table.concat(missing, ", ")) end
+end
+
+local function read_input(path)
+	if path == "-" or path == "@stdin" then return io.stdin:read("*a") end
+	return read_file(path) or die(EXIT_ERR, "cannot read %s", path)
+end
+
+-- Write to stdout/stderr, or atomically to a 0600 file (the export holds account identifiers).
+local function write_output(path, data)
+	if path == nil or path == "-" or path == "@stdout" then io.stdout:write(data); return false end
+	if path == "@stderr" then io.stderr:write(data); return false end
+	local tmp = string.format("%s.tmp.%d.%d", path, os.time(), math.random(1, 1e9))
+	write_private(tmp, data)
+	local ok, err = os.rename(tmp, path)
+	if not ok then os.remove(tmp); die(EXIT_ERR, "cannot write %s: %s", path, err) end
+	return true
+end
+
+local function account_fls_id(db, c)
+	local r = db:query([[select a."user" as fls from dune.encrypted_player_state ps
+		join dune.encrypted_accounts a on a.id = ps.account_id where ps.id = $1]], c.id)[1]
+	return r and r.fls or die(EXIT_ERR, "character %s has no account", c.name)
+end
+
+-- Funcom's export plus our header, pretty-printed by PostgreSQL. Run in a transaction that is always rolled back:
+-- the export only fills a temp table, and nothing it does may persist.
+local function export_text(db, c)
+	local fls, text = account_fls_id(db, c)
+	local ok, err = pcall(function()
+		db:query("begin")
+		text = db:query([[select jsonb_pretty(dune.character_transfer_export($1) || jsonb_build_object($2::text, jsonb_build_object(
+			'character_name', $3::text, 'fls_id', $1::text, 'exported_at', now(), 'exported_by', $4::text,
+			'database', current_database()))) as j]], fls, HEADER, c.name, NAME .. " " .. VERSION)[1].j
+	end)
+	pcall(db.query, db, "rollback")
+	if not ok then die(EXIT_ERR, "cannot export %s: %s", c.name, clean_error(err)) end
+	return text .. "\n"
+end
+
+local function cmd_export(opts, db, schema, ref)
+	require_transfer(db)
+	local c = find_character(db, schema, ref)
+	if write_output(opts.output, export_text(db, c)) then io.stderr:write(string.format("exported %s to %s\n", c.name, opts.output)) end
+end
+
+-- Number of live (non-Deleted, not Offline) player-state rows of an account, optionally locking them.
+local function account_online_rows(db, schema, fls, lock)
+	local n = 0
+	for _, r in ipairs(db:query([[select ps.online_status::text as s, ]] .. schema.deleted("ps") .. [[ as deleted
+		from dune.encrypted_player_state ps join dune.encrypted_accounts a on a.id = ps.account_id where a."user" = $1]]
+		.. (lock and " for update of ps" or ""), fls)) do
+		if r.s ~= "Offline" and r.deleted ~= "t" then n = n + 1 end
+	end
+	return n
+end
+
+-- Validate a transfer file against this world: header and shape, offline account, then Funcom's own
+-- character_transfer_import as a dry run inside a transaction that is always rolled back, so the server's code
+-- (checksum, enum values, constraints, foreign keys) decides what it would reject. Returns errors, info.
+local function validate(db, schema, text)
+	local ok, r = pcall(db.query, db, [[select jsonb_typeof(j) as t, jsonb_typeof(j -> '_dune_character') as h,
+		j -> '_dune_character' ->> 'character_name' as name, j -> '_dune_character' ->> 'fls_id' as fls,
+		jsonb_typeof(j -> 'entries') as e, j ->> '_patches_checksum' as sum,
+		case when jsonb_typeof(j -> 'entries') = 'array' then jsonb_array_length(j -> 'entries') end as n
+		from (select $1::jsonb as j) s]], text)
+	if not ok then
+		local detail = tostring(r):match("\nDETAIL:%s+([^\n]*)")
+		return { "not valid JSON: " .. (detail or clean_error(r)) }, {}
+	end
+	r = r[1]
+	local info = { character_name = r.name, fls_id = r.fls, entries = tonumber(r.n) }
+	if r.t ~= "object" then return { "not a JSON object (expected a character transfer export)" }, info end
+	local errors = {}
+	if r.h ~= "object" or (r.name or "") == "" or (r.fls or "") == "" then
+		errors[#errors + 1] = HEADER .. " header with character_name and fls_id is missing (files from `" .. NAME .. " export` carry it)"
+	end
+	if r.e ~= "array" then errors[#errors + 1] = "no entries array (not a Funcom character transfer export)" end
+	if not r.sum then errors[#errors + 1] = "no _patches_checksum (not a Funcom character transfer export)" end
+	if #errors > 0 then return errors, info end
+	if account_online_rows(db, schema, r.fls) > 0 then
+		return { "account " .. r.fls .. " is online; log it out first (the server would overwrite the import)" }, info
+	end
+	local ok2, err = pcall(function()
+		db:query("begin")
+		db:query("select dune.character_transfer_import($1::jsonb, $2, $3)", text, r.fls, r.name)
+	end)
+	pcall(db.query, db, "rollback")
+	if not ok2 then return { "the server's import would fail: " .. clean_error(err) }, info end
+	return {}, info
+end
+
+local function report_validation(opts, path, errors, info)
+	local valid = #errors == 0
+	if opts.json then
+		io.stdout:write(cjson.encode({ valid = valid, file = path, character_name = info.character_name or cjson.null,
+			fls_id = info.fls_id or cjson.null, entries = info.entries or cjson.null, errors = setmetatable(errors, cjson.array_mt) }), "\n")
+	elseif valid then
+		io.stdout:write(string.format("%s %s: %s (%s), %d entries; the server's import accepts it (dry run, rolled back)\n",
+			paint(opts, "32", "✓"), path, info.character_name, info.fls_id, info.entries))
+	else
+		io.stderr:write(string.format("%s: %s is not importable:\n", NAME, path))
+		for _, e in ipairs(errors) do io.stderr:write("  • ", e, "\n") end
+	end
+	return valid
+end
+
+local function cmd_validate(opts, db, schema, path)
+	require_transfer(db)
+	local errors, info = validate(db, schema, read_input(path))
+	if not report_validation(opts, path, errors, info) then os.exit(EXIT_ERR) end
+end
+
+local function cmd_import(opts, db, schema, path)
+	require_transfer(db)
+	local text = read_input(path)
+	local errors, info = validate(db, schema, text)
+	if #errors > 0 then report_validation(opts, path, errors, info); os.exit(EXIT_ERR) end
+	-- Back up what the import replaces, as an export file that can itself be imported to undo.
+	local backup
+	local cur = db:query([[select ps.id from dune.encrypted_player_state ps join dune.encrypted_accounts a on a.id = ps.account_id
+		where a."user" = $1 and not ]] .. schema.deleted("ps") .. " order by ps.id limit 1", info.fls_id)[1]
+	if cur then
+		local base = string.format("%s/%s-%s", backup_dir(opts), os.date("!%Y%m%dT%H%M%SZ"), (info.fls_id:gsub("[^%w_-]", "_")))
+		backup = base .. "-export.json"
+		for i = 2, 99 do if not read_file(backup) then break end; backup = string.format("%s-%d-export.json", base, i) end
+		write_private(backup, export_text(db, find_character(db, schema, cur.id)))
+	end
+	local controller
+	transaction(db, function()
+		if account_online_rows(db, schema, info.fls_id, true) > 0 then
+			error("account " .. info.fls_id .. " came online; log it out first (the server would overwrite the import)", 0)
+		end
+		controller = db:query("select dune.character_transfer_import($1::jsonb, $2, $3) as id", text, info.fls_id, info.character_name)[1].id
+	end)
+	local after = characters(db, schema, "and ps.player_controller_id = $1", controller)[1]
+	if opts.json then io.stdout:write(cjson.encode({ character = after or cjson.null, backup = backup or cjson.null }), "\n")
+	else io.stdout:write(string.format("%s imported%s\n", info.character_name, backup and (" (backup " .. backup .. ")") or "")) end
+end
+
+local function main(argv)
+	local opts = parse_args(argv)
+	local cmd = table.remove(opts.positional, 1)
+	if not cmd then io.stderr:write(USAGE); os.exit(EXIT_USAGE) end
+	local want = { list = 0, show = 1, ["set-research"] = 2, ["add-skill-points"] = 2, export = 1, validate = 1, import = 1 }
+	if want[cmd] == nil then die(EXIT_USAGE, "unknown command %s (see --help)", cmd) end
+	if #opts.positional ~= want[cmd] then die(EXIT_USAGE, "%s takes %d argument(s)", cmd, want[cmd]) end
+	local n = tonumber(opts.positional[2] or "")
+	if cmd == "set-research" and (not n or n < 0 or n ~= math.floor(n) or n > 2147483647) then
+		die(EXIT_USAGE, "research points must be a whole number >= 0")
+	elseif cmd == "add-skill-points" and (not n or n < 1 or n ~= math.floor(n) or n > 100000) then
+		die(EXIT_USAGE, "skill points to add must be a whole number from 1 to 100000")
+	end
+	load_libpq()
+	local db = connect(db_settings(opts.server_root))
+	local schema = detect_schema(db)
+	if cmd == "list" then print_characters(opts, characters(db, schema))
+	elseif cmd == "show" then
+		local c = find_character(db, schema, opts.positional[1])
+		if opts.json then io.stdout:write(cjson.encode(c), "\n") else print_characters(opts, { c }) end
+	elseif cmd == "export" then cmd_export(opts, db, schema, opts.positional[1])
+	elseif cmd == "validate" then cmd_validate(opts, db, schema, opts.positional[1])
+	elseif cmd == "import" then cmd_import(opts, db, schema, opts.positional[1])
+	elseif cmd == "add-skill-points" then cmd_add_skill_points(opts, db, schema, opts.positional[1], opts.positional[2])
+	else cmd_set_research(opts, db, schema, opts.positional[1], opts.positional[2]) end
+	db:close()
+end
+
+-- Any database error that escapes a command's own handling is reported as one clean line, never a traceback.
+local ok, err = xpcall(main, function(e) return e end, arg)
+if not ok then die(EXIT_ERR, "%s", clean_error(err)) end

@@ -1,0 +1,2 @@
+# Hermetic test suite (./test --hermetic) in the Nix sandbox
+checks.x86_64-linux.operator-tools

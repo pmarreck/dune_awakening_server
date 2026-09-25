@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Install or migrate the Funcom game database by running Funcom's own db-utils (updatedb.py) against the
+# project-managed cluster. Credentials go into a private UserGame.ini override, never onto argv.
+set -u
+: "${DUNE_DB_UTILS_SRC:?set DUNE_DB_UTILS_SRC to the unpacked db-utils root (contains PSQL/ and DuneSandbox/)}"
+: "${DUNE_STATE_DIR:?set DUNE_STATE_DIR to the private runtime state directory}"
+: "${DUNE_SECRETS_DIR:?set DUNE_SECRETS_DIR to the private secrets directory}"
+DUNE_PG_PORT=${DUNE_PG_PORT:-15431}
+admin_pw_file="$DUNE_SECRETS_DIR/postgres_admin_password"
+dune_pw_file="$DUNE_SECRETS_DIR/postgres_dune_password"
+instance="$DUNE_STATE_DIR/db-utils"
+
+die() { printf 'dune-db-setup: %s\n' "$*" >&2; exit 1; }
+
+[ -s "$admin_pw_file" ] || die "missing $admin_pw_file; run dune-postgres init"
+[ -d "$DUNE_DB_UTILS_SRC/PSQL" ] || die "no PSQL/ under $DUNE_DB_UTILS_SRC"
+if [ ! -s "$dune_pw_file" ]; then
+	(umask 077; openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32 > "$dune_pw_file") || die "cannot write $dune_pw_file"
+fi
+
+mkdir -p -m 700 "$DUNE_STATE_DIR" || die "cannot create $DUNE_STATE_DIR"
+# Fresh copy of the payload tools each run so a new build's schema replaces the old one.
+rsync -a --delete "$DUNE_DB_UTILS_SRC/" "$instance/" || die "cannot copy db-utils"
+(
+	umask 077
+	printf '[DuneDatabaseInterfacePSQL]\nDatabaseHost=127.0.0.1:%s\nDatabaseUser=dune\nDatabasePassword=%s\nDatabaseAdminUser=postgres\nDatabaseAdminPassword=%s\nDatabaseAdminDatabaseName=postgres\n' \
+		"$DUNE_PG_PORT" "$(cat "$dune_pw_file")" "$(cat "$admin_pw_file")" > "$instance/DuneSandbox/Config/UserGame.ini"
+) || die "cannot write credential ini"
+
+pg_prefix=$(dirname -- "$(dirname -- "$(command -v psql)")") || die "psql not on PATH"
+cd "$instance/PSQL" || die "cannot enter $instance/PSQL"
+# USERPROFILE points nowhere so no stray per-user ini can override ours.
+USERPROFILE=/nonexistent FUNCOM_POSTGRES_INSTALL="$pg_prefix" \
+	python3 updatedb.py --unattended --local-as-remote --no-backup

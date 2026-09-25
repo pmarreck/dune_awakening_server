@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# libexec/dune-update: staleness check (installed Steam build vs Steam's public branch, from steamcmd app_info_print)
+# and the update procedure, driven against a fake steamcmd and fake component scripts that log their calls.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-update-test.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+export DUNE_STEAM_SERVER_DIR="$work/steam server" DUNE_UNPACKED_DIR="$work/unpacked" DUNE_TRASH_DIR="$work/trash"
+export DUNE_STEAMCMD_HOME="$work/steamcmd-home" DUNE_COMPONENTS_DIR="$work/fake" DUNE_STEAMCMD="$work/fake/steamcmd"
+mkdir -p "$DUNE_STEAM_SERVER_DIR/steamapps" "$DUNE_COMPONENTS_DIR"
+for i in server server-bg-director server-text-router server-gateway server-db-utils; do mkdir -p "$DUNE_UNPACKED_DIR/$i"; echo old > "$DUNE_UNPACKED_DIR/$i/marker"; done
+manifest() { printf '"AppState"\n{\n\t"appid"\t\t"4754530"\n\t"buildid"\t\t"%s"\n\t"TargetBuildID"\t\t"%s"\n}\n' "$1" "$1" > "$DUNE_STEAM_SERVER_DIR/steamapps/appmanifest_4754530.acf"; }
+echo 100 > "$work/latest"; manifest 100
+
+# Fake steamcmd: app_info_print answers with the "latest" build (shaped like real output, ANSI noise included);
+# app_update installs it into the manifest.
+cat > "$DUNE_STEAMCMD" <<EOF
+#!$BASH
+printf 'steamcmd %s\n' "\$*" >> "$work/calls"
+[ -e "$work/steam-down" ] && { echo 'Connecting anonymously to Steam Public...FAILED'; exit 7; }
+case "\$*" in
+	*app_info_print*) printf '\e[0m"4754530"\n{\n\t"depots"\n\t{\n\t\t"branches"\n\t\t{\n\t\t\t"public"\n\t\t\t{\n\t\t\t\t"buildid"\t\t"%s"\n\t\t\t\t"timeupdated"\t\t"1790247533"\n\t\t\t}\n\t\t\t"beta"\n\t\t\t{\n\t\t\t\t"buildid"\t\t"999"\n\t\t\t}\n\t\t}\n\t}\n}\nUnloading Steam API...\e[0mOK\n' "\$(cat "$work/latest")" ;;
+	*app_update*) b=\$(cat "$work/latest"); printf '"AppState"\n{\n\t"buildid"\t\t"%s"\n}\n' "\$b" > "$DUNE_STEAM_SERVER_DIR/steamapps/appmanifest_4754530.acf"; echo "Success! App '4754530' fully installed." ;;
+esac
+EOF
+for c in world backup character; do
+	cat > "$DUNE_COMPONENTS_DIR/dune-$c" <<EOF
+#!$BASH
+printf '%s %s\n' "$c" "\$*" >> "$work/calls"
+[ "$c \$*" = "character list --json" ] && { if [ -e "$work/online" ]; then echo '[{"name":"A","online":true}]'; else echo '[{"name":"A","online":false}]'; fi; }
+[ "$c" = backup ] && [ "\$1" = create ] && echo "$work/backups/b1"
+[ "$c \$*" = "\${FAIL_AT:-}" ] && exit 1
+exit 0
+EOF
+done
+cat > "$DUNE_COMPONENTS_DIR/dune-unpack" <<EOF
+#!$BASH
+printf 'unpack %s\n' "\${1##*/} \${2##*/}" >> "$work/calls"
+mkdir -p "\$2" && echo new > "\$2/marker"
+EOF
+chmod +x "$DUNE_COMPONENTS_DIR"/*
+calls() { cut -d' ' -f1-2 "$work/calls" | paste -sd, -; }
+
+libexec/dune-update --help >/dev/null 2>&1 || fail "--help exited nonzero"
+out=$(libexec/dune-update --about 2>&1); [[ "$out" == *dune-update* && "$(printf '%s\n' "$out" | wc -l)" -eq 1 ]] || fail "--about: $out"
+libexec/dune-update bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown command did not exit 2"
+
+# check ------------------------------------------------------------------------------------------------------------
+out=$(libexec/dune-update check 2>&1); rc=$?
+[ $rc -eq 0 ] && [[ "$out" == *"up to date"* && "$out" == *100* ]] || fail "check when current: rc $rc: $out"
+echo 101 > "$work/latest"
+json=$(libexec/dune-update check --json 2>"$work/err"); rc=$?
+[ $rc -eq 1 ] || fail "check with an update available exited $rc (want 1)"
+[ "$(jq -r '[.installed_buildid, .latest_buildid, .up_to_date] | join(",")' <<<"$json" 2>/dev/null)" = "100,101,false" ] || fail "check --json: $json"
+[ -s "$work/err" ] && fail "check --json wrote stderr: $(cat "$work/err")"
+# Default steamcmd resolved through PATH (a same-named shell function once recursed into itself).
+out=$(env -u DUNE_STEAMCMD PATH="$DUNE_COMPONENTS_DIR:$PATH" timeout 20 libexec/dune-update check 2>&1); [ $? -eq 1 ] || fail "check with steamcmd found on PATH: $out"
+touch "$work/steam-down"
+out=$(libexec/dune-update check 2>&1); rc=$?
+[ $rc -eq 3 ] && [[ "$out" == *Steam* ]] || fail "check with Steam unreachable: rc $rc: $out"
+rm "$work/steam-down"
+
+# apply ------------------------------------------------------------------------------------------------------------
+touch "$work/online"; : > "$work/calls"
+out=$(libexec/dune-update apply 2>&1); [ $? -eq 1 ] && [[ "$out" == *online* ]] || fail "apply with players online not refused: $out"
+grep -q '^world stop' "$work/calls" && fail "refused apply stopped the world"
+rm "$work/online"; : > "$work/calls"
+out=$(libexec/dune-update apply 2>&1) || fail "apply failed: $out"
+[ "$(calls)" = "steamcmd +login,character list,backup create,world stop,steamcmd +@sSteamCmdForcePlatformType,unpack server.tar,unpack server-bg-director.tar,unpack server-text-router.tar,unpack server-gateway.tar,unpack server-db-utils.tar,world start,steamcmd +login" ] ||
+	fail "apply order wrong: $(calls)"
+grep -q 'backup create --label before update 100 to 101' "$work/calls" || fail "backup not labelled with the build change: $(grep backup "$work/calls")"
+grep -q "^unpack server.tar server.new" "$work/calls" || fail "unpack not into <image>.new"
+[ "$(cat "$DUNE_UNPACKED_DIR/server/marker")" = new ] && [ "$(cat "$DUNE_UNPACKED_DIR/server.prev/marker")" = old ] || fail "images not swapped with a .prev kept"
+[[ "$out" == *101* ]] || fail "apply does not report the new build: $out"
+
+: > "$work/calls"
+out=$(libexec/dune-update apply 2>&1) || fail "apply when current failed: $out"
+grep -q '^world stop' "$work/calls" && fail "apply stopped the world with nothing to update"
+echo 102 > "$work/latest"; : > "$work/calls"
+FAIL_AT="world stop" libexec/dune-update apply >/dev/null 2>&1 && fail "apply succeeded although stop failed"
+grep -q 'app_update' "$work/calls" && fail "apply downloaded after a failed stop"
+libexec/dune-update apply >/dev/null 2>&1 || fail "second update failed"
+[ "$(find "$DUNE_TRASH_DIR" -mindepth 1 -maxdepth 1 -name 'server.prev*' | wc -l)" = 1 ] || fail "older .prev not moved to the trash"
+exit "$failures"

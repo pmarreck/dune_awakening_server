@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Run Funcom's two RabbitMQ brokers natively: "admin" (plain AMQP) and "game" (TLS-only, self-signed, verify_none),
+# both authenticating through the TextRouter's HTTP auth API behind a 5 s auth cache, mirroring Funcom's world
+# template. Brokers are ephemeral, as in Funcom's template: node data is wiped on every start.
+# Usage: dune-rabbitmq init|start|stop|status BROKER [--quick]  |  dune-rabbitmq ctl BROKER RABBITMQCTL-ARGS...
+set -u
+: "${DUNE_STATE_DIR:?set DUNE_STATE_DIR to the private runtime state directory}"
+: "${DUNE_SECRETS_DIR:?set DUNE_SECRETS_DIR to the private secrets directory}"
+: "${DUNE_RMQ_AUTH_ADDRESS:?set DUNE_RMQ_AUTH_ADDRESS to the TextRouter auth host:port}"
+DUNE_RMQ_ADMIN_PORT=${DUNE_RMQ_ADMIN_PORT:-5673}
+DUNE_RMQ_GAME_PORT=${DUNE_RMQ_GAME_PORT:-31982}
+DUNE_RMQ_DIST_BASE=${DUNE_RMQ_DIST_BASE:-25672}
+tls_dir="$DUNE_SECRETS_DIR/rmq-tls"
+
+die() { printf 'dune-rabbitmq: %s\n' "$*" >&2; exit 1; }
+
+# Self-signed CA plus server certificate, created once. Clients use verify_none, as in Funcom's template.
+ensure_tls() {
+	[ -s "$tls_dir/key.pem" ] && return 0
+	mkdir -p -m 700 "$tls_dir" || die "cannot create $tls_dir"
+	(
+		umask 077
+		openssl req -x509 -newkey rsa:3072 -nodes -days 3650 -subj "/CN=dune-rmq-ca" \
+			-keyout "$tls_dir/ca-key.pem" -out "$tls_dir/cacert.pem" &&
+		openssl req -newkey rsa:3072 -nodes -subj "/CN=dune-rmq-game" \
+			-keyout "$tls_dir/key.pem" -out "$tls_dir/server.csr" &&
+		openssl x509 -req -in "$tls_dir/server.csr" -CA "$tls_dir/cacert.pem" -CAkey "$tls_dir/ca-key.pem" \
+			-CAcreateserial -days 3650 -out "$tls_dir/cert.pem"
+	) >/dev/null 2>&1 || die "TLS generation failed"
+}
+
+# Per-broker environment. HOME holds the Erlang cookie so rabbitmqctl and the node agree.
+broker_env() {
+	local broker=$1 dist_offset
+	case "$broker" in admin) dist_offset=0 ;; game) dist_offset=1 ;; *) die "unknown broker: $broker" ;; esac
+	instance="$DUNE_STATE_DIR/rabbitmq-$broker"
+	export HOME="$instance"
+	export RABBITMQ_NODENAME="dune-$broker@localhost"
+	export RABBITMQ_CONFIG_FILE="$instance/rabbitmq.conf"
+	export RABBITMQ_ENABLED_PLUGINS_FILE="$instance/enabled_plugins"
+	export RABBITMQ_MNESIA_BASE="$instance/mnesia"
+	export RABBITMQ_LOG_BASE="$instance/log"
+	export RABBITMQ_PID_FILE="$instance/pid"
+	export RABBITMQ_DIST_PORT=$((DUNE_RMQ_DIST_BASE + dist_offset))
+	export ELIXIR_ERL_OPTIONS="+fnu"
+}
+
+write_config() {
+	local broker=$1 auth="http://$DUNE_RMQ_AUTH_ADDRESS/v0/auth"
+	{
+		printf 'auth_backends.1 = cache\nauth_cache.cache_ttl = 5000\nauth_cache.cached_backend = http\n'
+		printf 'auth_http.http_method = post\n'
+		[ -n "${DUNE_RMQ_LOG_LEVEL:-}" ] && printf "log.file.level = %s\n" "$DUNE_RMQ_LOG_LEVEL"
+		printf 'auth_http.user_path = %s/user\nauth_http.vhost_path = %s/vhost\n' "$auth" "$auth"
+		printf 'auth_http.resource_path = %s/resource\nauth_http.topic_path = %s/topic\n' "$auth" "$auth"
+		if [ "$broker" = game ]; then
+			printf 'listeners.tcp = none\nlisteners.ssl.default = 0.0.0.0:%s\n' "$DUNE_RMQ_GAME_PORT"
+			printf 'ssl_options.cacertfile = %s/cacert.pem\nssl_options.certfile = %s/cert.pem\n' "$tls_dir" "$tls_dir"
+			printf 'ssl_options.keyfile = %s/key.pem\nssl_options.verify = verify_none\nssl_options.fail_if_no_peer_cert = false\n' "$tls_dir"
+		else
+			printf 'listeners.tcp.default = 127.0.0.1:%s\n' "$DUNE_RMQ_ADMIN_PORT"
+		fi
+	} > "$RABBITMQ_CONFIG_FILE"
+	printf '[rabbitmq_auth_backend_http,rabbitmq_auth_backend_cache].\n' > "$RABBITMQ_ENABLED_PLUGINS_FILE"
+}
+
+cmd_init() {
+	mkdir -p -m 700 "$DUNE_STATE_DIR" "$DUNE_SECRETS_DIR" "$instance" || die "cannot create state dirs"
+	[ "$1" = game ] && ensure_tls
+	if [ ! -s "$instance/.erlang.cookie" ]; then
+		(umask 077; openssl rand -hex 32 > "$instance/.erlang.cookie") || die "cannot write cookie"
+	fi
+	write_config "$1"
+}
+
+cmd_start() {
+	[ -s "$RABBITMQ_CONFIG_FILE" ] || die "broker $1 not initialized; run init first"
+	cmd_status && return 0
+	[ -d "$RABBITMQ_MNESIA_BASE" ] && mv "$RABBITMQ_MNESIA_BASE" "$RABBITMQ_MNESIA_BASE.old.$$" && rm -r -- "$RABBITMQ_MNESIA_BASE.old.$$"
+	mkdir -p "$RABBITMQ_LOG_BASE" || die "cannot create $RABBITMQ_LOG_BASE"
+	# Foreground node in its own session, as systemd will run it; -detached is deprecated in RabbitMQ 4.
+	setsid rabbitmq-server > "$RABBITMQ_LOG_BASE/console.log" 2>&1 < /dev/null &
+	node_pid=$!
+	# await_startup fails at once until the Erlang node registers, so first poll for reachability (bounded, 60 s).
+	local tries=0
+	until rabbitmq-diagnostics -q -n "$RABBITMQ_NODENAME" ping >/dev/null 2>&1; do
+		kill -0 "$node_pid" 2>/dev/null || die "broker $1 exited during startup; see $RABBITMQ_LOG_BASE"
+		tries=$((tries + 1))
+		[ "$tries" -le 120 ] || die "broker $1 not reachable after 60 s; see $RABBITMQ_LOG_BASE"
+		sleep 0.5
+	done
+	rabbitmqctl -q -n "$RABBITMQ_NODENAME" --timeout 60 await_startup >/dev/null 2>&1 || die "broker $1 did not start; see $RABBITMQ_LOG_BASE"
+}
+
+# Bounded stop: never wait forever on a node that is not running.
+cmd_stop() { cmd_status || return 0; timeout 60 rabbitmqctl -q -n "$RABBITMQ_NODENAME" stop >/dev/null 2>&1; }
+cmd_status() { rabbitmqctl -q -n "$RABBITMQ_NODENAME" status >/dev/null 2>&1; }
+# Cheap liveness for frequent polling (admin page): node process alive and its distribution port accepting
+# connections, without booting an Erlang VM for rabbitmqctl (~1 s). start/stop keep the full check.
+cmd_quick_status() {
+	local pid
+	pid=$(cat "$RABBITMQ_PID_FILE" 2>/dev/null) && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null &&
+		(exec 3<>"/dev/tcp/127.0.0.1/$RABBITMQ_DIST_PORT") 2>/dev/null
+}
+
+action=${1:-}
+broker=${2:-}
+[ -n "$broker" ] || die "usage: dune-rabbitmq init|start|stop|status|ctl BROKER [ARGS...]"
+broker_env "$broker"
+shift 2
+case "$action" in
+	init) cmd_init "$broker" ;;
+	start) cmd_start "$broker" ;;
+	stop) cmd_stop ;;
+	status) if [ "${1:-}" = --quick ]; then cmd_quick_status; else cmd_status; fi ;;
+	ctl) rabbitmqctl -q -n "$RABBITMQ_NODENAME" "$@" ;;
+	*) die "unknown action: $action" ;;
+esac

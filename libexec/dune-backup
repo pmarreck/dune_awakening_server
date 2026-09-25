@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# Back up and restore the native Dune world: a pg_dump (custom format) of every world database in the cluster, the
+# cluster's roles (pg_dumpall --globals-only) and a tarball of the operator config dir, plus a manifest with sha256
+# checksums. Backups are written to a .partial dir and renamed into place, so a listed backup is always complete.
+# `verify` is the restore drill: it restores each dump into a scratch database and drops it again.
+set -u
+NAME=dune-backup VERSION=0.1.0
+: "${HOME:=$(cd ~ 2>/dev/null && pwd)}"
+DUNE_STATE_DIR=${DUNE_STATE_DIR:-$HOME/.local/share/dune_awakening_server/runtime}
+DUNE_CONFIG_DIR=${DUNE_CONFIG_DIR:-$HOME/.config/dune_awakening_server}
+DUNE_SECRETS_DIR=${DUNE_SECRETS_DIR:-$DUNE_STATE_DIR/secrets}
+DUNE_BACKUP_DIR=${DUNE_BACKUP_DIR:-$HOME/.local/share/dune_awakening_server/backups}
+DUNE_TRASH_DIR=${DUNE_TRASH_DIR:-$HOME/.Trash}
+DUNE_PG_PORT=${DUNE_PG_PORT:-15431}
+DUNE_STEAM_SERVER_DIR=${DUNE_STEAM_SERVER_DIR:-$HOME/.local/share/dune_awakening_server/steam-server}
+
+usage() {
+	cat <<EOF
+Usage: $NAME [options] <command>
+
+Back up and restore the Dune world database and operator config.
+
+Commands:
+  create [--label TEXT]   Write a new backup; prints its directory
+  list [--json]           Backups, newest first
+  verify <backup>|latest  Restore drill: check checksums, restore every dump into a scratch database, drop it
+  restore <backup> --yes  Replace the world databases with the backup (map server must be stopped; a safety
+                          backup labelled "before restore" is taken first)
+  prune [--keep N]        Default: keep everything from the last 7 days, then the newest per week for 3 months,
+                          and move older backups to the trash ($DUNE_TRASH_DIR). --keep N keeps the newest N instead.
+                          Change the policy in \$DUNE_CONFIG_DIR/backup.conf: KEEP_ALL_DAYS=7, KEEP_WEEKLY_DAYS=91
+
+Options: --json, --label TEXT, --keep N, --yes, --about, -h/--help
+
+Environment: DUNE_BACKUP_DIR (default ~/.local/share/dune_awakening_server/backups), DUNE_STATE_DIR,
+DUNE_CONFIG_DIR, DUNE_SECRETS_DIR, DUNE_PG_PORT, DUNE_TRASH_DIR.
+EOF
+}
+die() { printf '%s: %s\n' "$NAME" "$*" >&2; exit "${2:-1}"; }
+usage_error() { printf '%s: %s (see --help)\n' "$NAME" "$*" >&2; exit 2; }
+
+cmd="" target="" label="" json=false yes=false keep=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+		-h|--help) usage; exit 0 ;;
+		--about) printf '%s %s: Dune world backup and restore (%s %s)\n' "$NAME" "$VERSION" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)"; exit 0 ;;
+		--json) json=true ;;
+		--yes) yes=true ;;
+		--label) [ $# -ge 2 ] || usage_error "--label needs text"; label=$2; shift ;;
+		--label=*) label=${1#*=} ;;
+		--keep) [ $# -ge 2 ] || usage_error "--keep needs a number"; keep=$2; shift ;;
+		--keep=*) keep=${1#*=} ;;
+		-*) usage_error "unknown option $1" ;;
+		*) if [ -z "$cmd" ]; then cmd=$1; elif [ -z "$target" ]; then target=$1; else usage_error "unexpected argument $1"; fi ;;
+	esac
+	shift
+done
+
+admin_pw() { cat "$DUNE_SECRETS_DIR/postgres_admin_password" 2>/dev/null || die "no admin password in $DUNE_SECRETS_DIR"; }
+pg() { PGPASSWORD=$(admin_pw) "$@" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres; }
+sql() { pg psql -X -A -t -q -v ON_ERROR_STOP=1 -d "${2:-postgres}" -c "$1"; }
+world_dbs() { sql "select datname from pg_database where not datistemplate and datname <> 'postgres' order by 1"; }
+server_running() { local p; p=$(cat "$DUNE_STATE_DIR/server/pid" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+backups() { find "$DUNE_BACKUP_DIR" -mindepth 2 -maxdepth 2 -name manifest.json -printf '%h\n' 2>/dev/null | grep -v '\.partial$' | sort -r; }
+
+cmd_create() {
+	local dbs ts dir final db owner n entries="[]" buildid
+	dbs=$(world_dbs 2>/dev/null) || die "cannot reach postgres on 127.0.0.1:$DUNE_PG_PORT"
+	ts=$(date -u +%Y%m%dT%H%M%S.%3NZ)
+	final="$DUNE_BACKUP_DIR/$ts${label:+-$(printf '%s' "$label" | tr -cs 'A-Za-z0-9_-' '-' | sed 's/-$//')}"
+	n=2; local base=$final
+	while [ -e "$final" ]; do final="$base-$n"; n=$((n + 1)); done
+	dir="$final.partial"
+	(umask 077; mkdir -p "$DUNE_BACKUP_DIR" "$dir") || die "cannot create $dir"
+	fail_create() { mkdir -p "$DUNE_TRASH_DIR" && mv "$dir" "$DUNE_TRASH_DIR/"; die "$1"; }
+	for db in $dbs; do
+		owner=$(sql "select pg_get_userbyid(datdba) from pg_database where datname = '$db'")
+		(umask 077; pg pg_dump -Fc -d "$db" -f "$dir/$db.dump") || fail_create "pg_dump of $db failed"
+		entries=$(jq -c --arg n "$db" --arg o "$owner" --arg f "$db.dump" --arg s "$(sha256sum "$dir/$db.dump" | cut -d' ' -f1)" \
+			--argjson b "$(stat -c %s "$dir/$db.dump")" '. + [{name: $n, owner: $o, file: $f, sha256: $s, bytes: $b}]' <<<"$entries")
+	done
+	(umask 077; pg pg_dumpall --globals-only -f "$dir/globals.sql") || fail_create "pg_dumpall --globals-only failed"
+	(umask 077; tar -cf "$dir/config.tar" -C "$(dirname -- "$DUNE_CONFIG_DIR")" "$(basename -- "$DUNE_CONFIG_DIR")") || fail_create "cannot archive $DUNE_CONFIG_DIR"
+	buildid=$(sed -n 's/^[[:space:]]*"buildid"[[:space:]]*"\([0-9]*\)".*/\1/p' "$DUNE_STEAM_SERVER_DIR/steamapps/appmanifest_4754530.acf" 2>/dev/null | head -1)
+	(umask 077; jq -n --arg ts "$(date -Ins)" --arg l "$label" --arg v "$NAME $VERSION" --arg b "${buildid:-}" --argjson d "$entries" \
+		--arg gs "$(sha256sum "$dir/globals.sql" | cut -d' ' -f1)" --arg cs "$(sha256sum "$dir/config.tar" | cut -d' ' -f1)" \
+		'{created_at: $ts, label: $l, created_by: $v, steam_buildid: (if $b == "" then null else $b end), databases: $d,
+		  files: {"globals.sql": $gs, "config.tar": $cs}}' > "$dir/manifest.json") || fail_create "cannot write manifest"
+	mv "$dir" "$final" || die "cannot finalize $final"
+	printf '%s\n' "$final"
+}
+
+cmd_list() {
+	local b
+	if $json; then
+		for b in $(backups); do jq -c --arg p "$b" '{path: $p, label, created_at, steam_buildid, databases: [.databases[].name]}' "$b/manifest.json"; done | jq -s .
+	else
+		for b in $(backups); do jq -r --arg p "$b" '"\(.created_at)  \($p)  \(.label)"' "$b/manifest.json"; done
+	fi
+}
+
+# Every file named in the manifest must match its recorded sha256.
+check_sums() {
+	local b=$1 f s
+	while IFS=$'\t' read -r f s; do
+		[ "$(sha256sum "$b/$f" 2>/dev/null | cut -d' ' -f1)" = "$s" ] || die "$b/$f does not match its manifest sha256"
+	done < <(jq -r '(.databases[] | [.file, .sha256]), (.files | to_entries[] | [.key, .value]) | @tsv' "$b/manifest.json")
+}
+
+need_backup() { [ -n "$target" ] || usage_error "$cmd needs a backup directory"; [ "$target" = latest ] && target=$(backups | head -1); [ -s "$target/manifest.json" ] || die "$target is not a backup (no manifest.json)"; }
+
+cmd_verify() {
+	need_backup
+	check_sums "$target"
+	local file scratch tables
+	while IFS=$'\t' read -r _ file; do
+		scratch="dune_verify_$$_$RANDOM"
+		sql "create database $scratch" || die "cannot create scratch database"
+		if ! pg pg_restore --exit-on-error -d "$scratch" "$target/$file" >/dev/null 2>"$DUNE_BACKUP_DIR/.verify.err"; then
+			sql "drop database $scratch"; die "restore drill of $file failed: $(head -3 "$DUNE_BACKUP_DIR/.verify.err")"
+		fi
+		tables=$(sql "select count(*) from information_schema.tables where table_schema not in ('pg_catalog', 'information_schema')" "$scratch")
+		sql "drop database $scratch"
+		[ "${tables:-0}" -gt 0 ] || die "restore drill of $file produced no tables"
+		printf '✓ %s: restored %s tables into a scratch database\n' "$file" "$tables"
+	done < <(jq -r '.databases[] | [.name, .file] | @tsv' "$target/manifest.json")
+	rm -f -- "$DUNE_BACKUP_DIR/.verify.err"
+}
+
+cmd_restore() {
+	need_backup
+	$yes || usage_error "restore replaces the world databases; pass --yes to confirm"
+	server_running && die "the map server is running; stop the world first (dune-world stop)"
+	check_sums "$target"
+	label="before restore" cmd_create >/dev/null || die "safety backup failed; nothing restored"
+	local name owner file
+	while IFS=$'\t' read -r name owner file; do
+		sql "select pg_terminate_backend(pid) from pg_stat_activity where datname = '$name' and pid <> pg_backend_pid()" >/dev/null
+		sql "drop database if exists \"$name\"" && sql "create database \"$name\" owner \"$owner\"" || die "cannot recreate $name"
+		pg pg_restore --exit-on-error -d "$name" "$target/$file" 2>"$DUNE_BACKUP_DIR/.restore.err" ||
+			die "restore of $name failed (safety backup is the newest in $DUNE_BACKUP_DIR): $(head -3 "$DUNE_BACKUP_DIR/.restore.err")"
+		printf 'restored %s from %s\n' "$name" "$target"
+	done < <(jq -r '.databases[] | [.name, .owner, .file] | @tsv' "$target/manifest.json")
+	rm -f -- "$DUNE_BACKUP_DIR/.restore.err"
+}
+
+# Retention policy: KEEP_ALL_DAYS / KEEP_WEEKLY_DAYS from $DUNE_CONFIG_DIR/backup.conf (plain KEY=value lines,
+# validated, never sourced), defaulting to 7 and 91. Unknown keys and non-numbers are errors so a typo cannot
+# silently change what gets kept.
+DAILY_DAYS=7 WEEKLY_DAYS=91
+load_policy() {
+	local conf="$DUNE_CONFIG_DIR/backup.conf" line key value n=0
+	[ -e "$conf" ] || return 0
+	while IFS= read -r line || [ -n "$line" ]; do
+		n=$((n + 1))
+		line=${line%%#*}; line=${line//[[:space:]]/}
+		[ -z "$line" ] && continue
+		key=${line%%=*} value=${line#*=}
+		[[ "$line" == *=* && "$value" =~ ^[0-9]+$ ]] || die "$conf line $n: expected KEY=<whole number of days>"
+		case "$key" in
+			KEEP_ALL_DAYS) DAILY_DAYS=$value ;;
+			KEEP_WEEKLY_DAYS) WEEKLY_DAYS=$value ;;
+			*) die "$conf line $n: unknown key $key (known: KEEP_ALL_DAYS, KEEP_WEEKLY_DAYS)" ;;
+		esac
+	done < "$conf"
+	[ "$WEEKLY_DAYS" -ge "$DAILY_DAYS" ] || die "$conf: KEEP_WEEKLY_DAYS ($WEEKLY_DAYS) must be at least KEEP_ALL_DAYS ($DAILY_DAYS)"
+}
+
+# Default retention (grandfather-father style): keep every backup from the last KEEP_ALL_DAYS days, then the newest
+# backup of each ISO week up to KEEP_WEEKLY_DAYS old, and move the rest to the trash. The newest backup is always
+# kept. Ages come from the UTC timestamp that starts each backup's name; DUNE_NOW (epoch seconds) overrides the clock.
+prune_policy() {
+	load_policy
+	local now=${DUNE_NOW:-$(date +%s)} b name ts t age week first=1
+	local -A weeks=()
+	mkdir -p "$DUNE_TRASH_DIR" || die "cannot create $DUNE_TRASH_DIR"
+	for b in $(backups); do
+		if [ "$first" = 1 ]; then first=0; continue; fi
+		name=${b##*/}
+		ts=$(sed -n 's/^\([0-9]\{8\}\)T\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\).*/\1 \2:\3:\4/p' <<<"$name")
+		t=$(date -u -d "$ts" +%s 2>/dev/null) || { printf '%s: skipping %s (no timestamp in its name)\n' "$NAME" "$name" >&2; continue; }
+		age=$(( (now - t) / 86400 ))
+		[ "$age" -lt "$DAILY_DAYS" ] && continue
+		week=$(date -u -d "@$t" +%G-W%V)
+		if [ "$age" -lt "$WEEKLY_DAYS" ] && [ -z "${weeks[$week]:-}" ]; then weeks[$week]=1; continue; fi
+		mv -- "$b" "$DUNE_TRASH_DIR/" || die "cannot move $b to the trash"
+	done
+}
+
+cmd_prune() {
+	[ -z "$keep" ] && { prune_policy; return; }
+	[[ "$keep" =~ ^[0-9]+$ ]] || usage_error "--keep needs a number"
+	mkdir -p "$DUNE_TRASH_DIR" || die "cannot create $DUNE_TRASH_DIR"
+	local b i=0
+	for b in $(backups); do
+		i=$((i + 1))
+		[ "$i" -le "$keep" ] && continue
+		mv -- "$b" "$DUNE_TRASH_DIR/" || die "cannot move $b to the trash"
+	done
+}
+
+case "$cmd" in
+	create) cmd_create ;;
+	list) cmd_list ;;
+	verify) cmd_verify ;;
+	restore) cmd_restore ;;
+	prune) cmd_prune ;;
+	"") usage >&2; exit 2 ;;
+	*) usage_error "unknown command $cmd" ;;
+esac

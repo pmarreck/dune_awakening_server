@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Run Funcom's TextRouter natively (prepared by dune-dotnet-prepare). It is the RabbitMQ HTTP auth backend
+# (/v0/auth/*), connects to the game DB and the TLS game broker, and mints broker credentials with the shared
+# RMQ_HTTP_TOKEN_AUTH_SECRET. Its log contains credentials, so it is created 0600.
+# Usage: dune-textrouter start|stop|status
+set -u
+: "${DUNE_STATE_DIR:?set DUNE_STATE_DIR}"
+: "${DUNE_SECRETS_DIR:?set DUNE_SECRETS_DIR}"
+: "${DUNE_TEXTROUTER_ROOT:?set DUNE_TEXTROUTER_ROOT to the prepared TextRouter root}"
+: "${DUNE_WORLD_NAME:?set DUNE_WORLD_NAME (stable unique world name)}"
+DUNE_WORLD_DISPLAY_NAME=${DUNE_WORLD_DISPLAY_NAME:-$DUNE_WORLD_NAME}
+DUNE_WORLD_REGION=${DUNE_WORLD_REGION:-North America}
+DUNE_FLS_ENV=${DUNE_FLS_ENV:-retail}
+DUNE_EXTERNAL_ADDRESS=${DUNE_EXTERNAL_ADDRESS:-127.0.0.1}
+DUNE_PG_PORT=${DUNE_PG_PORT:-15431}
+DUNE_RMQ_ADMIN_PORT=${DUNE_RMQ_ADMIN_PORT:-5673}
+DUNE_RMQ_GAME_PORT=${DUNE_RMQ_GAME_PORT:-31982}
+DUNE_TEXTROUTER_PORT=${DUNE_TEXTROUTER_PORT:-8080}
+app_dir="$DUNE_TEXTROUTER_ROOT/Tools/Battlegroups/TextRouter/TextRouter"
+run_dir="$DUNE_STATE_DIR/textrouter"
+pid_file="$run_dir/pid"
+log="$run_dir/textrouter.log"
+
+die() { printf 'dune-textrouter: %s\n' "$*" >&2; exit 1; }
+
+# Game DB name the way Funcom derives it: "dune_" + stream branch with dots/dashes as underscores,
+# e.g. //seabass/sb-1.5.3.0/ -> dune_sb_1_5_3_0.
+db_name() {
+	jq -r '.path' "$DUNE_TEXTROUTER_ROOT/DuneSandbox/Config/perforce-keywords.json" |
+		sed -E 's#.*//seabass/([^/]+)/.*#\1#; s/[-.]/_/g; s/^/dune_/'
+}
+
+ensure_secret() {
+	[ -s "$1" ] && return 0
+	(umask 077; openssl rand 64 | base64 -w0 > "$1") || die "cannot write $1"
+}
+
+running() { [ -s "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; }
+
+# Funcom's .NET services parse --RMQGamePort/--RMQAdminPort as Int16; larger ports make them print usage and exit.
+check_ports() {
+	local p
+	for p in "$DUNE_RMQ_GAME_PORT" "$DUNE_RMQ_ADMIN_PORT"; do
+		[ "$p" -ge 1 ] 2>/dev/null && [ "$p" -le 32767 ] || die "RabbitMQ port $p is outside 1..32767 (Funcom parses it as Int16)"
+	done
+}
+
+cmd_start() {
+	running && return 0
+	check_ports
+	[ -x "$app_dir/TextRouter" ] || die "TextRouter not prepared at $app_dir"
+	mkdir -p -m 700 "$run_dir" || die "cannot create $run_dir"
+	ensure_secret "$DUNE_SECRETS_DIR/rmq_http_token_auth_secret"
+	local db dune_pw fls_token=""
+	db=$(db_name) && [ -n "$db" ] || die "cannot derive DB name"
+	dune_pw=$(cat "$DUNE_SECRETS_DIR/postgres_dune_password") || die "missing postgres_dune_password; run dune-db-setup"
+	[ -s "$DUNE_SECRETS_DIR/fls_token" ] && fls_token=$(cat "$DUNE_SECRETS_DIR/fls_token")
+	(umask 077; : > "$log") || die "cannot create $log"
+	(
+		cd "$app_dir" || exit 1
+		export ASPNETCORE_URLS="http://127.0.0.1:$DUNE_TEXTROUTER_PORT" DOTNET_RUNNING_IN_CONTAINER=false
+		export DuneDatabaseInterfacePSQL_DatabaseHost=127.0.0.1 DuneDatabaseInterfacePSQL_DatabasePort="$DUNE_PG_PORT"
+		export DuneDatabaseInterfacePSQL_DatabaseUser=dune DuneDatabaseInterfacePSQL_DatabasePassword="$dune_pw"
+		export DuneDatabaseInterfacePSQL_DatabaseName="$db"
+		export Database__address=127.0.0.1 Database__port="$DUNE_PG_PORT" Database__user=dune Database__password="$dune_pw"
+		export RMQ_HTTP_TOKEN_AUTH_SECRET="$(cat "$DUNE_SECRETS_DIR/rmq_http_token_auth_secret")"
+		export BATTLEGROUP_DISPLAY_NAME="$DUNE_WORLD_NAME" OPT_SERVERNAME="$DUNE_WORLD_NAME"
+		export WORLD_NAME="$DUNE_WORLD_DISPLAY_NAME" OPT_DISPLAY_NAME="$DUNE_WORLD_DISPLAY_NAME"
+		export BATTLEGROUP_REGION_NAME="$DUNE_WORLD_REGION" BATTLEGROUP_LANGUAGE=en-US
+		export FuncomLiveServices__ServiceAuthToken="$fls_token" FuncomLiveServices__RmqTlsEnabled=true
+		export FuncomLiveServices__DefaultFlsEnvironment="$DUNE_FLS_ENV"
+		export HOST_DATACENTER_ID=dune-selfhost HOST_DATACENTER_IP_ADDRESS="$DUNE_EXTERNAL_ADDRESS"
+		exec setsid ./TextRouter --RMQGameHostname 127.0.0.1 --RMQGamePort "$DUNE_RMQ_GAME_PORT" \
+			--RMQAdminHostname 127.0.0.1 --RMQAdminPort "$DUNE_RMQ_ADMIN_PORT" -fls "$DUNE_FLS_ENV" < /dev/null >> "$log" 2>&1
+	) &
+	echo $! > "$pid_file"
+	# Ready when the auth API answers (bounded, 60 s).
+	local tries=0
+	until curl -s -m 1 -o /dev/null "http://127.0.0.1:$DUNE_TEXTROUTER_PORT/"; do
+		running || die "TextRouter exited during startup; see $log"
+		tries=$((tries + 1)); [ "$tries" -le 120 ] || die "TextRouter not answering after 60 s; see $log"
+		sleep 0.5
+	done
+}
+
+cmd_stop() {
+	running || return 0
+	local pid; pid=$(cat "$pid_file")
+	kill "$pid" 2>/dev/null
+	for _ in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || { : > "$pid_file"; return 0; }; sleep 0.5; done
+	die "TextRouter (pid $pid) did not stop within 30 s"
+}
+
+case "${1:-}" in
+	start) cmd_start ;;
+	stop) cmd_stop ;;
+	status) running ;;
+	*) die "usage: dune-textrouter start|stop|status" ;;
+esac

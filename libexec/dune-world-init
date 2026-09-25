@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# One-time world identity for FLS registration. The unique name follows Funcom's convention
+# sh-<HostId from the FLS token>-<6 random letters> and, like the join password, is never changed once written:
+# FLS ties the registered battlegroup to it. The display name and region may be updated on later runs.
+# Usage: dune-world-init --display-name NAME --region REGION
+set -u
+DUNE_CONFIG_DIR=${DUNE_CONFIG_DIR:-$HOME/.config/dune_awakening_server}
+conf="$DUNE_CONFIG_DIR/world.conf"
+token="$DUNE_CONFIG_DIR/fls_secret"
+pw="$DUNE_CONFIG_DIR/join_password"
+die() { printf 'dune-world-init: %s\n' "$*" >&2; exit 1; }
+
+display="" region=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--display-name) display=${2:-}; shift 2 ;;
+		--region) region=${2:-}; shift 2 ;;
+		*) die "usage: dune-world-init --display-name NAME --region REGION" ;;
+	esac
+done
+[ -n "$display" ] && [ -n "$region" ] || die "usage: dune-world-init --display-name NAME --region REGION"
+[ -s "$token" ] || die "missing FLS token at $token"
+
+# HostId claim from the JWT payload (base64url, unpadded), lowercased exactly as Funcom's world.sh does: FLS
+# authorizes sh-<lowercase HostId>-* and rejects the uppercase form. The signature is never inspected or printed.
+host_id() {
+	local p
+	p=$(tr -d '\r\n' < "$token" | cut -d. -f2 | tr '_-' '/+')
+	while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done
+	printf '%s' "$p" | base64 -d 2>/dev/null | jq -r '.HostId // empty' | tr '[:upper:]' '[:lower:]'
+}
+
+random_lower() { # random_lower N -> N random lowercase letters/digits per the given class
+	LC_ALL=C tr -dc "$2" < /dev/urandom | head -c "$1"
+}
+
+unique=""
+[ -s "$conf" ] && unique=$(. "$conf" && printf '%s' "${WORLD_UNIQUE_NAME:-}")
+if [ -z "$unique" ]; then
+	hid=$(host_id)
+	[ -n "$hid" ] || die "cannot read HostId from the FLS token"
+	unique="sh-$hid-$(random_lower 6 'a-z')"
+fi
+(
+	umask 077
+	printf 'WORLD_UNIQUE_NAME=%q\nWORLD_DISPLAY_NAME=%q\nWORLD_REGION=%q\n' "$unique" "$display" "$region" > "$conf.new" &&
+		mv "$conf.new" "$conf"
+) || die "cannot write $conf"
+if [ ! -s "$pw" ]; then
+	(umask 077; random_lower 14 'a-z0-9' > "$pw") || die "cannot write $pw"
+fi

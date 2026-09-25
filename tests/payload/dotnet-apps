@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Funcom's musl self-contained .NET apps (TextRouter, Director) run natively after libexec/dune-dotnet-prepare:
+# image layout preserved (apps read ../../../../DuneSandbox/Config/*), interpreter repointed to nixpkgs musl,
+# netcoredeps from the flake. The payload originals must stay untouched.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+
+unpacked="${DUNE_UNPACKED_DIR:-$HOME/.local/share/dune_awakening_server/unpacked}"
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-dotnet-test.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+
+check_app() { # check_app NAME IMAGE_ROOTFS APP_DIR BINARY EXPECTED_DESCRIPTION
+	local name=$1 rootfs=$2 app=$3 bin=$4 want=$5 before after out
+	[ -x "$rootfs/$app/$bin" ] || { fail "$name payload missing: $rootfs/$app/$bin"; return; }
+	before=$(sha256sum < "$rootfs/$app/$bin")
+	out=$(libexec/dune-dotnet-prepare "$rootfs" "$work/$name" "$app" "$bin" 2>&1) || { fail "$name prepare failed: $out"; return; }
+	after=$(sha256sum < "$rootfs/$app/$bin")
+	[ "$before" = "$after" ] || fail "$name payload original was modified"
+	[ -e "$work/$name/$app/netcoredeps/libc.musl-x86_64.so.1" ] || fail "$name netcoredeps lacks musl libc"
+	[ -f "$work/$name/$app/../../../../DuneSandbox/Config/perforce-keywords.json" ] || fail "$name lost the image layout (DuneSandbox/Config)"
+	out=$(cd "$work/$name/$app" && timeout 30 "./$bin" --help 2>&1)
+	case "$out" in *"$want"*) ;; *) fail "$name did not run natively: $(printf '%s' "$out" | tail -5)" ;; esac
+}
+
+check_app textrouter "$unpacked/server-text-router/rootfs" Tools/Battlegroups/TextRouter/TextRouter TextRouter "Funcom Text Router"
+check_app director "$unpacked/server-bg-director/rootfs" Tools/Battlegroups/Director/BattlegroupDirector Director "Funcom Battlegroup Director"
+exit "$failures"

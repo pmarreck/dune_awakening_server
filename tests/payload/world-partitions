@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# libexec/dune-world-partitions creates exactly one Survival_1 partition (dimension 0) with Funcom's own helper,
+# prints its partition_id (the game server's -PartitionIndex), and is idempotent.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. tests/lib/ports.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+
+: "${DUNE_DB_UTILS_SRC:=$HOME/.local/share/dune_awakening_server/unpacked/server-db-utils/rootfs/root}"
+export DUNE_DB_UTILS_SRC
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-part-test.XXXXXX") || exit 1
+export DUNE_PG_DATA="$work/pgdata" DUNE_SECRETS_DIR="$work/secrets" DUNE_STATE_DIR="$work/state" DUNE_PG_PORT=$(pick_port_base 1)
+cleanup() { libexec/dune-postgres stop >/dev/null 2>&1; rm -r -- "$work"; }
+trap cleanup EXIT
+libexec/dune-postgres init >/dev/null && libexec/dune-postgres start >/dev/null && libexec/dune-db-setup >/dev/null 2>&1 || { fail "db setup"; exit 1; }
+admin_pw=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password")
+sql() { PGPASSWORD="$admin_pw" psql -X -A -t -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune_sb_1_5_3_0 -c "$1" 2>&1; }
+
+id1=$(libexec/dune-world-partitions 2>&1) || fail "first run: $id1"
+[[ "$id1" =~ ^[0-9]+$ ]] || fail "did not print a numeric partition id: $id1"
+[ "$(sql "select count(*) from dune.world_partition")" = 1 ] || fail "expected exactly one partition"
+[ "$(sql "select map || ':' || dimension_index || ':' || partition_id from dune.world_partition")" = "Survival_1:0:$id1" ] || fail "partition is not Survival_1 dimension 0 with the printed id"
+[ -n "$(sql "select label from dune.world_partition")" ] || fail "partition label not set"
+id2=$(libexec/dune-world-partitions 2>&1) || fail "second run: $id2"
+[ "$id2" = "$id1" ] || fail "second run printed a different id ($id2 vs $id1)"
+[ "$(sql "select count(*) from dune.world_partition")" = 1 ] || fail "second run added a partition"
+exit "$failures"

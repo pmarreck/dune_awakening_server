@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Both brokers via libexec/dune-rabbitmq: admin (plain AMQP) and game (TLS-only), each authenticating through an
+# HTTP auth backend (the TextRouter's /v0/auth/*), here a socat stub. Auth must fail closed when the backend is down.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. tests/lib/ports.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-rmq-test.XXXXXX") || exit 1
+base=$(pick_port_base 6) || { printf "FAIL no free port block\n" >&2; exit 1; }
+export DUNE_STATE_DIR="$work/state" DUNE_SECRETS_DIR="$work/secrets"
+export DUNE_RMQ_ADMIN_PORT=$base DUNE_RMQ_GAME_PORT=$((base + 1)) DUNE_RMQ_AUTH_ADDRESS="127.0.0.1:$((base + 2))"
+export ERL_EPMD_PORT=$((base + 3)) DUNE_RMQ_DIST_BASE=$((base + 4)) DUNE_RMQ_LOG_LEVEL=debug
+stub_log="$work/auth-requests.log"
+stub_pid=
+start_stub() {
+	printf '%s\n' "IFS= read -r line; printf '%s\\n' \"\$line\" >> '$stub_log'; printf 'HTTP/1.0 200 OK\\r\\nContent-Type: text/plain\\r\\nContent-Length: 5\\r\\n\\r\\nallow'" > "$work/auth-stub"
+	socat "TCP-LISTEN:$((base + 2)),bind=127.0.0.1,reuseaddr,fork" EXEC:"$(command -v bash) $work/auth-stub" 2>/dev/null &
+	stub_pid=$!
+}
+cleanup() {
+	libexec/dune-rabbitmq stop admin >/dev/null 2>&1; libexec/dune-rabbitmq stop game >/dev/null 2>&1
+	[ -n "$stub_pid" ] && kill "$stub_pid" 2>/dev/null
+	stop_epmd "$ERL_EPMD_PORT"
+	rm -r -- "$work"
+}
+trap cleanup EXIT
+start_stub
+stub_ok=
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	[ "$(curl -s -m 2 -X POST "http://$DUNE_RMQ_AUTH_ADDRESS/v0/auth/user" -d probe=1 2>&1)" = allow ] && { stub_ok=1; break; }
+	sleep 0.2
+done
+[ -n "$stub_ok" ] || fail "auth stub not answering: $(curl -sv -m 2 -X POST "http://$DUNE_RMQ_AUTH_ADDRESS/v0/auth/user" 2>&1 | tail -3)"
+: > "$stub_log"
+
+for broker in admin game; do
+	out=$(libexec/dune-rabbitmq init "$broker" 2>&1) || fail "init $broker: $out"
+	out=$(libexec/dune-rabbitmq start "$broker" 2>&1) || fail "start $broker: $out"
+done
+[ "$(stat -c %a "$DUNE_SECRETS_DIR/rmq-tls/key.pem" 2>/dev/null)" = 600 ] || fail "TLS key missing or not 0600"
+pid_before=$(libexec/dune-rabbitmq ctl admin eval "os:getpid()." 2>/dev/null)
+libexec/dune-rabbitmq ctl admin add_vhost idempotence-marker >/dev/null 2>&1 || fail "could not add marker vhost"
+out=$(libexec/dune-rabbitmq start admin 2>&1) || fail "start while already running must be a no-op success: $out"
+[ "$(libexec/dune-rabbitmq ctl admin eval "os:getpid()." 2>/dev/null)" = "$pid_before" ] || fail "second start replaced the running admin node"
+libexec/dune-rabbitmq ctl admin list_vhosts 2>/dev/null | grep -qx idempotence-marker || fail "second start wiped the running node's data"
+[ -d "$DUNE_STATE_DIR/rabbitmq-admin/mnesia" ] || fail "second start deleted the running node's data directory"
+
+# --quick status (process alive + distribution port listening, no Erlang VM boot) agrees with the full check.
+mkdir -p "$work/noctl"; for t in rabbitmqctl rabbitmq-diagnostics; do printf '#!%s\nexit 1\n' "$BASH" > "$work/noctl/$t"; chmod +x "$work/noctl/$t"; done
+for broker in admin game; do PATH="$work/noctl:$PATH" libexec/dune-rabbitmq status "$broker" --quick || fail "quick status says running $broker is down (or used rabbitmqctl)"; done
+
+# Game broker speaks TLS on its port; admin broker does not.
+echo | timeout 10 openssl s_client -connect "127.0.0.1:$DUNE_RMQ_GAME_PORT" >"$work/tls-game.out" 2>&1
+grep -q 'BEGIN CERTIFICATE\|Server certificate' "$work/tls-game.out" || fail "game broker did not complete a TLS handshake"
+echo | timeout 10 openssl s_client -connect "127.0.0.1:$DUNE_RMQ_ADMIN_PORT" >"$work/tls-admin.out" 2>&1
+grep -q 'BEGIN CERTIFICATE' "$work/tls-admin.out" && fail "admin broker unexpectedly speaks TLS"
+
+for broker in admin game; do
+	out=$(libexec/dune-rabbitmq ctl "$broker" authenticate_user "user-$broker" secret 2>&1) || fail "$broker auth via HTTP backend failed: $out\n$(cat "$DUNE_STATE_DIR/rabbitmq-$broker"/log/*.log 2>/dev/null | grep -E "user-$broker|\[debug\].*(auth|http)" | tail -8 | cut -c1-400)"
+done
+grep -q '^POST /v0/auth/user HTTP' "$stub_log" 2>/dev/null || fail "no POST /v0/auth/user reached the auth backend: $(cat "$stub_log" 2>/dev/null)"
+
+kill "$stub_pid" 2>/dev/null; wait "$stub_pid" 2>/dev/null; stub_pid=
+out=$(libexec/dune-rabbitmq ctl admin authenticate_user "fresh-user" secret 2>&1) && fail "auth succeeded with backend down (must fail closed)"
+
+for broker in admin game; do
+	libexec/dune-rabbitmq stop "$broker" >/dev/null 2>&1 || fail "stop $broker"
+done
+for broker in admin game; do libexec/dune-rabbitmq status "$broker" --quick && fail "quick status says stopped $broker is up"; done
+stop_epmd "$ERL_EPMD_PORT" || fail "epmd still listening on $ERL_EPMD_PORT after shutdown (leak)"
+exit "$failures"

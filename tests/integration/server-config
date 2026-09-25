@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# libexec/dune-server configure: the map server's private ini overrides (0600, never on argv) carry the FLS token, the DB
+# password and the server-command channel: a generated ServerCommandsAuthToken (kept in secrets/, stable across
+# restarts) plus server.NotificationSystem.Enabled=true.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-server-config.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+export DUNE_STATE_DIR="$work/state" DUNE_SECRETS_DIR="$work/secrets" DUNE_SERVER_SRC="$work/src" DUNE_GLIBC_LOADER=/x DUNE_GCC_LIB=/x
+export DUNE_WORLD_NAME=sh-test DUNE_PARTITION_INDEX=1
+mkdir -p -m 700 "$DUNE_SECRETS_DIR"
+printf 'dbpw\n' > "$DUNE_SECRETS_DIR/postgres_dune_password"; printf 'flstoken\n' > "$DUNE_SECRETS_DIR/fls_token"
+out=$(libexec/dune-server configure 2>&1) || fail "configure failed: $out"
+tok="$DUNE_SECRETS_DIR/server_commands_token"
+[ "$(stat -c %a "$tok" 2>/dev/null)" = 600 ] || fail "command token missing or not 0600"
+[ "$(tr -d '\n' < "$tok" 2>/dev/null | wc -c)" -ge 32 ] || fail "command token too short"
+ini="$DUNE_STATE_DIR/server/Saved/Config/LinuxServer/Engine.ini"
+[ "$(stat -c %a "$ini" 2>/dev/null)" = 600 ] || fail "Engine.ini not 0600"
+section() { awk -v s="[$1]" '$0 == s { on = 1; next } /^\[/ { on = 0 } on' "$ini"; }
+section FuncomLiveServices | grep -qxF "ServerCommandsAuthToken=$(cat "$tok")" || fail "token not in [FuncomLiveServices]"
+section ConsoleVariables | grep -qx 'server.NotificationSystem.Enabled=true' || fail "notification system not enabled in [ConsoleVariables]"
+first=$(cat "$tok")
+libexec/dune-server configure >/dev/null 2>&1 || fail "second configure failed"
+[ "$(cat "$tok")" = "$first" ] || fail "command token changed across configure runs"
+exit "$failures"

@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# libexec/dune-admin: live-world commands through Funcom's server-command channel (Version 2 envelope published by the
+# game RabbitMQ node into exchange heartbeats / routing key notifications, as user fls / app fls_backend), with
+# players resolved to Funcom ids from a synthetic database. The broker is a fake dune-rabbitmq that records what
+# would be published; the auth token must never appear on any command line.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. tests/lib/ports.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-admin-test.XXXXXX") || exit 1
+export DUNE_PG_DATA="$work/pg" DUNE_SECRETS_DIR="$work/secrets" DUNE_STATE_DIR="$work/state" DUNE_PG_PORT=$(pick_port_base 1)
+export DUNE_COMPONENTS_DIR="$work/fake"
+cleanup() { libexec/dune-postgres stop >/dev/null 2>&1; rm -r -- "$work"; }
+trap cleanup EXIT
+libexec/dune-postgres init >/dev/null 2>&1 && libexec/dune-postgres start >/dev/null 2>&1 || { fail "cluster"; exit 1; }
+admin_pw=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password")
+q() { PGPASSWORD="$admin_pw" psql -X -A -t -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "${2:-dune_sb_9_9_9_9}" -c "$1"; }
+q "create database dune_sb_9_9_9_9" postgres
+q "create schema dune; create table dune.accounts (id bigint primary key, \"user\" text, funcom_id text);
+	create table dune.player_state (id bigint primary key, account_id bigint, character_name text, online_status text);
+	insert into dune.accounts values (1, 'fls-1', 'funcom-tester'), (2, 'fls-2', 'funcom-o''brien');
+	insert into dune.player_state values (1, 1, 'Tester', 'Online'), (2, 2, 'O''Brien', 'Offline')"
+export DUNE_DB_NAME=dune_sb_9_9_9_9
+printf 'sekrit-token-value\n' > "$DUNE_SECRETS_DIR/server_commands_token"; chmod 600 "$DUNE_SECRETS_DIR/server_commands_token"
+
+# Fake broker: record argv, and copy the file the eval reads (the published body) to published.json.
+mkdir -p "$DUNE_COMPONENTS_DIR"
+cat > "$DUNE_COMPONENTS_DIR/dune-rabbitmq" <<EOF
+#!$BASH
+printf '%s\n' "\$*" >> "$work/argv"
+[ -e "$work/broker-down" ] && exit 1
+f=\$(printf '%s' "\$*" | sed -n 's/.*file:read_file("\([^"]*\)").*/\1/p')
+[ -n "\$f" ] && cp "\$f" "$work/published.json" && stat -c %a "\$f" > "$work/published.mode"
+printf 'publish=ok exchange=heartbeats routing=notifications\n'
+EOF
+chmod +x "$DUNE_COMPONENTS_DIR/dune-rabbitmq"
+admin() { : > "$work/argv"; rm -f -- "$work/published.json"; libexec/dune-admin "$@"; }
+inner() { jq -c '.MessageContent | fromjson' "$work/published.json" 2>/dev/null; }
+
+libexec/dune-admin --help >/dev/null 2>&1 || fail "--help exited nonzero"
+libexec/dune-admin bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown command did not exit 2"
+
+out=$(admin kick Tester 2>&1) || fail "kick failed: $out"
+[ "$(jq -r '[.Version, .AuthToken] | join(",")' "$work/published.json" 2>/dev/null)" = "2,sekrit-token-value" ] || fail "envelope wrong: $(cat "$work/published.json" 2>/dev/null)"
+[ "$(inner)" = '{"ServerCommand":"KickPlayer","PlayerId":"funcom-tester"}' ] || fail "kick payload: $(inner)"
+[ "$(cat "$work/published.mode")" = 600 ] || fail "published body file not 0600"
+grep -q 'heartbeats' "$work/argv" && grep -q 'notifications' "$work/argv" && grep -q 'fls_backend' "$work/argv" || fail "eval does not target heartbeats/notifications as fls_backend"
+grep -q sekrit "$work/argv" && fail "auth token appeared on the broker command line"
+[ -z "$(find "$DUNE_SECRETS_DIR" -name '*.cmd.json')" ] || fail "command body file left behind"
+
+admin kick --all >/dev/null 2>&1 || fail "kick --all failed"
+[ "$(inner | jq -r .PlayerId)" = '*' ] || fail "kick --all not PlayerId *"
+admin kick "O'Brien" >/dev/null 2>&1 || fail "kick of a quoted name failed"
+[ "$(inner | jq -r .PlayerId)" = "funcom-o'brien" ] || fail "name with a quote resolved wrongly: $(inner)"
+out=$(admin kick Nobody 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nobody* ]] || fail "unknown player: $out"
+
+admin teleport Tester 1.5 -2 300 90 >/dev/null 2>&1 || fail "teleport failed"
+[ "$(inner | jq -c '[.ServerCommand, .X, .Y, .Z, .Yaw]')" = '["TeleportTo",1.5,-2,300,90]' ] || fail "teleport payload: $(inner)"
+admin teleport Tester 1 x 3 >/dev/null 2>&1; [ $? -eq 2 ] || fail "non-numeric teleport coordinate not a usage error"
+
+admin say "Spice must flow" --duration 12 >/dev/null 2>&1 || fail "say failed"
+[ "$(inner | jq -c '[.ServerCommand, .BroadcastType, .BroadcastPayload.BroadcastDuration, .BroadcastPayload.LocalizedText[0].Body]')" = '["ServiceBroadcast","Generic",12,"Spice must flow"]' ] || fail "say payload: $(inner)"
+
+admin worm Tester >/dev/null 2>&1 || fail "worm failed"
+[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Exec]')" = '["ServerExec","funcom-tester","SandwormTargetPlayer Tester"]' ] || fail "worm payload: $(inner)"
+
+# exec: a world-level console command or variable through ServerExec (arguments joined).
+admin exec t.MaxFPS 5 >/dev/null 2>&1 || fail "exec failed"
+[ "$(inner)" = '{"ServerCommand":"ServerExec","Exec":"t.MaxFPS 5"}' ] || fail "exec payload: $(inner)"
+admin exec >/dev/null 2>&1; [ $? -eq 2 ] || fail "exec without a command not a usage error"
+admin water Tester 5000 >/dev/null 2>&1 || fail "water failed"
+[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .WaterAmount]')" = '["UpdateAllWaterFillables","funcom-tester",5000]' ] || fail "water payload: $(inner)"
+admin xp Tester 1000 >/dev/null 2>&1 || fail "xp failed"
+[ "$(inner | jq -c '[.ServerCommand, .Experience, .Category]')" = '["AwardXP",1000,"Combat"]' ] || fail "xp payload: $(inner)"
+admin xp Tester 10 Gathering >/dev/null 2>&1 && [ "$(inner | jq -r .Category)" = Gathering ] || fail "xp category"
+admin xp Tester 10 Dancing >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown xp category not a usage error"
+
+admin raw PrintNumPlayers --player Tester Count=3:int Rate=0.5:float Label=hi >/dev/null 2>&1 || fail "raw failed"
+[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Count, .Rate, .Label]')" = '["PrintNumPlayers","funcom-tester",3,0.5,"hi"]' ] || fail "raw payload: $(inner)"
+
+json=$(admin players --json 2>&1) || fail "players failed: $json"
+[ "$(jq -c '[.[] | [.name, .online]]' <<<"$json" 2>/dev/null)" = '[["O'"'"'Brien",false],["Tester",true]]' ] || fail "players: $json"
+
+touch "$work/broker-down"
+out=$(admin kick Tester 2>&1); [ $? -eq 1 ] && [[ "$out" == *publish* ]] || fail "broker failure not reported: $out"
+[ -z "$(find "$DUNE_SECRETS_DIR" -name '*.cmd.json')" ] || fail "command body file left behind after a failed publish"
+exit "$failures"

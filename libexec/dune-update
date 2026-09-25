@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# Keep the self-hosted server on Steam's current build (the client and server builds must match exactly).
+# `check` compares the installed build (steamapps/appmanifest_4754530.acf) with Steam's public branch
+# (steamcmd app_info_print, anonymous). `apply` is the update procedure: refuse while players are online, back up,
+# stop the world, download with validation, unpack the images (previous copy kept as <image>.prev), start the world
+# (which runs Funcom's DB migrations through dune-db-setup) and re-check.
+set -u
+NAME=dune-update VERSION=0.1.0 APP=4754530
+EXIT_CURRENT=0 EXIT_STALE=1 EXIT_USAGE=2 EXIT_UNKNOWN=3
+: "${HOME:=$(cd ~ 2>/dev/null && pwd)}"
+DUNE_STEAM_SERVER_DIR=${DUNE_STEAM_SERVER_DIR:-$HOME/.local/share/dune_awakening_server/steam-server}
+DUNE_UNPACKED_DIR=${DUNE_UNPACKED_DIR:-$HOME/.local/share/dune_awakening_server/unpacked}
+DUNE_STEAMCMD=${DUNE_STEAMCMD:-steamcmd}
+DUNE_STEAMCMD_HOME=${DUNE_STEAMCMD_HOME:-$HOME/.local/share/dune_awakening_server/steamcmd}
+DUNE_TRASH_DIR=${DUNE_TRASH_DIR:-$HOME/.Trash}
+DUNE_COMPONENTS_DIR=${DUNE_COMPONENTS_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}
+IMAGES=(server server-bg-director server-text-router server-gateway server-db-utils)
+
+usage() {
+	cat <<EOF
+Usage: $NAME [options] <command>
+
+Keep the Dune: Awakening self-hosted server on Steam's current build (app $APP).
+
+Commands:
+  check     Compare the installed build with Steam's public branch.
+            Exit 0 up to date, 1 update available, 3 cannot tell (Steam unreachable, no install)
+  apply     Update: refuse while players are online, back up, stop the world, download (validated), unpack
+            images (previous kept as <image>.prev), start the world (runs DB migrations), re-check
+
+Options:
+  --json    check: machine-readable result
+  --force   apply: proceed with players online or when already current (re-download and re-unpack)
+  --about, -h/--help
+
+Environment: DUNE_STEAM_SERVER_DIR, DUNE_UNPACKED_DIR, DUNE_STEAMCMD, DUNE_STEAMCMD_HOME, DUNE_TRASH_DIR.
+EOF
+}
+die() { printf '%s: %s\n' "$NAME" "$1" >&2; exit "${2:-1}"; }
+step() { printf '▸ %s\n' "$*" >&2; }
+
+cmd="" json=false force=false
+for a in "$@"; do
+	case "$a" in
+		-h|--help) usage; exit 0 ;;
+		--about) printf '%s %s: Dune self-host server update check and procedure (%s %s)\n' "$NAME" "$VERSION" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)"; exit 0 ;;
+		--json) json=true ;;
+		--force) force=true ;;
+		-*) die "unknown option $a (see --help)" "$EXIT_USAGE" ;;
+		*) [ -z "$cmd" ] || die "unexpected argument $a (see --help)" "$EXIT_USAGE"; cmd=$a ;;
+	esac
+done
+
+run_steamcmd() { mkdir -p "$DUNE_STEAMCMD_HOME" && HOME=$DUNE_STEAMCMD_HOME "$DUNE_STEAMCMD" "$@"; }
+installed_buildid() { sed -n 's/^[[:space:]]*"buildid"[[:space:]]*"\([0-9]*\)".*/\1/p' "$DUNE_STEAM_SERVER_DIR/steamapps/appmanifest_$APP.acf" 2>/dev/null | head -1; }
+
+# Public-branch buildid and time from app_info_print (VDF), ignoring other branches and ANSI noise.
+latest_info() {
+	local out
+	out=$(run_steamcmd +login anonymous +app_info_update 1 +app_info_print "$APP" +quit 2>&1) || true
+	sed 's/\x1b\[[0-9;]*m//g' <<<"$out" | awk '
+		/"branches"/ { b = 1 } b && /"public"/ { p = 1 }
+		p && /"buildid"/ { match($0, /"[0-9]+"/); id = substr($0, RSTART + 1, RLENGTH - 2) }
+		p && /"timeupdated"/ { match($0, /"[0-9]+"/); t = substr($0, RSTART + 1, RLENGTH - 2) }
+		p && /}/ { if (id != "") { print id, t; exit } }'
+}
+
+cmd_check() {
+	local installed latest t info
+	installed=$(installed_buildid)
+	[ -n "$installed" ] || die "no installed server build under $DUNE_STEAM_SERVER_DIR (see docs/acquisition.md)" "$EXIT_UNKNOWN"
+	info=$(latest_info); read -r latest t <<<"$info"
+	[ -n "${latest:-}" ] || die "cannot read the current build from Steam (steamcmd app_info_print failed)" "$EXIT_UNKNOWN"
+	if $json; then
+		jq -n --arg i "$installed" --arg l "$latest" --arg t "${t:-}" --arg now "$(date -Iseconds)" \
+			'{installed_buildid: $i, latest_buildid: $l, latest_time_updated: (if $t == "" then null else ($t | tonumber | todate) end),
+			  up_to_date: ($i == $l), checked_at: $now}'
+	elif [ "$installed" = "$latest" ]; then
+		printf '✓ up to date: build %s\n' "$installed"
+	else
+		printf '⚠ update available: installed build %s, Steam has %s%s\n' "$installed" "$latest" "${t:+ (published $(date -d "@$t" '+%Y-%m-%d %H:%M %Z'))}"
+	fi
+	[ "$installed" = "$latest" ] && return "$EXIT_CURRENT" || return "$EXIT_STALE"
+}
+
+# Components live beside this script (libexec/); the world front end lives in the checkout's bin/.
+component() {
+	local c="$DUNE_COMPONENTS_DIR/dune-$1"
+	[ "$1" = world ] && [ ! -x "$c" ] && c="$(dirname -- "${BASH_SOURCE[0]}")/../bin/dune-world"
+	"$c" "${@:2}"
+}
+
+cmd_apply() {
+	local installed latest info online img tar ts
+	installed=$(installed_buildid)
+	info=$(latest_info); read -r latest _ <<<"$info"
+	[ -n "${latest:-}" ] || die "cannot read the current build from Steam; nothing changed"
+	if [ "$installed" = "$latest" ] && ! $force; then printf '✓ already up to date: build %s\n' "$installed"; return 0; fi
+	online=$(component character list --json 2>/dev/null) || $force || die "cannot tell who is online (is postgres up?); nothing changed (--force to proceed)"
+	if ! $force && jq -e 'any(.[]; .online)' >/dev/null 2>&1 <<<"$online"; then
+		die "players are online ($(jq -r '[.[] | select(.online) | .name] | join(", ")' <<<"$online")); update when they log out, or --force"
+	fi
+	step "backup"; component backup create --label "before update ${installed:-none} to $latest" >/dev/null || die "backup failed; nothing changed"
+	step "stop world"; component world stop || die "world did not stop cleanly; nothing downloaded"
+	step "download build $latest (validated)"
+	run_steamcmd +@sSteamCmdForcePlatformType linux +force_install_dir "$DUNE_STEAM_SERVER_DIR" +login anonymous +app_update "$APP" validate +quit >&2 ||
+		die "download failed; the world is stopped (dune-world start runs the previous build)"
+	for img in "${IMAGES[@]}"; do
+		tar="$DUNE_STEAM_SERVER_DIR/images/battlegroup/$img.tar"
+		step "unpack $img"
+		[ -e "$DUNE_UNPACKED_DIR/$img.new" ] && { mkdir -p "$DUNE_TRASH_DIR"; mv "$DUNE_UNPACKED_DIR/$img.new" "$DUNE_TRASH_DIR/$img.new.$(date +%s%N)"; }
+		component unpack "$tar" "$DUNE_UNPACKED_DIR/$img.new" >&2 || die "unpacking $img failed; the world is stopped on the previous images"
+	done
+	ts=$(date +%Y%m%dT%H%M%S)
+	for img in "${IMAGES[@]}"; do
+		if [ -e "$DUNE_UNPACKED_DIR/$img.prev" ]; then mkdir -p "$DUNE_TRASH_DIR" && mv "$DUNE_UNPACKED_DIR/$img.prev" "$DUNE_TRASH_DIR/$img.prev.$ts" || die "cannot retire $img.prev"; fi
+		if [ -e "$DUNE_UNPACKED_DIR/$img" ]; then mv "$DUNE_UNPACKED_DIR/$img" "$DUNE_UNPACKED_DIR/$img.prev" || die "cannot keep $img as .prev"; fi
+		mv "$DUNE_UNPACKED_DIR/$img.new" "$DUNE_UNPACKED_DIR/$img" || die "cannot install new $img"
+	done
+	step "start world (runs DB migrations)"; component world start || die "world failed to start on build $latest; previous images are in $DUNE_UNPACKED_DIR/*.prev"
+	installed=$(installed_buildid)
+	[ "$installed" = "$(latest_info | cut -d' ' -f1)" ] || die "after the update the installed build ($installed) still differs from Steam's"
+	printf '✓ updated to build %s\n' "$installed"
+}
+
+case "$cmd" in
+	check) cmd_check ;;
+	apply) cmd_apply ;;
+	"") usage >&2; exit "$EXIT_USAGE" ;;
+	*) die "unknown command $cmd (see --help)" "$EXIT_USAGE" ;;
+esac

@@ -1,0 +1,398 @@
+#!/usr/bin/env luajit
+-- dune-world: start, stop and report the native Dune: Awakening world in dependency order:
+-- postgres -> schema -> partition -> RabbitMQ admin/game -> TextRouter (broker auth) -> Director -> Gateway -> map server.
+-- Location-independent: it resolves its own real path (through symlinks) to find this project's flake and component
+-- scripts, and re-executes itself inside `nix develop` on that flake when the toolchain environment is absent, so it
+-- runs from any cwd via PATH. Operator inputs live in DUNE_CONFIG_DIR, generated state in DUNE_STATE_DIR.
+local ffi = require("ffi")
+
+local NAME, VERSION = "dune-world", "0.2.0"
+local EXIT_OK, EXIT_ERR, EXIT_USAGE = 0, 1, 2
+
+ffi.cdef [[
+char *realpath(const char *path, char *resolved);
+void free(void *p);
+int setenv(const char *name, const char *value, int overwrite);
+int execvp(const char *file, char *const argv[]);
+int isatty(int fd);
+int usleep(unsigned int usec);
+long sysconf(int name);
+extern char **environ;
+]]
+
+local USAGE = [[
+Usage: dune-world [options] <command>
+
+Run the native Dune: Awakening world (no Docker, Kubernetes or Windows).
+
+Commands:
+  start           Bring every component up in dependency order (already-running components are left alone)
+  stop            Stop every component in reverse order
+  restart         stop, then start
+  status          One line per component, ● up / ○ down; exit 0 only if all are up
+  admin ...       Live-world commands: players, say, kick, teleport, water, xp, exec, worm, raw
+  update ...      Steam build: check (exit 1 = update available), apply (backup, stop, download, start)
+  backup ...      create, list, verify (restore drill), restore --yes, prune (policy in backup.conf)
+  character ...   list, show, set-research, add-skill-points, export, validate, import
+  init ...        One-time setup: write world.conf from your Funcom token
+  units ...       render DEST: systemd user units for unattended running
+
+  `dune-world <subcommand> --help` shows each subcommand's options.
+
+Options:
+  --json          status as JSON (world identity, components, map-server uptime and memory; for admin pages)
+  --no-color      Disable ANSI color (also: NO_COLOR env, non-tty stdout)
+  --watch SECS    status --json: keep running, one JSON line every SECS (for a live admin panel; stop it when done)
+  --count N       with --watch: stop after N lines
+  --no-warn       Do not warn about leftover *.sample / *.default templates in DUNE_CONFIG_DIR (also: DUNE_NO_WARNINGS)
+  --about         One-line description, version and platform
+  -h, --help      This help
+
+Environment (defaults in parentheses):
+  DUNE_CONFIG_DIR        operator inputs: fls_secret, world.conf, join_password, UserSettings/ (~/.config/dune_awakening_server)
+  DUNE_STATE_DIR         runtime state and logs (~/.local/share/dune_awakening_server/runtime)
+  DUNE_UNPACKED_DIR      unpacked Funcom images (~/.local/share/dune_awakening_server/unpacked)
+  DUNE_EXTERNAL_ADDRESS  address clients use (world.conf EXTERNAL_ADDRESS, else the default route's source address)
+  DUNE_COMPONENTS_DIR    component scripts (this tool's own directory)
+
+Outside the project's nix develop environment it re-executes itself inside it (requires nix).
+]]
+
+local function die(code, fmt, ...)
+	io.stderr:write(NAME, ": ", string.format(fmt, ...), "\n")
+	os.exit(code)
+end
+
+local function getenv(k, default) local v = os.getenv(k); if v == nil or v == "" then return default end; return v end
+local function setenv(k, v) ffi.C.setenv(k, v, 1) end
+local function q(s) return "'" .. tostring(s):gsub("'", "'\\''") .. "'" end
+
+-- os.execute returns a number (Lua 5.1) or true/nil,"exit",code (5.2 compat); normalize to success boolean.
+local function run(cmd)
+	local a, _, c = os.execute(cmd)
+	if type(a) == "number" then return a == 0 end
+	return a == true and (c == nil or c == 0)
+end
+
+-- Run cmd, returning its stdout and success (exit status carried through a trailing sentinel line).
+local function capture(cmd)
+	local p = io.popen(cmd .. "; printf '\\n%d' $?")
+	local out = p:read("*a"); p:close()
+	local body, code = out:match("^(.*)\n(%d+)$")
+	return (body or ""), code == "0"
+end
+
+-- Location ------------------------------------------------------------------------------------------------------
+
+local function self_path()
+	local r = ffi.C.realpath(arg[0], nil)
+	if r == nil then die(EXIT_ERR, "cannot resolve own path %s", arg[0]) end
+	local s = ffi.string(r); ffi.C.free(r)
+	return s
+end
+
+local function dirname(p) return (p:match("^(.*)/[^/]*$")) or "." end
+
+-- Replace this process with `nix develop <flake> -c luajit <self> args`, keeping only what the world needs.
+local function reexec_in_nix(flake, self)
+	local argv = { "nix", "develop", flake, "--ignore-environment", "--quiet", "--log-format", "raw", "--no-warn-dirty" }
+	local keep = { HOME = true, USER = true, LOGNAME = true, TERM = true, NO_COLOR = true, XDG_RUNTIME_DIR = true, DBUS_SESSION_BUS_ADDRESS = true }
+	local i = 0
+	while ffi.C.environ[i] ~= nil do
+		local k = ffi.string(ffi.C.environ[i]):match("^([^=]+)=")
+		if k and (keep[k] or k:match("^DUNE_")) then argv[#argv + 1] = "--keep"; argv[#argv + 1] = k end
+		i = i + 1
+	end
+	for _, a in ipairs({ "-c", "luajit", self }) do argv[#argv + 1] = a end
+	for _, a in ipairs(arg) do argv[#argv + 1] = a end
+	local cargv = ffi.new("char*[?]", #argv + 1)
+	local keepalive = {}
+	for j, a in ipairs(argv) do keepalive[j] = ffi.new("char[?]", #a + 1, a); cargv[j - 1] = keepalive[j] end
+	ffi.C.execvp("nix", cargv)
+	die(EXIT_ERR, "not inside the project's nix develop environment and cannot run nix (is it installed?)")
+end
+
+-- Subcommands that hand their arguments to a tool in libexec/.
+local TOOLS = { admin = "dune-admin", update = "dune-update", backup = "dune-backup", character = "dune-character",
+	init = "dune-world-init", units = "dune-units" }
+
+-- Options -------------------------------------------------------------------------------------------------------
+
+local function arch_name()
+	local map = { x64 = "x86_64", arm64 = "aarch64", x86 = "i686" }
+	return (jit.os or "unknown"):lower() .. " " .. (map[jit.arch] or jit.arch)
+end
+
+local function parse_args(argv)
+	local opts = { json = false, color = true }
+	local i = 0
+	while i < #argv do
+		i = i + 1
+		local a = argv[i]
+		local function value() i = i + 1; return argv[i] or die(EXIT_USAGE, "%s needs a value", a) end
+		if TOOLS[a] and not opts.cmd then
+			-- Everything after a tool subcommand belongs to that tool, options included.
+			opts.cmd, opts.rest = a, {}
+			for j = i + 1, #argv do opts.rest[#opts.rest + 1] = argv[j] end
+			break
+		elseif a == "-h" or a == "--help" then io.stdout:write(USAGE); os.exit(EXIT_OK)
+		elseif a == "--about" then
+			io.stdout:write(string.format("%s %s: native Dune: Awakening self-host world control (%s)\n", NAME, VERSION, arch_name()))
+			os.exit(EXIT_OK)
+		elseif a == "--json" then opts.json = true
+		elseif a == "--text" then opts.json = false
+		elseif a == "--no-color" then opts.color = false
+		elseif a == "--no-warn" then opts.no_warn = true
+		elseif a == "--watch" then
+			opts.watch = tonumber(value())
+			if not opts.watch or opts.watch <= 0 then die(EXIT_USAGE, "--watch needs a positive number of seconds") end
+		elseif a == "--count" then
+			opts.count = tonumber(value())
+			if not opts.count or opts.count < 1 or opts.count ~= math.floor(opts.count) then die(EXIT_USAGE, "--count needs a whole number >= 1") end
+		elseif a:sub(1, 1) == "-" then die(EXIT_USAGE, "unknown option %s (see --help)", a)
+		elseif opts.cmd then die(EXIT_USAGE, "unexpected argument %s (see --help)", a)
+		else opts.cmd = a end
+	end
+	if not opts.cmd then io.stderr:write(USAGE); os.exit(EXIT_USAGE) end
+	local known = { start = true, stop = true, restart = true, status = true }
+	for k in pairs(TOOLS) do known[k] = true end
+	if not known[opts.cmd] then die(EXIT_USAGE, "unknown command %s (see --help)", opts.cmd) end
+	opts.color_err = opts.color and not getenv("NO_COLOR") and ffi.C.isatty(2) == 1
+	if getenv("NO_COLOR") or ffi.C.isatty(1) == 0 then opts.color = false end
+	return opts
+end
+
+-- World configuration -------------------------------------------------------------------------------------------
+
+-- world.conf is written with Bash %q quoting, so let Bash read it.
+local function load_world(config_dir)
+	local conf = config_dir .. "/world.conf"
+	local f = io.open(conf); if not f then die(EXIT_ERR, "missing %s; run dune-world-init", conf) end; f:close()
+	local out, ok = capture("bash -c '. \"$1\" && printf \"%s\\n\" \"${WORLD_UNIQUE_NAME-}\" \"${WORLD_DISPLAY_NAME-}\" \"${WORLD_REGION-}\" \"${EXTERNAL_ADDRESS-}\"' _ " .. q(conf))
+	if not ok then die(EXIT_ERR, "cannot read %s", conf) end
+	local v = {}
+	for line in (out .. "\n"):gmatch("([^\n]*)\n") do v[#v + 1] = line end
+	if (v[1] or "") == "" then die(EXIT_ERR, "%s has no WORLD_UNIQUE_NAME", conf) end
+	return { unique = v[1], display = v[2] ~= "" and v[2] or v[1], region = v[3] ~= "" and v[3] or "North America", external = v[4] ~= "" and v[4] or nil }
+end
+
+local function default_route_source()
+	local out = capture("ip -4 route get 1.1.1.1 2>/dev/null")
+	return out:match(" src (%d+%.%d+%.%d+%.%d+)") or "127.0.0.1"
+end
+
+-- Export the environment every component script reads.
+local function setup_env()
+	local home = getenv("HOME", "")
+	local config = getenv("DUNE_CONFIG_DIR", home .. "/.config/dune_awakening_server")
+	local state = getenv("DUNE_STATE_DIR", home .. "/.local/share/dune_awakening_server/runtime")
+	local unpacked = getenv("DUNE_UNPACKED_DIR", home .. "/.local/share/dune_awakening_server/unpacked")
+	local steam = getenv("DUNE_STEAM_SERVER_DIR", home .. "/.local/share/dune_awakening_server/steam-server")
+	local tr_port = getenv("DUNE_TEXTROUTER_PORT", "18081")
+	local env = {
+		DUNE_CONFIG_DIR = config, DUNE_STATE_DIR = state, DUNE_UNPACKED_DIR = unpacked, DUNE_STEAM_SERVER_DIR = steam,
+		DUNE_SECRETS_DIR = getenv("DUNE_SECRETS_DIR", state .. "/secrets"),
+		DUNE_PG_DATA = getenv("DUNE_PG_DATA", state .. "/postgres"),
+		DUNE_TEXTROUTER_PORT = tr_port, DUNE_RMQ_AUTH_ADDRESS = "127.0.0.1:" .. tr_port,
+		DUNE_DB_UTILS_SRC = unpacked .. "/server-db-utils/rootfs/root",
+		DUNE_TEXTROUTER_ROOT = state .. "/textrouter-root", DUNE_DIRECTOR_ROOT = state .. "/director-root",
+		DUNE_GATEWAY_SRC = unpacked .. "/server-gateway/rootfs",
+		DUNE_SERVER_SRC = unpacked .. "/server/rootfs/home/dune/server",
+		DUNE_USERSETTINGS_DEFAULTS = steam .. "/scripts/setup/config", DUNE_USERSETTINGS_OVERRIDES = config .. "/UserSettings",
+	}
+	for k, v in pairs(env) do setenv(k, v) end
+	return env
+end
+
+local function world_env(env)
+	local world = load_world(env.DUNE_CONFIG_DIR)
+	world.external = getenv("DUNE_EXTERNAL_ADDRESS") or world.external or default_route_source()
+	setenv("DUNE_WORLD_NAME", world.unique); setenv("DUNE_WORLD_DISPLAY_NAME", world.display)
+	setenv("DUNE_WORLD_REGION", world.region); setenv("DUNE_EXTERNAL_ADDRESS", world.external)
+	return world
+end
+
+-- Components ----------------------------------------------------------------------------------------------------
+
+local COMPONENTS = { { "postgres" }, { "rabbitmq", "admin" }, { "rabbitmq", "game" }, { "textrouter" }, { "director" }, { "gateway" }, { "server" } }
+
+local function comp(dir, name, ...)
+	local parts = { q(dir .. "/dune-" .. name) }
+	for _, a in ipairs({ ... }) do parts[#parts + 1] = q(a) end
+	return table.concat(parts, " ")
+end
+
+local function step(what) io.stderr:write("▸ ", what, "\n") end
+
+local function cmd_start(dir, env)
+	world_env(env)
+	local secrets = env.DUNE_SECRETS_DIR
+	local fls = env.DUNE_CONFIG_DIR .. "/fls_secret"
+	if not run("mkdir -p -m 700 " .. q(env.DUNE_STATE_DIR) .. " " .. q(secrets)) then die(EXIT_ERR, "cannot create state dirs") end
+	local f = io.open(fls); if not f then die(EXIT_ERR, "missing FLS token at %s", fls) end; f:close()
+	run("ln -sfn " .. q(fls) .. " " .. q(secrets .. "/fls_token"))
+	local jp = env.DUNE_CONFIG_DIR .. "/join_password"
+	f = io.open(jp); if f then f:close(); run("ln -sfn " .. q(jp) .. " " .. q(secrets .. "/join_password")) end
+	local function must(what, ok) if not ok then die(EXIT_ERR, "%s failed", what) end end
+	step("postgres"); must("postgres", run(comp(dir, "postgres", "init")) and run(comp(dir, "postgres", "start")))
+	local log = env.DUNE_STATE_DIR .. "/db-setup.log"
+	step("schema"); must("schema (see " .. log .. ")", run(comp(dir, "db-setup") .. " > " .. q(log) .. " 2>&1"))
+	step("partition")
+	local part, ok = capture(comp(dir, "world-partitions"))
+	part = part:match("(%d+)%s*$")
+	must("partition", ok and part)
+	setenv("DUNE_PARTITION_INDEX", part)
+	for _, b in ipairs({ "admin", "game" }) do
+		step("rabbitmq " .. b); must("rabbitmq " .. b, run(comp(dir, "rabbitmq", "init", b)) and run(comp(dir, "rabbitmq", "start", b)))
+	end
+	-- The .NET apps are re-prepared only when not running (preparation replaces their runtime tree).
+	local dotnet = {
+		{ "textrouter", "server-text-router", env.DUNE_TEXTROUTER_ROOT, "Tools/Battlegroups/TextRouter/TextRouter", "TextRouter" },
+		{ "director", "server-bg-director", env.DUNE_DIRECTOR_ROOT, "Tools/Battlegroups/Director/BattlegroupDirector", "Director" },
+	}
+	for _, d in ipairs(dotnet) do
+		step(d[1])
+		if not run(comp(dir, d[1], "status")) then
+			must(d[1], run(comp(dir, "dotnet-prepare", env.DUNE_UNPACKED_DIR .. "/" .. d[2] .. "/rootfs", d[3], d[4], d[5])) and run(comp(dir, d[1], "start")))
+		end
+	end
+	step("gateway"); must("gateway", run(comp(dir, "gateway", "start")))
+	step("map server Survival_1 (partition " .. part .. ")"); must("server", run(comp(dir, "server", "start")))
+end
+
+local function cmd_stop(dir, env)
+	world_env(env)
+	setenv("DUNE_PARTITION_INDEX", "0")
+	local ok = true
+	for i = #COMPONENTS, 1, -1 do
+		local c = COMPONENTS[i]
+		step(c[1] .. (c[2] and (" " .. c[2]) or ""))
+		if not run(comp(dir, c[1], "stop", c[2])) then ok = false end
+	end
+	if not ok then die(EXIT_ERR, "some components did not stop cleanly") end
+end
+
+local function iso_now()
+	local z = os.date("%z")
+	return os.date("%Y-%m-%dT%H:%M:%S") .. z:sub(1, 3) .. ":" .. z:sub(4, 5)
+end
+
+-- Map-server uptime and memory from its memory-capped systemd user scope, when running.
+local function server_stats(env, world)
+	local stats = {}
+	local f = io.open(env.DUNE_STATE_DIR .. "/server/pid")
+	local pid = f and f:read("*l"); if f then f:close() end
+	if not (pid and pid:match("^%d+$") and run("kill -0 " .. pid .. " 2>/dev/null")) then return stats end
+	stats.uptime_seconds = tonumber((capture("ps -o etimes= -p " .. pid)):match("%d+"))
+	-- Cumulative user+system CPU (all threads) from /proc/<pid>/stat fields 14-15; the panel diffs it for CPU %.
+	local sf = io.open("/proc/" .. pid .. "/stat")
+	local st = sf and sf:read("*l"); if sf then sf:close() end
+	local rest = st and st:match("%) (.*)$")
+	if rest then
+		local fields = {}
+		for w in rest:gmatch("%S+") do fields[#fields + 1] = w end
+		local SC_CLK_TCK = 2
+		stats.cpu_seconds = (tonumber(fields[12]) + tonumber(fields[13])) / tonumber(ffi.C.sysconf(SC_CLK_TCK))
+	end
+	local unit = "dune-server-" .. world.unique:gsub("[^%w%-]", "-") .. ".scope"
+	local function prop(p) return tonumber((capture("systemctl --user show " .. q(unit) .. " -p " .. p .. " --value 2>/dev/null")):match("^(%d+)%s*$")) end
+	stats.memory_bytes, stats.memory_max_bytes = prop("MemoryCurrent"), prop("MemoryMax")
+	return stats
+end
+
+-- Probe every component; RabbitMQ uses its cheap --quick liveness check (the full one boots an Erlang VM).
+local function probe(dir)
+	local comps, all_up = {}, true
+	for _, c in ipairs(COMPONENTS) do
+		local up = run(comp(dir, c[1], "status", c[2], c[1] == "rabbitmq" and "--quick" or nil) .. " >/dev/null 2>&1")
+		all_up = all_up and up
+		comps[#comps + 1] = { name = c[1] .. (c[2] and ("-" .. c[2]) or ""), label = c[1] .. (c[2] and (" " .. c[2]) or ""), up = up }
+	end
+	return comps, all_up
+end
+
+-- One status document for admin pages: world identity, components, characters, map-server resources.
+local function status_json(dir, env, world, flake)
+	local cjson = require("cjson")
+	cjson.encode_escape_forward_slash(false)
+	local comps, all_up = probe(dir)
+	do
+		local list = {}
+		for i, c in ipairs(comps) do list[i] = { name = c.name, up = c.up } end
+		local s = server_stats(env, world)
+		-- Characters stored/online, or null when the database is unreachable.
+		local characters = cjson.null
+		local out, ok = capture(comp(dir, "character", "list", "--json") .. " 2>/dev/null")
+		local okd, char_list = pcall(cjson.decode, out)
+		if ok and okd and type(char_list) == "table" then
+			local online = 0
+			for _, c in ipairs(char_list) do if c.online == true then online = online + 1 end end
+			characters = { stored = #char_list, online = online }
+		end
+		return cjson.encode({
+			timestamp = iso_now(), flake = flake, characters = characters, external_address = world.external, up = all_up, components = list,
+			world = { unique_name = world.unique, display_name = world.display, region = world.region },
+			server = { uptime_seconds = s.uptime_seconds or cjson.null, memory_bytes = s.memory_bytes or cjson.null,
+				memory_max_bytes = s.memory_max_bytes or cjson.null, cpu_seconds = s.cpu_seconds or cjson.null },
+		}), all_up
+	end
+end
+
+local function cmd_status(opts, dir, env, flake)
+	local world = world_env(env)
+	setenv("DUNE_PARTITION_INDEX", "0")
+	if opts.json then
+		local n, all_up = 0
+		repeat
+			local doc
+			doc, all_up = status_json(dir, env, world, flake)
+			io.stdout:write(doc, "\n"); io.stdout:flush()
+			n = n + 1
+			if not opts.watch or (opts.count and n >= opts.count) then break end
+			ffi.C.usleep(math.floor(opts.watch * 1e6))
+		until false
+		os.exit((opts.watch or all_up) and EXIT_OK or EXIT_ERR)
+	else
+		local comps, all_up = probe(dir)
+		for _, c in ipairs(comps) do
+			local mark = c.up and (opts.color and "\27[32m●\27[0m" or "●") or (opts.color and "\27[2m○\27[0m" or "○")
+			io.stdout:write(string.format("%s %-16s %s\n", mark, c.label, c.up and "up" or "down"))
+		end
+		os.exit(all_up and EXIT_OK or EXIT_ERR)
+	end
+end
+
+-- Templates copied from the repo's config.sample/ must be filled in and renamed (suffix dropped) before use.
+local function warn_templates(opts, config_dir)
+	if opts.no_warn or getenv("DUNE_NO_WARNINGS") then return end
+	local out = capture("find " .. q(config_dir) .. " -type f \\( -name '*.sample' -o -name '*.default' \\) 2>/dev/null | sort")
+	local files = {}
+	for line in out:gmatch("[^\n]+") do files[#files + 1] = line:sub(#config_dir + 2) end
+	if #files == 0 then return end
+	local color = opts.color_err and "\27[33m" or ""
+	io.stderr:write(color, NAME, ": warning: template files in ", config_dir, " still need filling in and renaming (drop the suffix): ",
+		table.concat(files, ", "), color ~= "" and "\27[0m" or "", "\n")
+end
+
+local function main()
+	local opts = parse_args(arg)
+	local self = self_path()
+	local flake = dirname(dirname(self))
+	if not os.getenv("DUNE_GLIBC_LOADER") then reexec_in_nix(flake, self) end
+	local dir = getenv("DUNE_COMPONENTS_DIR", flake .. "/libexec")
+	local env = setup_env()
+	warn_templates(opts, env.DUNE_CONFIG_DIR)
+	if TOOLS[opts.cmd] then
+		local argv = { dir .. "/" .. TOOLS[opts.cmd] }
+		for _, a in ipairs(opts.rest) do argv[#argv + 1] = a end
+		local cargv, keep = ffi.new("char*[?]", #argv + 1), {}
+		for j, a in ipairs(argv) do keep[j] = ffi.new("char[?]", #a + 1, a); cargv[j - 1] = keep[j] end
+		ffi.C.execvp(argv[1], cargv)
+		die(EXIT_ERR, "cannot run %s", argv[1])
+	elseif opts.cmd == "start" then cmd_start(dir, env)
+	elseif opts.cmd == "stop" then cmd_stop(dir, env)
+	elseif opts.cmd == "restart" then cmd_stop(dir, env); cmd_start(dir, env)
+	else cmd_status(opts, dir, env, flake) end
+end
+
+main()

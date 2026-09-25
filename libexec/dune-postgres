@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Manage the project's PostgreSQL 17 cluster for the Dune database: loopback-only TCP, scram auth, builtin C.UTF-8
+# locale (codepoint order + Unicode case mapping, matching Funcom's musl en_US.utf8 cluster),
+# admin password generated once into a private secrets dir. Usage: dune-postgres init|start|stop|status
+set -u
+: "${DUNE_PG_DATA:?set DUNE_PG_DATA to the cluster data directory}"
+: "${DUNE_SECRETS_DIR:?set DUNE_SECRETS_DIR to the private secrets directory}"
+DUNE_PG_PORT=${DUNE_PG_PORT:-15431}
+admin_pw_file="$DUNE_SECRETS_DIR/postgres_admin_password"
+
+die() { printf 'dune-postgres: %s\n' "$*" >&2; exit 1; }
+
+# Generate a 32-char alphanumeric secret once; never overwrite an existing one.
+ensure_secret() {
+	[ -s "$1" ] && return 0
+	(umask 077; openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32 > "$1") || die "cannot write $1"
+}
+
+cmd_init() {
+	mkdir -p -m 700 "$DUNE_SECRETS_DIR" && chmod 700 "$DUNE_SECRETS_DIR" || die "cannot create $DUNE_SECRETS_DIR"
+	ensure_secret "$admin_pw_file"
+	[ -f "$DUNE_PG_DATA/PG_VERSION" ] && return 0
+	initdb -D "$DUNE_PG_DATA" -U postgres --pwfile="$admin_pw_file" --auth=scram-sha-256 \
+		--encoding=UTF8 --locale=C --locale-provider=builtin --builtin-locale=C.UTF-8 >/dev/null || die "initdb failed"
+	cat >> "$DUNE_PG_DATA/postgresql.conf" <<CONF
+# dune-postgres
+listen_addresses = '127.0.0.1'
+unix_socket_directories = '$DUNE_PG_DATA'
+password_encryption = 'scram-sha-256'
+CONF
+}
+
+cmd_start() {
+	[ -f "$DUNE_PG_DATA/PG_VERSION" ] || die "cluster not initialized; run init first"
+	cmd_status && return 0
+	pg_ctl -D "$DUNE_PG_DATA" -o "-p $DUNE_PG_PORT" -l "$DUNE_PG_DATA/server.log" -w start >/dev/null || die "start failed; see $DUNE_PG_DATA/server.log"
+}
+
+cmd_stop() { pg_ctl -D "$DUNE_PG_DATA" -m fast -w stop >/dev/null; }
+cmd_status() { pg_ctl -D "$DUNE_PG_DATA" status >/dev/null 2>&1; }
+
+case "${1:-}" in
+	init) cmd_init ;;
+	start) cmd_start ;;
+	stop) cmd_stop ;;
+	status) cmd_status ;;
+	-h|--help) sed -n '2,3p' "$0" | sed 's/^# \{0,1\}//' ;;
+	*) die "usage: dune-postgres init|start|stop|status" ;;
+esac

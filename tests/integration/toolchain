@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# The operator shell provides the native runtime tools and deliberately no container engine (the operator: no Docker).
+set -u
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+for tool in bash curl git jq openssl python3 rsync make steamcmd psql initdb pg_ctl; do
+	command -v "$tool" >/dev/null || fail "missing tool: $tool"
+done
+for engine in docker docker-compose podman; do
+	command -v "$engine" >/dev/null && fail "container engine present in shell: $engine"
+done
+[ "$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)" = 3.12 ] || fail "python3 is not 3.12 (Funcom bytecode requires it)"
+python3 -c 'import psycopg2, dateutil, debugpy' 2>/dev/null || fail "python3 lacks psycopg2/dateutil/debugpy"
+exit "$failures"

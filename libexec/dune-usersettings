@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Deploy the map server's gameplay settings, like Funcom's `battlegroup.sh apply-default-usersettings`: copy every
+# User*.ini default (UserEngine, UserGame, UserServerCustomSettings, ...) into Saved/UserSettings, letting an operator
+# override file of the same name (kept outside Git, e.g. ~/.config/dune_awakening_server/UserSettings/) win.
+# Usage: dune-usersettings DEFAULTS_DIR OVERRIDES_DIR DEST_DIR
+set -u
+die() { printf 'dune-usersettings: %s\n' "$*" >&2; exit 1; }
+[ $# -eq 3 ] || die "usage: dune-usersettings DEFAULTS_DIR OVERRIDES_DIR DEST_DIR"
+defaults=$1 overrides=$2 dest=$3
+[ -d "$defaults" ] || die "no defaults dir $defaults"
+mkdir -p "$dest" || die "cannot create $dest"
+shopt -s nullglob
+for f in "$defaults"/User*.ini; do
+	name=${f##*/}
+	src=$f
+	[ -f "$overrides/$name" ] && src="$overrides/$name"
+	cp -- "$src" "$dest/$name" || die "cannot deploy $name"
+done
+for f in "$overrides"/User*.ini; do
+	[ -e "$defaults/${f##*/}" ] || cp -- "$f" "$dest/${f##*/}" || die "cannot deploy ${f##*/}"
+done

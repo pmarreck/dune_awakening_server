@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# tests/lib/ports.bash pick_port_base as a classifier over blocks: default blocks lie within 20000..32767; a range
+# whose every block contains a busy port yields failure; a range avoiding it yields a block that excludes it.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. tests/lib/ports.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+for _ in $(seq 1 200); do
+	b=$(pick_port_base 8) || { fail "no default base found"; break; }
+	[ "$b" -ge 20000 ] && [ $((b + 7)) -le 32767 ] || { fail "block $b..$((b + 7)) outside 20000..32767"; break; }
+done
+busy_port=24000
+socat "TCP-LISTEN:$busy_port,bind=127.0.0.1,reuseaddr,fork" EXEC:true 2>/dev/null &
+held=$!
+trap 'kill "$held" 2>/dev/null' EXIT
+for _ in $(seq 1 50); do ss -Hltn "sport = :$busy_port" | grep -q . && break; sleep 0.1; done
+ss -Hltn "sport = :$busy_port" | grep -q . || { fail "could not occupy port $busy_port for the test"; exit "$failures"; }
+# Every 4-port block in 23997..24003 contains 24000, so the picker must fail.
+b=$(pick_port_base 4 23997 24003) && fail "returned block $b despite every candidate containing busy port $busy_port"
+# In 23990..24003 the only free 4-blocks end before 24000; any returned block must exclude it.
+for _ in $(seq 1 100); do
+	b=$(pick_port_base 4 23990 24003) || { fail "no free block found where one exists"; break; }
+	[ $((b + 3)) -lt "$busy_port" ] || { fail "returned block $b..$((b + 3)) containing busy port"; break; }
+done
+exit "$failures"

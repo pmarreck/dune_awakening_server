@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Run every suite. --hermetic runs only suites that work inside the Nix build sandbox (used by the Nix check):
+# payload suites need the local proprietary payload; host suites need a real host network stack
+# (RabbitMQ's Erlang HTTP auth client cannot reach loopback inside the sandbox; see PLAN.md).
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
+suites=(tests/unit/unpack tests/unit/ports tests/unit/port-guards tests/unit/usersettings tests/integration/toolchain tests/integration/postgres tests/integration/world-init tests/integration/world-status tests/integration/world-cli tests/integration/character-tool tests/integration/backup tests/integration/update tests/integration/units tests/integration/server-config tests/integration/admin)
+host_suites=(tests/integration/rabbitmq tests/payload/db-setup tests/payload/world-partitions tests/payload/dotnet-apps tests/payload/textrouter-auth tests/payload/character-transfer tests/integration/world-cli-nix tests/unit/public-hygiene tests/integration/units-verify)
+case "${1:-}" in
+	--hermetic) ;;
+	"") suites+=("${host_suites[@]}") ;;
+	*) printf 'usage: ./test [--hermetic]\n' >&2; exit 2 ;;
+esac
+failures=0
+for suite in "${suites[@]}"; do
+	output=$(bash "$suite" 2>&1)
+	status=$?
+	if [ "$status" -eq 0 ]; then
+		printf 'PASS %s\n' "$suite"
+	else
+		printf 'FAIL %s (exit %s)\n%s\n' "$suite" "$status" "$output" >&2
+		failures=$((failures + 1))
+	fi
+done
+exit "$failures"

@@ -1,0 +1,10 @@
+# Backup retention for `dune-world backup prune` (the daily backup timer runs it after each backup).
+# Optional: without this file the defaults below apply. Rename to backup.conf to change them.
+# Plain KEY=value lines; values are whole days. Unknown keys are errors.
+
+# Keep every backup newer than this many days.
+KEEP_ALL_DAYS=7
+
+# Beyond that, keep the newest backup of each week until it is this many days old (91 = about 3 months).
+# Older backups are moved to the trash (DUNE_TRASH_DIR, default ~/.Trash). The newest backup is always kept.
+KEEP_WEEKLY_DAYS=91

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Run Funcom's battlegroup Gateway (CPython 3.12 bytecode) natively from a private copy of the image layout
+# (Tools/Battlegroups/GatewayService + DuneSandbox/). It reports the client-facing game broker address to FLS
+# and monitors map servers. conf.d/gateway.ini carries this world's identity (DASH ships another operator's).
+# Usage: dune-gateway start|stop|status
+set -u
+: "${DUNE_STATE_DIR:?set DUNE_STATE_DIR}"
+: "${DUNE_SECRETS_DIR:?set DUNE_SECRETS_DIR}"
+: "${DUNE_GATEWAY_SRC:?set DUNE_GATEWAY_SRC to the unpacked gateway image rootfs}"
+: "${DUNE_WORLD_NAME:?set DUNE_WORLD_NAME}"
+DUNE_WORLD_DISPLAY_NAME=${DUNE_WORLD_DISPLAY_NAME:-$DUNE_WORLD_NAME}
+DUNE_WORLD_REGION=${DUNE_WORLD_REGION:-North America}
+DUNE_FLS_ENV=${DUNE_FLS_ENV:-retail}
+DUNE_EXTERNAL_ADDRESS=${DUNE_EXTERNAL_ADDRESS:-127.0.0.1}
+DUNE_PG_PORT=${DUNE_PG_PORT:-15431}
+DUNE_RMQ_GAME_PORT=${DUNE_RMQ_GAME_PORT:-31982}
+DUNE_RMQ_GAME_HTTP_PORT=${DUNE_RMQ_GAME_HTTP_PORT:-15673}
+run_dir="$DUNE_STATE_DIR/gateway"
+root="$run_dir/root"
+svc_dir="$root/Tools/Battlegroups/GatewayService"
+pid_file="$run_dir/pid"
+log="$run_dir/gateway-console.log"
+
+die() { printf 'dune-gateway: %s\n' "$*" >&2; exit 1; }
+running() { [ -s "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; }
+
+db_name() {
+	jq -r '.path' "$root/DuneSandbox/Config/perforce-keywords.json" |
+		sed -E 's#.*//seabass/([^/]+)/.*#\1#; s/[-.]/_/g; s/^/dune_/'
+}
+
+prepare() {
+	mkdir -p -m 700 "$run_dir" "$root" && mkdir -p "$svc_dir" || die "cannot create $run_dir"
+	rsync -a --delete "$DUNE_GATEWAY_SRC/DuneSandbox/" "$root/DuneSandbox/" || die "copy DuneSandbox failed"
+	rsync -a --delete --exclude=/conf.d --exclude=/logs \
+		"$DUNE_GATEWAY_SRC/Tools/Battlegroups/GatewayService/" "$svc_dir/" || die "copy GatewayService failed"
+	# The gateway globs conf.d/*.ini relative to its working directory (plus /etc/app/conf.d).
+	mkdir -p "$svc_dir/conf.d" "$svc_dir/logs" || die "cannot create conf.d/logs"
+	(
+		umask 077
+		printf '[OnlineSubsystem]\nServerName=%s\nDatacenterId=%s\n\n[gateway]\ndisplay_name=%s\n' \
+			"$DUNE_WORLD_NAME" "$DUNE_WORLD_REGION" "$DUNE_WORLD_DISPLAY_NAME" > "$svc_dir/conf.d/gateway.ini"
+	) || die "cannot write gateway.ini"
+}
+
+cmd_start() {
+	running && return 0
+	[ -d "$DUNE_GATEWAY_SRC/Tools/Battlegroups/GatewayService" ] || die "no gateway payload at $DUNE_GATEWAY_SRC"
+	prepare
+	local db dune_pw fls_token=""
+	db=$(db_name) && [ -n "$db" ] || die "cannot derive DB name"
+	dune_pw=$(cat "$DUNE_SECRETS_DIR/postgres_dune_password") || die "missing postgres_dune_password"
+	[ -s "$DUNE_SECRETS_DIR/fls_token" ] && fls_token=$(tr -d '\r\n' < "$DUNE_SECRETS_DIR/fls_token")
+	(umask 077; : > "$log") || die "cannot create $log"
+	(
+		cd "$svc_dir" || exit 1
+		# The gateway reads only DatabaseHost, as host:port (no DatabasePort key), unlike TextRouter.
+		export DuneDatabaseInterfacePSQL_DatabaseHost="127.0.0.1:$DUNE_PG_PORT"
+		export DuneDatabaseInterfacePSQL_DatabaseUser=dune DuneDatabaseInterfacePSQL_DatabasePassword="$dune_pw"
+		export DuneDatabaseInterfacePSQL_DatabaseName="$db"
+		export FuncomLiveServices__ServiceAuthToken="$fls_token" gateway_farm_api_key="$fls_token"
+		export FuncomLiveServices__RmqTlsEnabled=true FuncomLiveServices__DefaultFlsEnvironment="$DUNE_FLS_ENV"
+		export FuncomLiveServices__BattlegroupAuthorizationPreset=BattlegroupInternal
+		export RMQ_HTTP_TOKEN_AUTH_SECRET="$(cat "$DUNE_SECRETS_DIR/rmq_http_token_auth_secret")"
+		export BATTLEGROUP_DISPLAY_NAME="$DUNE_WORLD_DISPLAY_NAME" OPT_DISPLAY_NAME="$DUNE_WORLD_DISPLAY_NAME"
+		export OPT_SERVERNAME="$DUNE_WORLD_NAME"
+		export HOST_DATACENTER_ID="$DUNE_WORLD_REGION" HOST_DATACENTER_IP_ADDRESS="$DUNE_EXTERNAL_ADDRESS"
+		exec setsid python3 -m service -c service/configs/service.conf \
+			--RMQGameHostname "$DUNE_EXTERNAL_ADDRESS" --RMQGamePort "$DUNE_RMQ_GAME_PORT" \
+			--RMQGameHttpPort "$DUNE_RMQ_GAME_HTTP_PORT" < /dev/null >> "$log" 2>&1
+	) &
+	echo $! > "$pid_file"
+}
+
+cmd_stop() {
+	running || return 0
+	local pid; pid=$(cat "$pid_file")
+	# Python only honors SIGINT promptly (KeyboardInterrupt) while sleeping in its retry backoff; escalate after 15 s.
+	local sig
+	for sig in INT TERM KILL; do
+		kill -"$sig" "$pid" 2>/dev/null
+		for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || { : > "$pid_file"; return 0; }; sleep 0.5; done
+	done
+	die "Gateway (pid $pid) did not stop"
+}
+
+case "${1:-}" in
+	start) cmd_start ;;
+	stop) cmd_stop ;;
+	status) running ;;
+	*) die "usage: dune-gateway start|stop|status" ;;
+esac

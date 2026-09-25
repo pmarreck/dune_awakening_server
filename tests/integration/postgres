@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Lifecycle of the project-managed PostgreSQL cluster (libexec/dune-postgres): init, start, auth, stop, idempotent re-init.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. tests/lib/ports.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-pg-test.XXXXXX") || exit 1
+export DUNE_PG_DATA="$work/pgdata" DUNE_SECRETS_DIR="$work/secrets" DUNE_PG_PORT=$(pick_port_base 1)
+cleanup() { libexec/dune-postgres stop >/dev/null 2>&1; rm -r -- "$work"; }
+trap cleanup EXIT
+
+sql() { # sql PASSWORD QUERY -> prints single value
+	PGPASSWORD="$1" psql -X -A -t -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d postgres -c "$2" 2>&1
+}
+
+out=$(libexec/dune-postgres init 2>&1) || fail "init exited nonzero: $out"
+[ -f "$DUNE_SECRETS_DIR/postgres_admin_password" ] || fail "admin password file missing"
+[ "$(stat -c %a "$DUNE_SECRETS_DIR" 2>/dev/null)" = 700 ] || fail "secrets dir not 0700"
+[ "$(stat -c %a "$DUNE_SECRETS_DIR/postgres_admin_password" 2>/dev/null)" = 600 ] || fail "admin password not 0600"
+admin_pw=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password" 2>/dev/null)
+[ "${#admin_pw}" -ge 24 ] || fail "admin password shorter than 24 chars"
+
+out=$(libexec/dune-postgres start 2>&1) || fail "start exited nonzero: $out"
+libexec/dune-postgres status >/dev/null 2>&1 || fail "status nonzero while running"
+out=$(libexec/dune-postgres start 2>&1) || fail "start while already running must be a no-op success: $out"
+
+[ "$(sql "$admin_pw" "select current_setting('server_version_num')::int / 10000")" = 17 ] || fail "server is not PostgreSQL 17"
+[ "$(sql "$admin_pw" "show listen_addresses")" = 127.0.0.1 ] || fail "listen_addresses is not loopback-only"
+[ "$(sql "$admin_pw" "select count(*) from pg_available_extensions where name in ('pgcrypto','pg_trgm')")" = 2 ] || fail "pgcrypto/pg_trgm not available"
+[ "$(sql "$admin_pw" "show password_encryption")" = scram-sha-256 ] || fail "password_encryption is not scram-sha-256"
+# Match Funcom's musl en_US.utf8 cluster: codepoint collation, Unicode case mapping (builtin C.UTF-8 provider).
+[ "$(sql "$admin_pw" "select datlocprovider::text || ':' || coalesce(datlocale, '') || ':' || pg_encoding_to_char(encoding) from pg_database where datname = 'postgres'")" = b:C.UTF-8:UTF8 ] || fail "cluster locale is not builtin C.UTF-8 with UTF8 encoding"
+[ "$(sql "$admin_pw" "select upper('élan') = 'ÉLAN' and lower('ÅSA') = 'åsa'")" = t ] || fail "Unicode case mapping missing (non-ASCII names would compare differently than on Funcom's cluster)"
+[ "$(sql "$admin_pw" "select string_agg(x, ',' order by x) from (values ('b'),('É'),('a'),('Z')) v(x)")" = Z,a,b,É ] || fail "collation is not codepoint order"
+out=$(sql "wrong-$admin_pw" "select 1")
+case "$out" in *"password authentication failed"*) ;; *) fail "wrong password was not rejected: $out" ;; esac
+
+out=$(libexec/dune-postgres init 2>&1) || fail "re-init exited nonzero: $out"
+[ "$(cat "$DUNE_SECRETS_DIR/postgres_admin_password" 2>/dev/null)" = "$admin_pw" ] || fail "re-init changed the admin password"
+
+out=$(libexec/dune-postgres stop 2>&1) || fail "stop exited nonzero: $out"
+libexec/dune-postgres status >/dev/null 2>&1 && fail "status zero after stop"
+
+exit "$failures"

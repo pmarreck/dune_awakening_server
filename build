@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
+mkdir -p .nix-out/x86_64-linux/operator || exit 1
+exec nix build .#default --out-link .nix-out/x86_64-linux/operator/dash-source "$@"

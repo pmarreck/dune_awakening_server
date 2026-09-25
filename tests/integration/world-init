@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# libexec/dune-world-init: one-time world identity (Funcom convention sh-<HostId>-<6 letters>) and join password,
+# derived from the FLS token's HostId claim, lowercased as Funcom's world.sh does (FLS rejects the uppercase form).
+# The unique name and password must never change once written.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-world-test.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+export DUNE_CONFIG_DIR="$work/config"
+mkdir -p -m 700 "$DUNE_CONFIG_DIR"
+b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
+printf '%s.%s.%s\n' "$(printf '{"alg":"HS256"}' | b64url)" "$(printf '{"HostId":"A1B2C3D4","exp":1}' | b64url)" sig > "$DUNE_CONFIG_DIR/fls_secret"
+chmod 600 "$DUNE_CONFIG_DIR/fls_secret"
+
+out=$(libexec/dune-world-init --display-name "My World" --region "North America" 2>&1) || fail "init: $out"
+conf="$DUNE_CONFIG_DIR/world.conf"
+# shellcheck disable=SC1090
+( . "$conf" && printf '%s\n' "$WORLD_UNIQUE_NAME" ) > "$work/name1" 2>/dev/null || fail "world.conf not sourceable"
+grep -Eq '^sh-a1b2c3d4-[a-z]{6}$' "$work/name1" || fail "unique name not sh-<HostId>-<6 letters>: $(cat "$work/name1")"
+( . "$conf" && [ "$WORLD_DISPLAY_NAME" = "My World" ] && [ "$WORLD_REGION" = "North America" ] ) || fail "display name or region wrong"
+pw="$DUNE_CONFIG_DIR/join_password"
+[ "$(stat -c %a "$pw" 2>/dev/null)" = 600 ] || fail "join password missing or not 0600"
+[ "$(tr -d '\n' < "$pw" | wc -c)" -ge 12 ] || fail "join password shorter than 12"
+grep -Eq '^[a-z0-9]+$' "$pw" || fail "join password not plain lowercase alphanumerics (typeable in game)"
+pw1=$(cat "$pw")
+
+out=$(libexec/dune-world-init --display-name "Renamed" --region "North America" 2>&1) || fail "re-init: $out"
+[ "$( . "$conf" && printf '%s' "$WORLD_UNIQUE_NAME")" = "$(cat "$work/name1")" ] || fail "re-init changed the unique name"
+[ "$( . "$conf" && printf '%s' "$WORLD_DISPLAY_NAME")" = Renamed ] || fail "re-init did not update the display name"
+[ "$(cat "$pw")" = "$pw1" ] || fail "re-init changed the join password"
+exit "$failures"

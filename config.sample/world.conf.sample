@@ -1,0 +1,9 @@
+# Normally written by `dune-world init --display-name "..." --region "..."`, which derives the unique name from
+# your token's HostId. Values use Bash quoting (the file is sourced by Bash).
+# WORLD_UNIQUE_NAME is registered with Funcom on first start: never change it afterwards.
+WORLD_UNIQUE_NAME=sh-yourhostid-abcdef
+WORLD_DISPLAY_NAME=My\ Arrakis
+WORLD_REGION=North\ America
+# Optional: the address players connect to (default: the source address of this host's default route).
+# Use your Tailscale address (tailscale ip -4) when friends join over Tailscale.
+#EXTERNAL_ADDRESS=100.x.y.z

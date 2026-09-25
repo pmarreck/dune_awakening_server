@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Funcom's TextRouter and Director parse --RMQGamePort/--RMQAdminPort as Int16, so ports above 32767 make them
+# print usage and exit. The launchers must refuse such ports up front with a message that names the limit.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-portguard-test.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+export DUNE_STATE_DIR="$work/state" DUNE_SECRETS_DIR="$work/secrets" DUNE_WORLD_NAME=t
+export DUNE_TEXTROUTER_ROOT="$work/tr" DUNE_DIRECTOR_ROOT="$work/dir"
+for launcher in dune-textrouter dune-director; do
+	for var in DUNE_RMQ_GAME_PORT DUNE_RMQ_ADMIN_PORT; do
+		out=$(env "$var=40000" "libexec/$launcher" start 2>&1) && fail "$launcher accepted $var=40000"
+		case "$out" in *32767*) ;; *) fail "$launcher did not explain the Int16 port limit for $var: $out" ;; esac
+	done
+done
+exit "$failures"

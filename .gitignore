@@ -1,0 +1,20 @@
+/vendor/
+/inbox/
+/.nix-out/
+/result*
+/.env
+/secrets/
+/runtime/
+/downloads/
+/.dirtree/
+/erl_crash.dump
+# Operator secrets and state: only *.sample / *.default templates are ever committed.
+fls_secret
+join_password
+world.conf
+backup.conf
+/config.sample/UserSettings/*.ini
+*.dump
+backups/
+char-backups/
+/PLAN.md

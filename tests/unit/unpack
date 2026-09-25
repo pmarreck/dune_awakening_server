@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# libexec/dune-unpack applies docker-archive image layers in order into DEST/rootfs, honoring OCI whiteouts
+# (.wh.<name> deletes a file; .wh..wh..opq empties a directory) and keeps config.json. Synthetic image, no payload.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-unpack-test.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+
+mk() { mkdir -p "$(dirname "$1")" && printf '%s' "$2" > "$1"; }
+l1="$work/l1"; l2="$work/l2"; img="$work/img"
+mk "$l1/etc/keep" one; mk "$l1/etc/gone" doomed; mk "$l1/opq/old" old; mk "$l1/app/v" v1
+mk "$l2/etc/.wh.gone" ""; mk "$l2/opq/.wh..wh..opq" ""; mk "$l2/opq/new" new; mk "$l2/app/v" v2
+mkdir -p "$img"
+# Real OCI payload layers are gzip-compressed; mix one plain and one gzipped layer.
+tar -C "$l1" -cf "$img/layer1.tar" . && tar -C "$l2" -czf "$img/layer2.tar" .
+printf '{"config":{"Cmd":["x"]}}' > "$img/cfg.json"
+printf '[{"Config":"cfg.json","Layers":["layer1.tar","layer2.tar"]}]' > "$img/manifest.json"
+tar -C "$img" -cf "$work/image.tar" manifest.json cfg.json layer1.tar layer2.tar
+
+out=$(libexec/dune-unpack "$work/image.tar" "$work/dest" 2>&1) || fail "unpack failed: $out"
+r="$work/dest/rootfs"
+[ "$(cat "$r/etc/keep" 2>/dev/null)" = one ] || fail "untouched file missing"
+[ -e "$r/etc/gone" ] && fail "file whiteout not applied"
+[ -e "$r/etc/.wh.gone" ] && fail "whiteout marker leaked into rootfs"
+[ -e "$r/opq/old" ] && fail "opaque whiteout did not empty the directory"
+[ "$(cat "$r/opq/new" 2>/dev/null)" = new ] || fail "file added after opaque whiteout missing"
+[ "$(cat "$r/app/v" 2>/dev/null)" = v2 ] || fail "later layer did not win"
+[ "$(jq -r '.config.Cmd[0]' "$work/dest/config.json" 2>/dev/null)" = x ] || fail "config.json not kept"
+[ "$(stat -c %a "$work/dest")" = 700 ] || fail "dest not private (0700)"
+exit "$failures"

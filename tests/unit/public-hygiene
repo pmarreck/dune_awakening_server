@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Host tier (needs the git work tree): operator templates in config.sample/ are all *.sample / *.default (or docs),
+# their filled-in names are gitignored anywhere in the tree, and no tracked file holds a JWT-shaped credential.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+[ -d config.sample ] || { fail "no config.sample/ templates"; exit 1; }
+for f in fls_secret.sample world.conf.sample join_password.sample; do [ -f "config.sample/$f" ] || fail "missing config.sample/$f"; done
+while IFS= read -r f; do
+	case "$f" in *.sample|*.default|*.md) ;; *) fail "config.sample/$f is not a .sample/.default template" ;; esac
+done < <(cd config.sample && find . -type f | sed 's|^\./||')
+# Classifier over a set: filled-in operator files must be ignored wherever they land; templates and code must not be.
+for f in config.sample/fls_secret config.sample/join_password config.sample/world.conf config.sample/backup.conf fls_secret world.conf \
+	config.sample/UserSettings/UserGame.ini backups/x/db.dump char-backups/x.json erl_crash.dump; do
+	git check-ignore -q --no-index "$f" || fail "$f would not be ignored"
+done
+for f in config.sample/fls_secret.sample config.sample/world.conf.sample config.sample/backup.conf.sample bin/dune-world README.md tests/unit/public-hygiene; do
+	git check-ignore -q --no-index "$f" && fail "$f is wrongly ignored"
+done
+hits=$(git grep -l -I -E 'eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}' -- . 2>/dev/null)
+[ -z "$hits" ] || fail "JWT-shaped token in tracked files: $hits"
+# Personal details never enter tracked files. The denylist is private (it names them), kept outside the repo:
+# one string per line (a "find<TAB>replacement" line uses its first field), "keep<TAB>string" lines allow an exact
+# string (the CI badge URL), "#" comments. The scanner first proves it can fail on a string known to be present.
+denylist=${DUNE_PUBLIC_DENYLIST:-$HOME/.config/dune_awakening_server/public-scrub}
+scan() { # scan DENYLIST -> prints offending "file: string" lines
+	local keeps=() line find f
+	while IFS= read -r line; do case "$line" in keep$'\t'*) keeps+=("${line#keep$'\t'}") ;; esac; done < "$1"
+	while IFS= read -r line; do
+		case "$line" in ''|'#'*|keep$'\t'*) continue ;; esac
+		find=${line%%$'\t'*}
+		for f in $(git grep -l -F -e "$find" -- . ':!tests/unit/public-hygiene' 2>/dev/null); do
+			local text; text=$(cat -- "$f")
+			for k in "${keeps[@]+"${keeps[@]}"}"; do text=${text//"$k"/}; done
+			[[ "$text" == *"$find"* ]] && printf '%s: %s\n' "$f" "$find"
+		done
+	done < "$1"
+}
+probe=$(mktemp "${TMPDIR:-/tmp}/denylist-probe.XXXXXX")
+printf 'keep\tMechatron Prime CI\nMechatron Prime\n' > "$probe"
+[ -z "$(scan "$probe")" ] || fail "keep rule does not protect its exact string"
+printf 'Mechatron Prime\n' > "$probe"
+[ -n "$(scan "$probe")" ] || fail "denylist scanner cannot detect a string that is present"
+rm -f -- "$probe"
+if [ -r "$denylist" ]; then
+	hits=$(scan "$denylist")
+	[ -z "$hits" ] || fail "denylisted personal strings in tracked files:
+$hits"
+fi
+exit "$failures"

@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Run Funcom's battlegroup Director natively (prepared by dune-dotnet-prepare). It registers the world with FLS,
+# drives travel/partitions, and polls the game DB. A conf.d/director.ini override (read by Director from its app
+# dir) pins DASH's AuthorizationPreset and keeps the hub maps at MinServers=0, since without Kubernetes Director
+# cannot spawn map servers. Its log contains DB and broker credentials, so it is created 0600.
+# Usage: dune-director start|stop|status
+set -u
+: "${DUNE_STATE_DIR:?set DUNE_STATE_DIR}"
+: "${DUNE_SECRETS_DIR:?set DUNE_SECRETS_DIR}"
+: "${DUNE_DIRECTOR_ROOT:?set DUNE_DIRECTOR_ROOT to the prepared Director root}"
+: "${DUNE_WORLD_NAME:?set DUNE_WORLD_NAME (stable unique world name)}"
+DUNE_WORLD_DISPLAY_NAME=${DUNE_WORLD_DISPLAY_NAME:-$DUNE_WORLD_NAME}
+DUNE_WORLD_REGION=${DUNE_WORLD_REGION:-North America}
+DUNE_FLS_ENV=${DUNE_FLS_ENV:-retail}
+DUNE_EXTERNAL_ADDRESS=${DUNE_EXTERNAL_ADDRESS:-127.0.0.1}
+DUNE_PG_PORT=${DUNE_PG_PORT:-15431}
+DUNE_RMQ_ADMIN_PORT=${DUNE_RMQ_ADMIN_PORT:-5673}
+DUNE_RMQ_GAME_PORT=${DUNE_RMQ_GAME_PORT:-31982}
+DUNE_DIRECTOR_PORT=${DUNE_DIRECTOR_PORT:-18082}
+app_dir="$DUNE_DIRECTOR_ROOT/Tools/Battlegroups/Director/BattlegroupDirector"
+run_dir="$DUNE_STATE_DIR/director"
+pid_file="$run_dir/pid"
+log="$run_dir/director.log"
+
+die() { printf 'dune-director: %s\n' "$*" >&2; exit 1; }
+running() { [ -s "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; }
+
+# Funcom's .NET services parse --RMQGamePort/--RMQAdminPort as Int16; larger ports make them print usage and exit.
+check_ports() {
+	local p
+	for p in "$DUNE_RMQ_GAME_PORT" "$DUNE_RMQ_ADMIN_PORT"; do
+		[ "$p" -ge 1 ] 2>/dev/null && [ "$p" -le 32767 ] || die "RabbitMQ port $p is outside 1..32767 (Funcom parses it as Int16)"
+	done
+}
+
+write_override() {
+	mkdir -p "$app_dir/conf.d" || die "cannot create $app_dir/conf.d"
+	cat > "$app_dir/conf.d/director.ini" <<'INI'
+[ Battlegroup ]
+AuthorizationPreset = BattlegroupInternal
+
+[ SH_Arrakeen ]
+MinServers=0
+
+[ SH_HarkoVillage ]
+MinServers=0
+INI
+}
+
+cmd_start() {
+	running && return 0
+	check_ports
+	[ -x "$app_dir/Director" ] || die "Director not prepared at $app_dir"
+	[ -s "$DUNE_SECRETS_DIR/rmq_http_token_auth_secret" ] || die "missing rmq_http_token_auth_secret; start dune-textrouter first"
+	mkdir -p -m 700 "$run_dir" || die "cannot create $run_dir"
+	write_override
+	local dune_pw fls_token=""
+	dune_pw=$(cat "$DUNE_SECRETS_DIR/postgres_dune_password") || die "missing postgres_dune_password; run dune-db-setup"
+	[ -s "$DUNE_SECRETS_DIR/fls_token" ] && fls_token=$(tr -d '\r\n' < "$DUNE_SECRETS_DIR/fls_token")
+	(umask 077; : > "$log") || die "cannot create $log"
+	(
+		cd "$app_dir" || exit 1
+		export ASPNETCORE_URLS="http://127.0.0.1:$DUNE_DIRECTOR_PORT" DOTNET_RUNNING_IN_CONTAINER=false
+		export Database__address=127.0.0.1 Database__port="$DUNE_PG_PORT" Database__user=dune Database__password="$dune_pw"
+		export RMQ_HTTP_TOKEN_AUTH_SECRET="$(cat "$DUNE_SECRETS_DIR/rmq_http_token_auth_secret")"
+		export BATTLEGROUP_DISPLAY_NAME="$DUNE_WORLD_NAME" OPT_SERVERNAME="$DUNE_WORLD_NAME"
+		export WORLD_NAME="$DUNE_WORLD_DISPLAY_NAME" OPT_DISPLAY_NAME="$DUNE_WORLD_DISPLAY_NAME"
+		export BATTLEGROUP_REGION_NAME="$DUNE_WORLD_REGION"
+		export FuncomLiveServices__ServiceAuthToken="$fls_token" FuncomLiveServices__RmqTlsEnabled=true
+		export FuncomLiveServices__DefaultFlsEnvironment="$DUNE_FLS_ENV"
+		export HOST_DATACENTER_ID="$DUNE_WORLD_REGION" HOST_DATACENTER_IP_ADDRESS="$DUNE_EXTERNAL_ADDRESS"
+		exec setsid ./Director --RMQGameHostname 127.0.0.1 --RMQGamePort "$DUNE_RMQ_GAME_PORT" \
+			--RMQAdminHostname 127.0.0.1 --RMQAdminPort "$DUNE_RMQ_ADMIN_PORT" -fls "$DUNE_FLS_ENV" < /dev/null >> "$log" 2>&1
+	) &
+	echo $! > "$pid_file"
+}
+
+cmd_stop() {
+	running || return 0
+	local pid; pid=$(cat "$pid_file")
+	kill "$pid" 2>/dev/null
+	for _ in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || { : > "$pid_file"; return 0; }; sleep 0.5; done
+	die "Director (pid $pid) did not stop within 30 s"
+}
+
+case "${1:-}" in
+	start) cmd_start ;;
+	stop) cmd_stop ;;
+	status) running ;;
+	*) die "usage: dune-director start|stop|status" ;;
+esac

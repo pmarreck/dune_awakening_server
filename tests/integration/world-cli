@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# bin/dune-world (LuaJIT) CLI surface: help/about/usage errors, self-location through a symlink from another cwd,
+# external-address resolution (env > world.conf > default-route source), and start/stop orchestration order against
+# fake component scripts injected through DUNE_COMPONENTS_DIR.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-world-cli.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+export DUNE_CONFIG_DIR="$work/config dir" DUNE_STATE_DIR="$work/state" DUNE_UNPACKED_DIR="$work/unpacked"
+unset DUNE_EXTERNAL_ADDRESS
+mkdir -p -m 700 "$DUNE_CONFIG_DIR"
+printf 'WORLD_UNIQUE_NAME=sh-abc-qwerty\nWORLD_DISPLAY_NAME=%q\nWORLD_REGION=%q\n' "My World" "North America" > "$DUNE_CONFIG_DIR/world.conf"
+printf 'token\n' > "$DUNE_CONFIG_DIR/fls_secret"
+world() { bin/dune-world "$@"; }
+
+out=$(world --help 2>&1) || fail "--help exited nonzero"
+[[ "$out" == *start* && "$out" == *stop* && "$out" == *status* ]] || fail "--help does not list start/stop/status: $out"
+[ "$(world -h 2>&1)" = "$out" ] || fail "-h differs from --help"
+out=$(world --about 2>&1) || fail "--about exited nonzero"
+[ "$(printf '%s\n' "$out" | wc -l)" -eq 1 ] && [[ "$out" == *dune-world* && "$out" == *"$(uname -m)"* ]] || fail "--about not one line with name and arch: $out"
+world >/dev/null 2>&1; [ $? -eq 2 ] || fail "no command did not exit 2"
+world bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown command did not exit 2"
+world --bogus status >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown option did not exit 2"
+
+# Self-location: invoked through a symlink elsewhere, from another cwd.
+ln -s "$PWD/bin/dune-world" "$work/dw"
+json=$(cd / && "$work/dw" status --json 2>"$work/err"); rc=$?
+[ "$rc" -eq 1 ] || fail "status via symlink from / exited $rc (want 1: all down): $(cat "$work/err")"
+[ "$(jq -r '.world.display_name' <<<"$json" 2>/dev/null)" = "My World" ] || fail "status via symlink: $json"
+[ -s "$work/err" ] && fail "status via symlink wrote stderr: $(cat "$work/err")"
+[ "$(jq -r '.flake' <<<"$json" 2>/dev/null)" = "$PWD" ] || fail "status via symlink did not resolve its own flake ($PWD): $json"
+
+# External address: env beats world.conf beats the default route's source address.
+want=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+[ -n "$want" ] || want=127.0.0.1
+[ "$(world status --json 2>/dev/null | jq -r '.external_address')" = "$want" ] || fail "auto external address not $want"
+printf 'EXTERNAL_ADDRESS=10.1.1.1\n' >> "$DUNE_CONFIG_DIR/world.conf"
+[ "$(world status --json 2>/dev/null | jq -r '.external_address')" = 10.1.1.1 ] || fail "world.conf EXTERNAL_ADDRESS ignored"
+[ "$(DUNE_EXTERNAL_ADDRESS=10.9.8.7 world status --json 2>/dev/null | jq -r '.external_address')" = 10.9.8.7 ] || fail "DUNE_EXTERNAL_ADDRESS ignored"
+
+# Leftover .sample/.default templates in the config dir are warned about on stderr, unless silenced.
+mkdir -p "$DUNE_CONFIG_DIR/UserSettings"
+: > "$DUNE_CONFIG_DIR/join_password.sample"; : > "$DUNE_CONFIG_DIR/UserSettings/UserGame.ini.default"
+world status --json >/dev/null 2>"$work/err"
+[[ "$(cat "$work/err")" == *warning* && "$(cat "$work/err")" == *join_password.sample* && "$(cat "$work/err")" == *UserGame.ini.default* ]] || fail "no warning naming leftover templates: $(cat "$work/err")"
+world status --json --no-warn >/dev/null 2>"$work/err"; [ -s "$work/err" ] && fail "--no-warn did not silence: $(cat "$work/err")"
+DUNE_NO_WARNINGS=1 world status --json >/dev/null 2>"$work/err"; [ -s "$work/err" ] && fail "DUNE_NO_WARNINGS did not silence: $(cat "$work/err")"
+rm -r -- "$DUNE_CONFIG_DIR/UserSettings" "$DUNE_CONFIG_DIR/join_password.sample"
+
+# Orchestration against fake components that log each call.
+fake="$work/fake bin"
+mkdir -p "$fake"
+for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server; do
+	cat > "$fake/dune-$c" <<EOF
+#!$BASH
+printf '%s %s|%s\n' "$c" "\$*" "\${DUNE_PARTITION_INDEX:-}:\${DUNE_EXTERNAL_ADDRESS:-}" >> "$work/calls"
+[ "$c" = world-partitions ] && echo 7
+[ "\$1" = status ] && exit 1
+[ "$c \$*" = "\${FAIL_AT:-}" ] && exit 1
+exit 0
+EOF
+	chmod +x "$fake/dune-$c"
+done
+export DUNE_COMPONENTS_DIR="$fake"
+# status --json carries character counts for the admin panel (from dune-character list --json), or null.
+printf '#!%s\necho '"'"'[{"name":"A","online":true},{"name":"B","online":false},{"name":"C","online":false}]'"'"'\n' "$BASH" > "$fake/dune-character"
+chmod +x "$fake/dune-character"
+[ "$(world status --json 2>/dev/null | jq -c '.characters | [.stored, .online]')" = '[3,1]' ] || fail "status characters: $(world status --json 2>/dev/null | jq -c .characters)"
+printf '#!%s\nexit 1\n' "$BASH" > "$fake/dune-character"
+[ "$(world status --json 2>/dev/null | jq -c '.characters')" = null ] || fail "characters not null when the DB is unreachable"
+[ "$(world status --json 2>/dev/null | jq -r '.server | has("cpu_seconds")')" = true ] || fail "server.cpu_seconds missing"
+# A running map server (this shell's pid stands in) reports its scope's memory via systemctl, plus uptime and CPU.
+mkdir -p "$DUNE_STATE_DIR/server" "$work/sysbin"; echo $$ > "$DUNE_STATE_DIR/server/pid"
+printf '#!%s\ncase "$*" in *MemoryCurrent*) echo 123 ;; *MemoryMax*) echo 456 ;; esac\n' "$BASH" > "$work/sysbin/systemctl"; chmod +x "$work/sysbin/systemctl"
+s=$(PATH="$work/sysbin:$PATH" world status --json 2>/dev/null | jq -c '.server | [.memory_bytes, .memory_max_bytes, (.uptime_seconds | type), (.cpu_seconds | type)]')
+[ "$s" = '[123,456,"number","number"]' ] || fail "running server stats: $s"
+: > "$DUNE_STATE_DIR/server/pid"
+
+: > "$work/calls"
+out=$(DUNE_EXTERNAL_ADDRESS=10.9.8.7 world start 2>&1) || fail "start with healthy fakes failed: $out"
+got=$(cut -d'|' -f1 "$work/calls" | paste -sd, -)
+[ "$got" = "postgres init,postgres start,db-setup ,world-partitions ,rabbitmq init admin,rabbitmq start admin,rabbitmq init game,rabbitmq start game,textrouter status,dotnet-prepare $DUNE_UNPACKED_DIR/server-text-router/rootfs $DUNE_STATE_DIR/textrouter-root Tools/Battlegroups/TextRouter/TextRouter TextRouter,textrouter start,director status,dotnet-prepare $DUNE_UNPACKED_DIR/server-bg-director/rootfs $DUNE_STATE_DIR/director-root Tools/Battlegroups/Director/BattlegroupDirector Director,director start,gateway start,server start" ] ||
+	fail "start order wrong: $got"
+[ "$(grep '^server start' "$work/calls" | cut -d'|' -f2)" = 7:10.9.8.7 ] || fail "server not given partition 7 and address: $(grep '^server' "$work/calls")"
+[ "$(readlink "$DUNE_STATE_DIR/secrets/fls_token")" = "$DUNE_CONFIG_DIR/fls_secret" ] || fail "fls token not linked into secrets"
+
+: > "$work/calls"
+out=$(FAIL_AT="rabbitmq start admin" world start 2>&1); [ $? -eq 1 ] || fail "start did not fail when a component failed"
+[[ "$out" == *"rabbitmq admin"* ]] || fail "start failure does not name the component: $out"
+grep -q '^textrouter' "$work/calls" && fail "start continued past a failed component"
+
+# Status polls RabbitMQ with the cheap --quick check (the full check boots an Erlang VM per call).
+: > "$work/calls"
+world status >/dev/null 2>&1
+grep -q '^rabbitmq status admin --quick|' "$work/calls" || fail "status did not use the quick RabbitMQ check: $(grep rabbitmq "$work/calls")"
+# --watch streams one JSON document per interval (one nix entry for the admin panel); --count bounds it.
+out=$(world status --json --watch 0.05 --count 3 2>/dev/null); rc=$?
+[ "$rc" -eq 0 ] || fail "watch exited $rc"
+[ "$(printf '%s\n' "$out" | jq -c '.up' 2>/dev/null | wc -l)" = 3 ] || fail "watch did not emit 3 JSON lines: $out"
+world status --json --watch 0 >/dev/null 2>&1; [ $? -eq 2 ] || fail "watch interval 0 not a usage error"
+
+# Tool subcommands pass everything after them to their libexec tool (options included), exit status preserved.
+for pair in update:dune-update backup:dune-backup character:dune-character init:dune-world-init units:dune-units; do
+	sub=${pair%%:*} tool=${pair#*:}
+	printf '#!%s\nprintf "%s %%s\\n" "$*" >> "%s"\nexit 4\n' "$BASH" "$tool" "$work/calls" > "$fake/$tool"; chmod +x "$fake/$tool"
+	: > "$work/calls"
+	world "$sub" list --json "a b" >/dev/null 2>&1; rc=$?
+	[ "$(cat "$work/calls")" = "$tool list --json a b" ] || fail "$sub passthrough: $(cat "$work/calls")"
+	[ "$rc" -eq 4 ] || fail "$sub exit status not passed through: $rc"
+done
+# With no DUNE_COMPONENTS_DIR, tools are found in the checkout's libexec/.
+out=$(env -u DUNE_COMPONENTS_DIR bin/dune-world backup --about 2>&1) && [[ "$out" == dune-backup* ]] || fail "backup not found in libexec: $out"
+[ -z "$(find bin -type f ! -name dune-world)" ] || fail "bin/ holds more than dune-world: $(find bin -type f ! -name dune-world | paste -sd' ' -)"
+
+# admin passes everything after it to the dune-admin component (options included), with the world environment set.
+printf '#!%s\nprintf "admin %%s|%%s\\n" "$*" "${DUNE_SECRETS_DIR:-}" >> "%s"\nexit 3\n' "$BASH" "$work/calls" > "$fake/dune-admin"; chmod +x "$fake/dune-admin"
+: > "$work/calls"
+world admin kick "Some One" --json >/dev/null 2>&1; rc=$?
+[ "$(grep '^admin' "$work/calls")" = "admin kick Some One --json|$DUNE_STATE_DIR/secrets" ] || fail "admin passthrough: $(grep '^admin' "$work/calls")"
+[ "$rc" -eq 3 ] || fail "admin exit status not passed through: $rc"
+
+: > "$work/calls"
+world stop >/dev/null 2>&1 || fail "stop failed"
+got=$(cut -d'|' -f1 "$work/calls" | paste -sd, -)
+[ "$got" = "server stop,gateway stop,director stop,textrouter stop,rabbitmq stop game,rabbitmq stop admin,postgres stop" ] || fail "stop order wrong: $got"
+exit "$failures"

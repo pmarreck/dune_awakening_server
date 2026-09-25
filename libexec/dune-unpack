@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Unpack a docker-archive image tar (as shipped in Funcom's Steam payload) into DEST/rootfs without any container
+# runtime: apply layers in manifest order, honoring OCI whiteouts (.wh.<name> removes a lower-layer file,
+# .wh..wh..opq empties a directory before this layer's own files land). Layers may be plain or gzip (gzip -dcf passes
+# plain tar through unchanged). Keeps the image config as DEST/config.json.
+# Usage: dune-unpack IMAGE_TAR DEST
+set -u
+die() { printf 'dune-unpack: %s\n' "$*" >&2; exit 1; }
+[ $# -eq 2 ] || die "usage: dune-unpack IMAGE_TAR DEST"
+image=$1 dest=$2
+[ -f "$image" ] || die "no image tar at $image"
+manifest=$(tar -xOf "$image" manifest.json) || die "no manifest.json in $image"
+mkdir -p "$dest/rootfs" && chmod 700 "$dest" || die "cannot create $dest"
+tar -xOf "$image" "$(jq -r '.[0].Config' <<<"$manifest")" > "$dest/config.json" || die "cannot read image config"
+
+rootfs="$dest/rootfs"
+while IFS= read -r layer; do
+	while IFS= read -r entry; do
+		entry=${entry#./}
+		base=${entry##*/} dir=${entry%/*}
+		[ "$dir" = "$entry" ] && dir=.
+		case "$base" in
+			.wh..wh..opq) [ -d "$rootfs/$dir" ] && find "$rootfs/$dir" -mindepth 1 -maxdepth 1 -exec rm -r -- {} + ;;
+			.wh.*) target="$rootfs/$dir/${base#.wh.}"; [ -e "$target" ] || [ -L "$target" ] && rm -r -- "$target" ;;
+		esac
+	done < <(tar -xOf "$image" "$layer" | gzip -dcf | tar -t | grep -E '(^|/)\.wh\.')
+	tar -xOf "$image" "$layer" | gzip -dcf | tar -x -C "$rootfs" --exclude='.wh.*' --no-same-owner --delay-directory-restore ||
+		die "extracting $layer failed"
+done < <(jq -r '.[0].Layers[]' <<<"$manifest")
+chmod -R u+rwX "$rootfs"

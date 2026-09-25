@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# bin/dune-world status --json: machine-readable status for a host admin page. With nothing running it must
+# still emit valid JSON naming the world, every component down, overall up=false, and exit nonzero.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-status-test.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+export DUNE_CONFIG_DIR="$work/config" DUNE_STATE_DIR="$work/state" DUNE_UNPACKED_DIR="$work/unpacked"
+mkdir -p -m 700 "$DUNE_CONFIG_DIR"
+printf 'WORLD_UNIQUE_NAME=sh-abc-qwerty\nWORLD_DISPLAY_NAME=%q\nWORLD_REGION=%q\n' "My World" "North America" > "$DUNE_CONFIG_DIR/world.conf"
+
+json=$(bin/dune-world status --json 2>"$work/err"); rc=$?
+[ "$rc" -ne 0 ] || fail "status --json exited 0 with everything down"
+[ -s "$work/err" ] && fail "unexpected stderr: $(cat "$work/err")"
+jq -e . >/dev/null 2>&1 <<<"$json" || fail "not valid JSON: $json"
+[ "$(jq -r '.world.unique_name' <<<"$json")" = sh-abc-qwerty ] || fail "world.unique_name missing"
+[ "$(jq -r '.world.display_name' <<<"$json")" = "My World" ] || fail "world.display_name missing"
+[ "$(jq -r '.up' <<<"$json")" = false ] || fail "overall up should be false"
+[ "$(jq -r '[.components[].name] | join(",")' <<<"$json")" = "postgres,rabbitmq-admin,rabbitmq-game,textrouter,director,gateway,server" ] || fail "component list wrong: $(jq -c '[.components[].name]' <<<"$json")"
+[ "$(jq -r '[.components[] | select(.up)] | length' <<<"$json")" = 0 ] || fail "components reported up with nothing running"
+[[ "$(jq -r '.timestamp' <<<"$json")" =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}T ]] || fail "timestamp missing or not ISO-8601"
+out=$(bin/dune-world status 2>&1)
+case "$out" in *"○ postgres"*) ;; *) fail "plain status output changed: $out" ;; esac
+exit "$failures"

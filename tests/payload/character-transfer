@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# dune-character export / validate / import against the real Funcom schema (installed from the local db-utils
+# payload into a throwaway cluster). Characters are created through Funcom's own login_account, as the server does.
+# The file format is Funcom's character_transfer_export JSON plus our "_dune_character" header; validation is
+# Funcom's own character_transfer_import run inside a transaction that is always rolled back.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. tests/lib/ports.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+
+: "${DUNE_DB_UTILS_SRC:=$HOME/.local/share/dune_awakening_server/unpacked/server-db-utils/rootfs/root}"
+export DUNE_DB_UTILS_SRC
+[ -d "$DUNE_DB_UTILS_SRC/PSQL" ] || { printf 'FAIL payload missing: %s/PSQL\n' "$DUNE_DB_UTILS_SRC" >&2; exit 1; }
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-xfer-test.XXXXXX") || exit 1
+export DUNE_PG_DATA="$work/pg" DUNE_SECRETS_DIR="$work/secrets" DUNE_STATE_DIR="$work/state" DUNE_PG_PORT=$(pick_port_base 1)
+export DUNE_CHARACTER_BACKUP_DIR="$work/backups"
+cleanup() { libexec/dune-postgres stop >/dev/null 2>&1; rm -r -- "$work"; }
+trap cleanup EXIT
+libexec/dune-postgres init >/dev/null 2>&1 && libexec/dune-postgres start >/dev/null 2>&1 || { fail "cluster did not start"; exit 1; }
+out=$(libexec/dune-db-setup 2>&1) || { fail "schema install: $(printf '%s' "$out" | tail -5)"; exit 1; }
+db=dune_sb_1_5_3_0
+dune_pw=$(cat "$DUNE_SECRETS_DIR/postgres_dune_password")
+q() { PGPASSWORD="$dune_pw" psql -X -A -t -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$DUNE_PG_PORT" -U dune -d "$db" -c "set search_path = dune, ext, public; $1"; }
+
+# The server's side of a login, then a logout: account + controller/state/pawn actors + player_state.
+login() { q "select login_account(row('$1', 'funcom-$1', 'plat-$1', 'Steam', '$2', 0, 0, 0, null)::playerlogin)" >/dev/null; }
+login fls-alpha Tester && login fls-beta Other || { fail "login_account fixture"; exit 1; }
+q "update encrypted_player_state set online_status = 'Offline'"
+q "update actors set class = 'BP_DunePlayerCharacter_C', properties = '{\"TechKnowledgePlayerComponent\": {\"m_TechKnowledgePoints\": 5}}'
+	where id in (select player_pawn_id from player_state)"
+
+root="$work/server"
+mkdir -p "$root/DuneSandbox/Config" "$root/DuneSandbox/Saved/Config/LinuxServer"
+printf '[DuneDatabaseInterfacePSQL]\nDatabaseHost=127.0.0.1:%s\nDatabaseName=%s\nDatabaseUser=dune\nDatabasePassword=%s\n' \
+	"$DUNE_PG_PORT" "$db" "$dune_pw" > "$root/DuneSandbox/Saved/Config/LinuxServer/Game.ini"
+char() { libexec/dune-character --server-root "$root" "$@"; }
+research() { q "select a.properties -> 'TechKnowledgePlayerComponent' ->> 'm_TechKnowledgePoints' from player_state ps join actors a on a.id = ps.player_pawn_id where ps.character_name = '$1'"; }
+# Everything a dry run must leave untouched.
+fingerprint() { q "select md5(string_agg(t, '|' order by t)) from (
+	select format('%s', e) as t from encrypted_player_state e union all select format('%s', a) from actors a
+	union all select format('%s', x) from encrypted_accounts x union all select format('%s', c) from character_transfer_imports c) s"; }
+
+# export ----------------------------------------------------------------------------------------------------------
+before=$(fingerprint)
+xfile="$work/my exports/tester.json"
+mkdir -p "$work/my exports"
+out=$(char export Tester -o "$xfile" 2>&1) || fail "export failed: $out"
+[ "$(fingerprint)" = "$before" ] || fail "export changed the database"
+[ "$(stat -c %a "$xfile" 2>/dev/null)" = 600 ] || fail "export file not 0600 (it holds account identifiers)"
+[ "$(jq -r '._dune_character.character_name' "$xfile" 2>/dev/null)" = Tester ] || fail "export lacks cleartext character name"
+[ "$(jq -r '._dune_character.fls_id' "$xfile" 2>/dev/null)" = fls-alpha ] || fail "export lacks the account FLS id"
+[ "$(jq -r '.funcom_id' "$xfile" 2>/dev/null)" = funcom-fls-alpha ] || fail "export lacks Funcom's cleartext funcom_id"
+jq -e '._patches_checksum | length == 32' "$xfile" >/dev/null 2>&1 || fail "export lacks _patches_checksum"
+[ "$(jq '[.entries[] | select(.kind == "Character")] | length' "$xfile" 2>/dev/null)" = 1 ] || fail "export has no single Character entry"
+[ "$(wc -l < "$xfile")" -gt 20 ] && grep -q '^    "entries"' "$xfile" || fail "export is not pretty-printed"
+[ "$(char export Tester 2>/dev/null | jq -r '._dune_character.character_name')" = Tester ] || fail "export without -o did not go to stdout"
+[ "$(char export Tester -o @stdout 2>/dev/null | jq -r '._dune_character.fls_id')" = fls-alpha ] || fail "export -o @stdout"
+out=$(char export Nobody 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nobody* ]] || fail "export of unknown character: $out"
+
+# validate --------------------------------------------------------------------------------------------------------
+out=$(char validate "$xfile" 2>&1) || fail "validate rejected a fresh export: $out"
+[ "$(fingerprint)" = "$before" ] || fail "validate changed the database"
+out=$(char validate - < "$xfile" 2>&1) || fail "validate - (stdin) failed: $out"
+out=$(char validate @stdin < "$xfile" 2>&1) || fail "validate @stdin failed: $out"
+json=$(char validate --json "$xfile" 2>&1) || fail "validate --json failed: $json"
+[ "$(jq -r '.valid' <<<"$json" 2>/dev/null)" = true ] || fail "validate --json lacks valid=true: $json"
+[[ "$json" != *'\/'* ]] || fail "validate --json escapes forward slashes: $json"
+
+bad="$work/bad.json"
+jq '._patches_checksum = "00000000000000000000000000000000"' "$xfile" > "$bad"
+out=$(char validate "$bad" 2>&1); rc=$?
+[ $rc -eq 1 ] || fail "checksum mismatch not rejected (rc $rc)"
+[[ "$out" == *"atches checksum mismatch"* ]] || fail "checksum rejection does not carry the server's reason: $out"
+[[ "$out" != *CONTEXT* && "$out" != *"PL/pgSQL"* && "$out" != *traceback* && "$out" != *"ERROR:"* ]] || fail "server error not cleaned for the CLI: $out"
+json=$(char validate --json "$bad" 2>/dev/null)
+[ "$(jq -r '.valid' <<<"$json" 2>/dev/null)" = false ] && [[ "$(jq -r '.errors[0]' <<<"$json" 2>/dev/null)" == *checksum* ]] || fail "validate --json error report: $json"
+
+printf '{"entries": [' > "$bad"
+out=$(char validate "$bad" 2>&1); [ $? -eq 1 ] && [[ "$out" == *JSON* ]] || fail "malformed JSON not reported cleanly: $out"
+[[ "$out" != *"ERROR:"* ]] || fail "malformed JSON report not cleaned: $out"
+jq 'del(._dune_character)' "$xfile" > "$bad"
+out=$(char validate "$bad" 2>&1); [ $? -eq 1 ] && [[ "$out" == *_dune_character* ]] || fail "missing header not reported: $out"
+jq '(.entries[] | select(.kind == "act") | .data.state) = "NotAState"' "$xfile" > "$bad"
+out=$(char validate "$bad" 2>&1); [ $? -eq 1 ] && [[ "$out" == *NotAState* ]] || fail "server-rejected value not reported: $out"
+[ "$(fingerprint)" = "$before" ] || fail "failed validations changed the database"
+
+q "update encrypted_player_state set online_status = 'Online' where account_id = (select id from encrypted_accounts where \"user\" = 'fls-alpha')"
+out=$(char validate "$xfile" 2>&1); [ $? -eq 1 ] && [[ "$out" == *nline* ]] || fail "validate against an online account not refused: $out"
+q "update encrypted_player_state set online_status = 'Offline'"
+
+# import ----------------------------------------------------------------------------------------------------------
+edited="$work/edited.json"
+jq '(.entries[] | select(.kind == "act" and .data.class == "BP_DunePlayerCharacter_C") | .data.properties.TechKnowledgePlayerComponent.m_TechKnowledgePoints) = 42' "$xfile" > "$edited"
+out=$(char import "$edited" 2>&1) || fail "import failed: $out"
+[ "$(research Tester)" = 42 ] || fail "import did not apply the edit: research $(research Tester)"
+[ "$(research Other)" = 5 ] || fail "import touched another account"
+[ "$(q "select count(*) from player_state where character_name = 'Tester'")" = 1 ] || fail "import did not leave exactly one active Tester"
+b=$(find "$work/backups" -type f -name '*export*' | head -1)
+[ -n "$b" ] && [ "$(stat -c %a "$b")" = 600 ] && [ "$(jq -r '._dune_character.character_name' "$b")" = Tester ] || fail "no 0600 pre-import export backup"
+[ -n "$b" ] && [ "$(jq -r '.entries[] | select(.kind == "act") | .data.properties.TechKnowledgePlayerComponent.m_TechKnowledgePoints // empty' "$b")" = 5 ] || fail "backup does not hold the pre-import state"
+# The backup restores the previous state (round trip).
+out=$(char import "$b" 2>&1) || fail "re-import of backup failed: $out"
+[ "$(research Tester)" = 5 ] || fail "backup re-import did not restore research"
+
+cnt=$(q "select count(*) from encrypted_player_state")
+out=$(char import "$work/bad.json" 2>&1); [ $? -eq 1 ] || fail "import of invalid file succeeded"
+[ "$(q "select count(*) from encrypted_player_state")" = "$cnt" ] || fail "failed import changed the database"
+
+exit "$failures"

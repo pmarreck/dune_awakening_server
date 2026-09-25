@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# TextRouter runs natively as the RabbitMQ HTTP auth backend: it connects to the Funcom DB and the TLS game broker
+# (authenticating through itself), denies unknown users, derives the DB name from the payload, keeps logs private.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. tests/lib/ports.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+
+unpacked="${DUNE_UNPACKED_DIR:-$HOME/.local/share/dune_awakening_server/unpacked}"
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-tr-test.XXXXXX") || exit 1
+base=$(pick_port_base 7) || { printf "FAIL no free port block\n" >&2; exit 1; }
+export DUNE_STATE_DIR="$work/state" DUNE_SECRETS_DIR="$work/secrets" DUNE_PG_DATA="$work/pg" DUNE_PG_PORT=$base
+export DUNE_RMQ_ADMIN_PORT=$((base + 1)) DUNE_RMQ_GAME_PORT=$((base + 2)) DUNE_TEXTROUTER_PORT=$((base + 3))
+export ERL_EPMD_PORT=$((base + 4)) DUNE_RMQ_DIST_BASE=$((base + 5)) DUNE_RMQ_AUTH_ADDRESS="127.0.0.1:$((base + 3))"
+export DUNE_DB_UTILS_SRC="$unpacked/server-db-utils/rootfs/root" DUNE_TEXTROUTER_ROOT="$work/textrouter"
+export DUNE_WORLD_NAME=test-world DUNE_WORLD_DISPLAY_NAME="Test World"
+cleanup() {
+	libexec/dune-textrouter stop >/dev/null 2>&1
+	libexec/dune-rabbitmq stop game >/dev/null 2>&1; libexec/dune-rabbitmq stop admin >/dev/null 2>&1
+	libexec/dune-postgres stop >/dev/null 2>&1; stop_epmd "$ERL_EPMD_PORT"
+	rm -r -- "$work"
+}
+trap cleanup EXIT
+
+libexec/dune-postgres init >/dev/null && libexec/dune-postgres start >/dev/null && libexec/dune-db-setup >/dev/null 2>&1 || { fail "database setup"; exit 1; }
+for b in admin game; do libexec/dune-rabbitmq init "$b" >/dev/null && libexec/dune-rabbitmq start "$b" >/dev/null || { fail "broker $b"; exit 1; }; done
+libexec/dune-dotnet-prepare "$unpacked/server-text-router/rootfs" "$DUNE_TEXTROUTER_ROOT" Tools/Battlegroups/TextRouter/TextRouter TextRouter || { fail "prepare"; exit 1; }
+
+out=$(libexec/dune-textrouter start 2>&1) || fail "start: $out\n$(tail -15 "$DUNE_STATE_DIR/textrouter/textrouter.log" 2>/dev/null | grep -v -i password)"
+libexec/dune-textrouter status >/dev/null 2>&1 || fail "status nonzero while running"
+log="$DUNE_STATE_DIR/textrouter/textrouter.log"
+[ "$(stat -c %a "$log" 2>/dev/null)" = 600 ] || fail "TextRouter log (contains credentials) is not 0600"
+grep -q "Connecting to database: 'dune_sb_1_5_3_0'" "$log" || fail "TextRouter did not use the payload-derived DB name"
+
+[ "$(curl -s -m 5 -X POST "http://$DUNE_RMQ_AUTH_ADDRESS/v0/auth/user" -d 'username=nobody&password=x')" = deny ] || fail "unknown user was not denied"
+
+conns=""
+for _ in $(seq 1 60); do
+	conns=$(libexec/dune-rabbitmq ctl game list_connections user 2>/dev/null)
+	case "$conns" in *"tr.$DUNE_WORLD_NAME."*) break ;; esac
+	sleep 0.5
+done
+case "$conns" in *"tr.$DUNE_WORLD_NAME."*) ;; *) fail "TextRouter never authenticated to the game broker: $conns" ;; esac
+
+out=$(libexec/dune-textrouter stop 2>&1) || fail "stop: $out"
+libexec/dune-textrouter status >/dev/null 2>&1 && fail "status zero after stop"
+libexec/dune-rabbitmq stop game >/dev/null 2>&1; libexec/dune-rabbitmq stop admin >/dev/null 2>&1
+stop_epmd "$ERL_EPMD_PORT" || fail "epmd still listening on $ERL_EPMD_PORT after shutdown (leak)"
+exit "$failures"

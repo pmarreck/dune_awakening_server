@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Run one Dune game map server (Unreal, DuneSandboxServer-Linux-Shipping) natively, replacing Funcom's
+# Kubernetes run.sh. Runtime tree = symlink farm of the payload server dir with only the binary copied and its
+# interpreter patched to nixpkgs glibc; DuneSandbox/Saved is a real dir outside the farm (world logs/config
+# survive rebuilds). Secrets go into 0600 Saved/Config/LinuxServer ini overrides, never onto argv. Runs under a
+# systemd user scope with a hard MemoryMax so a leak cannot push the host into swap.
+# Usage: dune-server start|stop|status|configure (configure writes the private ini overrides only)
+set -u
+: "${DUNE_STATE_DIR:?set DUNE_STATE_DIR}"
+: "${DUNE_SECRETS_DIR:?set DUNE_SECRETS_DIR}"
+: "${DUNE_SERVER_SRC:?set DUNE_SERVER_SRC to the unpacked server dir (contains DuneSandbox/ and Engine/)}"
+: "${DUNE_GLIBC_LOADER:?set DUNE_GLIBC_LOADER (provided by the flake devShell)}"
+: "${DUNE_GCC_LIB:?set DUNE_GCC_LIB (provided by the flake devShell)}"
+: "${DUNE_WORLD_NAME:?set DUNE_WORLD_NAME}"
+: "${DUNE_PARTITION_INDEX:?set DUNE_PARTITION_INDEX (from dune-world-partitions)}"
+DUNE_WORLD_DISPLAY_NAME=${DUNE_WORLD_DISPLAY_NAME:-$DUNE_WORLD_NAME}
+DUNE_WORLD_REGION=${DUNE_WORLD_REGION:-North America}
+DUNE_FLS_ENV=${DUNE_FLS_ENV:-retail}
+DUNE_EXTERNAL_ADDRESS=${DUNE_EXTERNAL_ADDRESS:-127.0.0.1}
+DUNE_BIND_ADDRESS=${DUNE_BIND_ADDRESS:-$DUNE_EXTERNAL_ADDRESS}
+DUNE_PG_PORT=${DUNE_PG_PORT:-15431}
+DUNE_RMQ_ADMIN_PORT=${DUNE_RMQ_ADMIN_PORT:-5673}
+DUNE_RMQ_GAME_PORT=${DUNE_RMQ_GAME_PORT:-31982}
+DUNE_SERVER_MEMORY_MAX=${DUNE_SERVER_MEMORY_MAX:-20G}
+run_dir="$DUNE_STATE_DIR/server"
+tree="$run_dir/tree"
+saved="$run_dir/Saved"
+home="$run_dir/home"
+pid_file="$run_dir/pid"
+log="$run_dir/server-console.log"
+bin_rel=DuneSandbox/Binaries/Linux/DuneSandboxServer-Linux-Shipping
+unit="dune-server-$(printf '%s' "$DUNE_WORLD_NAME" | tr -c 'a-zA-Z0-9-' '-')"
+
+die() { printf 'dune-server: %s\n' "$*" >&2; exit 1; }
+running() { [ -s "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; }
+
+# Rebuild the symlink farm when the payload binary changes (new build); Saved/ lives outside it.
+prepare_tree() {
+	local stamp want
+	want=$(stat -c '%s %Y' "$DUNE_SERVER_SRC/$bin_rel") || die "no server binary in $DUNE_SERVER_SRC"
+	stamp=$(cat "$run_dir/tree.stamp" 2>/dev/null)
+	if [ "$stamp" != "$want" ] || [ ! -x "$tree/$bin_rel" ]; then
+		[ -d "$tree" ] && mv "$tree" "$run_dir/tree.old.$$" && rm -r -- "$run_dir/tree.old.$$"
+		cp -as "$DUNE_SERVER_SRC" "$tree" || die "symlink farm failed"
+		rm -- "$tree/$bin_rel" && cp "$DUNE_SERVER_SRC/$bin_rel" "$tree/$bin_rel" || die "binary copy failed"
+		chmod u+w "$tree/$bin_rel"
+		patchelf --set-interpreter "$DUNE_GLIBC_LOADER" --add-rpath "$DUNE_GCC_LIB" "$tree/$bin_rel" || die "patchelf failed"
+		printf '%s' "$want" > "$run_dir/tree.stamp"
+	fi
+	mkdir -p "$saved/UserSettings" "$saved/Config/LinuxServer" || die "cannot create Saved/"
+	if [ -n "${DUNE_USERSETTINGS_DEFAULTS:-}" ]; then
+		"$(dirname -- "$0")/dune-usersettings" "$DUNE_USERSETTINGS_DEFAULTS" "${DUNE_USERSETTINGS_OVERRIDES:-/nonexistent}" "$saved/UserSettings" ||
+			die "cannot deploy UserSettings"
+	fi
+	ln -sfn "$saved" "$tree/DuneSandbox/Saved"
+	mkdir -p "$home/.config/Epic/Unreal Engine/Engine" || die "cannot create HOME"
+	ln -sfn "$saved/UserSettings" "$home/.config/Epic/Unreal Engine/Engine/Config"
+}
+
+# Funcom's server-command channel (UDuneServerCommandSubsystem): commands published on the game broker carry this
+# token. Generated once and kept private; it is a superuser credential for the running world.
+ensure_command_token() {
+	local t="$DUNE_SECRETS_DIR/server_commands_token"
+	[ -s "$t" ] && return 0
+	(umask 077; openssl rand -hex 32 > "$t") || die "cannot write $t"
+}
+
+write_secret_ini() {
+	local fls_token="" dune_pw join_pw="" cmd_token
+	ensure_command_token
+	cmd_token=$(tr -d '\r\n' < "$DUNE_SECRETS_DIR/server_commands_token")
+	dune_pw=$(cat "$DUNE_SECRETS_DIR/postgres_dune_password") || die "missing postgres_dune_password"
+	[ -s "$DUNE_SECRETS_DIR/fls_token" ] && fls_token=$(tr -d '\r\n' < "$DUNE_SECRETS_DIR/fls_token")
+	[ -s "$DUNE_SECRETS_DIR/join_password" ] && join_pw=$(tr -d '\r\n' < "$DUNE_SECRETS_DIR/join_password")
+	(
+		umask 077
+		printf '[FuncomLiveServices]\nServiceAuthToken=%s\nDefaultFlsEnvironment=%s\nServerCommandsAuthToken=%s\n\n[OnlineSubsystem]\nServerName=%s\nDatacenterId=%s\n\n[ConsoleVariables]\nBgd.ServerLoginPassword=%s\nBgd.ServerDisplayName=%s\nserver.NotificationSystem.Enabled=true\n' \
+			"$fls_token" "$DUNE_FLS_ENV" "$cmd_token" "$DUNE_WORLD_NAME" "$DUNE_WORLD_REGION" "$join_pw" "$DUNE_WORLD_DISPLAY_NAME" \
+			> "$saved/Config/LinuxServer/Engine.ini" &&
+		printf '[DuneDatabaseInterfacePSQL]\nDatabaseHost=127.0.0.1:%s\nDatabaseUser=dune\nDatabasePassword=%s\n' \
+			"$DUNE_PG_PORT" "$dune_pw" > "$saved/Config/LinuxServer/Game.ini"
+	) || die "cannot write secret ini overrides"
+}
+
+cmd_start() {
+	running && return 0
+	mkdir -p -m 700 "$run_dir" || die "cannot create $run_dir"
+	prepare_tree
+	write_secret_ini
+	(umask 077; : > "$log") || die "cannot create $log"
+	(
+		cd "$tree" || exit 1
+		export HOME="$home"
+		# Map servers mint their broker credentials with the shared secret (Funcom labels rmq-game-secret env-for-server).
+		export RMQ_HTTP_TOKEN_AUTH_SECRET="$(cat "$DUNE_SECRETS_DIR/rmq_http_token_auth_secret")"
+		exec setsid systemd-run --user --scope --quiet --unit="$unit" -p MemoryMax="$DUNE_SERVER_MEMORY_MAX" -p MemorySwapMax=0 \
+			"$tree/$bin_rel" DuneSandbox \
+			"-FarmRegion=$DUNE_WORLD_REGION" \
+			-RMQGameTlsEnabled=true \
+			"-ExternalAddress=$DUNE_EXTERNAL_ADDRESS" "-MultiHome=$DUNE_BIND_ADDRESS" \
+			"--RMQGameHostname=127.0.0.1" "--RMQGamePort=$DUNE_RMQ_GAME_PORT" \
+			"--RMQAdminHostname=127.0.0.1" "--RMQAdminPort=$DUNE_RMQ_ADMIN_PORT" \
+			"-PartitionIndex=$DUNE_PARTITION_INDEX" -stdout -FullStdOutLogOutput \
+			< /dev/null >> "$log" 2>&1
+	) &
+	echo $! > "$pid_file"
+}
+
+cmd_stop() {
+	running || return 0
+	local pid; pid=$(cat "$pid_file")
+	kill -INT "$pid" 2>/dev/null
+	for _ in $(seq 1 120); do kill -0 "$pid" 2>/dev/null || { : > "$pid_file"; return 0; }; sleep 0.5; done
+	kill -TERM "$pid" 2>/dev/null
+	for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || { : > "$pid_file"; return 0; }; sleep 0.5; done
+	die "server (pid $pid) did not stop within 70 s"
+}
+
+case "${1:-}" in
+	start) cmd_start ;;
+	stop) cmd_stop ;;
+	status) running ;;
+	configure) mkdir -p -m 700 "$run_dir" "$saved/Config/LinuxServer" || die "cannot create $saved"; write_secret_ini ;;
+	*) die "usage: dune-server start|stop|status|configure" ;;
+esac

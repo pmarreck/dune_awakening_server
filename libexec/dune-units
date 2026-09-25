@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Render the systemd user units that run the Dune world unattended: the world itself (start at boot, stop at
+# shutdown), a self-heal timer (the idempotent `dune-world start` every 5 minutes while the world is meant to be up),
+# a daily backup with pruning, a weekly restore drill and a daily Steam update check. Paths are filled in from this
+# checkout and the host's nix/luajit, so nothing is hardcoded. Installing them is a host change for the host administrator.
+set -u
+NAME=dune-units
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+die() { printf '%s: %s\n' "$NAME" "$1" >&2; exit "${2:-1}"; }
+usage() {
+	cat <<EOF
+Usage: $NAME render DEST [--nix PATH] [--luajit PATH] [--systemctl PATH]
+
+Write systemd user units for this checkout ($root) into DEST:
+  dune-world.service              start at boot (default.target), stop at shutdown
+  dune-world-heal.timer/.service  every 5 min: \`dune-world start\` (starts only missing components) while
+                                  dune-world.service is active, so \`systemctl --user stop dune-world\` stays stopped
+  dune-backup.timer/.service      daily 04:30 backup, then prune (7 days, then weekly for 3 months)
+  dune-backup-verify.timer/...    weekly restore drill of the newest backup
+  dune-update-check.timer/...     daily Steam build check; JSON result in the journal (exit 1 = update available)
+
+Install (host change): copy DEST/* to ~/.config/systemd/user/, then
+  systemctl --user daemon-reload && systemctl --user enable --now dune-world.service dune-world-heal.timer \\
+    dune-backup.timer dune-backup-verify.timer dune-update-check.timer
+  loginctl enable-linger \$USER    # so the user manager, and the world, start at boot without a login
+EOF
+}
+host_bin() { if [ -x "/run/current-system/sw/bin/$1" ]; then printf '%s' "/run/current-system/sw/bin/$1"; else command -v "$1"; fi; }
+
+[ "${1:-}" = -h ] || [ "${1:-}" = --help ] && { usage; exit 0; }
+[ "${1:-}" = render ] || { usage >&2; exit 2; }
+[ $# -ge 2 ] || die "render needs a destination directory" 2
+dest=$2; shift 2
+nix=$(host_bin nix) luajit=$(host_bin luajit) systemctl=$(host_bin systemctl)
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--nix) nix=$2; shift ;; --luajit) luajit=$2; shift ;; --systemctl) systemctl=$2; shift ;;
+		*) die "unknown option $1" 2 ;;
+	esac
+	shift
+done
+for p in "$nix" "$luajit" "$systemctl"; do [ -x "$p" ] || die "not executable: '$p' (pass --nix/--luajit/--systemctl)"; done
+mkdir -p "$dest" || die "cannot create $dest"
+# systemd command-line quoting: double quotes, with backslash, quote and the % specifier escaped.
+sq() { local v=${1//\\/\\\\}; v=${v//\"/\\\"}; v=${v//%/%%}; printf '"%s"' "$v"; }
+path=$(printf '%s\n' "$(dirname -- "$luajit")" "$(dirname -- "$nix")" /run/current-system/sw/bin /usr/bin /bin | awk '!seen[$0]++' | paste -sd: -)
+env_path=$(sq "PATH=$path")
+world=$(sq "$root/bin/dune-world")
+
+unit() { printf '%s\n' "$2" > "$dest/$1" || die "cannot write $dest/$1"; }
+
+unit dune-world.service "[Unit]
+Description=Dune: Awakening world (native, $root)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=$env_path
+ExecStart=$world start
+ExecStop=$world stop
+TimeoutStartSec=20min
+TimeoutStopSec=6min
+
+[Install]
+WantedBy=default.target"
+
+unit dune-world-heal.service "[Unit]
+Description=Restart any stopped Dune world component while the world is meant to be up
+
+[Service]
+Type=oneshot
+Environment=$env_path
+ExecCondition=$(sq "$systemctl") --user is-active --quiet dune-world.service
+ExecStart=$world start --no-warn
+# Components it starts must outlive this oneshot.
+KillMode=process
+TimeoutStartSec=20min"
+
+unit dune-world-heal.timer "[Unit]
+Description=Check the Dune world every 5 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target"
+
+unit dune-backup.service "[Unit]
+Description=Back up the Dune world database and operator config
+
+[Service]
+Type=oneshot
+WorkingDirectory=$root
+Environment=$env_path
+ExecStart=$world backup create --label scheduled
+ExecStartPost=$world backup prune"
+
+unit dune-backup.timer "[Unit]
+Description=Daily Dune world backup
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target"
+
+unit dune-backup-verify.service "[Unit]
+Description=Restore drill: restore the newest Dune backup into a scratch database
+
+[Service]
+Type=oneshot
+WorkingDirectory=$root
+Environment=$env_path
+ExecStart=$world backup verify latest"
+
+unit dune-backup-verify.timer "[Unit]
+Description=Weekly Dune backup restore drill
+
+[Timer]
+OnCalendar=Sun *-*-* 05:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target"
+
+unit dune-update-check.service "[Unit]
+Description=Check whether Steam has a newer Dune self-hosted server build
+
+[Service]
+Type=oneshot
+WorkingDirectory=$root
+Environment=$env_path
+ExecStart=$world update check --json
+# 1 = update available: a result, not a failure.
+SuccessExitStatus=1"
+
+unit dune-update-check.timer "[Unit]
+Description=Daily Dune server update check
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target"
+
+printf 'rendered %d units into %s\n' "$(ls "$dest" | wc -l)" "$dest" >&2

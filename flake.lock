@@ -1,0 +1,45 @@
+{
+  "nodes": {
+    "dash": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790012560,
+        "narHash": "sha256-dvMdT3W24tAwamHOVeCqk4dy3J9wcoAOwJ+cyWoKphE=",
+        "owner": "snapetech",
+        "repo": "DuneAwakeningSelfHost",
+        "rev": "b3a26c1b2a49c02399e8fd180f69067ad6c6ed04",
+        "type": "github"
+      },
+      "original": {
+        "owner": "snapetech",
+        "repo": "DuneAwakeningSelfHost",
+        "rev": "b3a26c1b2a49c02399e8fd180f69067ad6c6ed04",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1779911860,
+        "narHash": "sha256-ubcLAcKBDCZjhxw/kH5DL5GdBZQdzLqpkTe7HonvJVs=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "c0a89c379b4ac67c7b13b051ddbd4e0dbc9b0eaf",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "c0a89c379b4ac67c7b13b051ddbd4e0dbc9b0eaf",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "dash": "dash",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
