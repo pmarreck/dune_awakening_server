@@ -31,7 +31,7 @@ insert into dune.encrypted_player_state values (1, 1, convert_to('Alice','UTF8')
 update dune.encrypted_player_state set character_state = 'Deleted' where id = 7;
 create table dune.fgl_entities (entity_id bigint primary key, components jsonb);
 create table dune.actor_fgl_entities (actor_id bigint references dune.actors(id), entity_id bigint unique references dune.fgl_entities(entity_id), slot_name text not null);
-insert into dune.fgl_entities values (-100, '{\"FLevelComponent\": [0, {\"TotalSkillPoints\": 1, \"UnspentSkillPoints\": 1, \"TotalXPEarned\": 390}]}'), (-200, '{\"FHealthComponent\": [0, {}]}');
+insert into dune.fgl_entities values (-100, '{\"FLevelComponent\": [0, {\"TotalSkillPoints\": 5, \"UnspentSkillPoints\": 1, \"TotalXPEarned\": 390}]}'), (-200, '{\"FHealthComponent\": [0, {}]}');
 insert into dune.actor_fgl_entities values (10, -100, 'DuneCharacter'), (30, -200, 'DuneCharacter');
 alter schema dune owner to dune; alter table dune.actors owner to dune; alter table dune.encrypted_player_state owner to dune; alter table dune.fgl_entities owner to dune; alter table dune.actor_fgl_entities owner to dune;"
 
@@ -44,7 +44,7 @@ printf '{"path": "$File: //seabass/sb-9.9.9.9/DuneSandbox/Config/perforce-keywor
 printf '[DuneDatabaseInterfacePSQL]\nDatabaseHost=127.0.0.1:%s\nDatabaseUser=dune\nDatabasePassword=dunepw\n' "$DUNE_PG_PORT" > "$root/DuneSandbox/Saved/Config/LinuxServer/Game.ini"
 export DUNE_CHARACTER_BACKUP_DIR="$work/backups"
 char() { libexec/dune-character --server-root "$root" "$@"; }
-research() { admin "select coalesce((properties->'TechKnowledgePlayerComponent'->>'m_TechKnowledgePoints'), 'absent') from dune.actors where id = $1"; }
+intel() { admin "select coalesce((properties->'TechKnowledgePlayerComponent'->>'m_TechKnowledgePoints'), 'absent') from dune.actors where id = $1"; }
 
 out=$(libexec/dune-character --about 2>&1) || fail "--about exited nonzero"
 [ "$(printf '%s\n' "$out" | wc -l)" -eq 1 ] && [[ "$out" == *dune-character* ]] && [[ "$out" == *"$(uname -m)"* ]] || fail "--about not one line with name and arch: $out"
@@ -52,37 +52,48 @@ libexec/dune-character --help >/dev/null 2>&1 || fail "--help exited nonzero"
 libexec/dune-character --bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown option did not exit 2"
 
 json=$(char list --json 2>"$work/err") || fail "list --json failed: $(cat "$work/err")"
-[ "$(jq -r '[.[] | "\(.name):\(.online):\(.research_points)"] | join(",")' <<<"$json" 2>/dev/null)" = "Alice:false:5,Bob:true:0,Carol:false:null,Dave:true:0,DaveAlt:true:null,Erin:false:0" ] ||
+[ "$(jq -r '[.[] | "\(.name):\(.online):\(.intel_points)"] | join(",")' <<<"$json" 2>/dev/null)" = "Alice:false:5,Bob:true:0,Carol:false:null,Dave:true:0,DaveAlt:true:null,Erin:false:0" ] ||
 	fail "list --json wrong: $json"
 out=$(char list --json --text 2>&1) || fail "list --text failed"
 jq -e . >/dev/null 2>&1 <<<"$out" && fail "later --text did not override earlier --json"
 [[ "$out" == *Alice* && "$out" == *Bob* ]] || fail "text list missing names: $out"
 
-out=$(char set-research Alice 100 2>&1) || fail "set-research on offline Alice failed: $out"
-[ "$(research 10)" = 100 ] || fail "Alice research not 100: $(research 10)"
+out=$(char set-intel Alice 100 2>&1) || fail "set-intel on offline Alice failed: $out"
+[ "$(intel 10)" = 100 ] || fail "Alice intel not 100: $(intel 10)"
 b=$(find "$work/backups" -type f 2>/dev/null | head -1)
 [ -n "$b" ] && [ "$(stat -c %a "$b")" = 600 ] || fail "no 0600 backup written before the edit"
 [ -n "$b" ] && [ "$(jq -r '.properties.TechKnowledgePlayerComponent.m_TechKnowledgePoints' "$b")" = 5 ] || fail "backup does not hold the old value"
 
-out=$(char set-research Bob 100 2>&1) && fail "edited an online character"
+out=$(char set-intel Bob 100 2>&1) && fail "edited an online character"
 [[ "$out" == *nline* ]] || fail "online refusal does not say why: $out"
-[ "$(research 20)" = absent ] || fail "online character was modified"
+[ "$(intel 20)" = absent ] || fail "online character was modified"
 
-out=$(char set-research Carol 100 2>&1) && fail "edited a character lacking TechKnowledgePlayerComponent"
-[ "$(research 30)" = absent ] || fail "Carol was modified"
+out=$(char set-intel Carol 100 2>&1) && fail "edited a character lacking TechKnowledgePlayerComponent"
+[ "$(intel 30)" = absent ] || fail "Carol was modified"
 # Same account online through another row (the server's login placeholder): the character is in use.
-out=$(char set-research Dave 100 2>&1) && fail "edited a character whose account is online via another row"
-[ "$(research 40)" = absent ] || fail "Dave was modified while his account was online"
+out=$(char set-intel Dave 100 2>&1) && fail "edited a character whose account is online via another row"
+[ "$(intel 40)" = absent ] || fail "Dave was modified while his account was online"
 # The server leaves its first-login placeholder row Online but character_state Deleted (seen live); it must not block its account's real character.
-out=$(char set-research Erin 7 2>&1) || fail "Deleted placeholder row blocked editing a real offline character: $out"
-[ "$(research 60)" = 7 ] || fail "Erin not updated despite only a Deleted row being online"
-out=$(char set-research Nobody 1 2>&1) && fail "unknown character accepted"
-out=$(char set-research Alice -3 2>&1); [ $? -eq 2 ] || fail "negative amount not a usage error"
+out=$(char set-intel Erin 7 2>&1) || fail "Deleted placeholder row blocked editing a real offline character: $out"
+[ "$(intel 60)" = 7 ] || fail "Erin not updated despite only a Deleted row being online"
+out=$(char set-intel Nobody 1 2>&1) && fail "unknown character accepted"
+out=$(char set-intel Alice -3 2>&1); [ $? -eq 2 ] || fail "negative amount not a usage error"
 
 skills() { admin "select (e.components->'FLevelComponent'->1->>'UnspentSkillPoints') || '/' || (e.components->'FLevelComponent'->1->>'TotalSkillPoints') from dune.actor_fgl_entities f join dune.fgl_entities e using (entity_id) where f.actor_id = $1 and f.slot_name = 'DuneCharacter'"; }
 [ "$(jq -r '.skill_points_unspent' <<<"$(char show Alice --json)")" = 1 ] || fail "show does not report unspent skill points"
 out=$(char add-skill-points Alice 20 2>&1) || fail "add-skill-points on offline Alice failed: $out"
-[ "$(skills 10)" = 21/21 ] || fail "skill points not 21 unspent / 21 total: $(skills 10)"
+[ "$(skills 10)" = 21/25 ] || fail "skill points not 21 unspent / 25 total: $(skills 10)"
+# set-skill-points sets the unspent pool; the lifetime total moves by the same amount, so spent points stay counted.
+out=$(char set-skill-points Alice 10 2>&1) || fail "set-skill-points failed: $out"
+[ "$(skills 10)" = 10/14 ] || fail "set-skill-points: want 10 unspent / 14 total, got $(skills 10)"
+out=$(char set-skill-points Alice -1 2>&1); [ $? -eq 2 ] || fail "negative skill points not a usage error"
+out=$(char set-skill-points Bob 5 2>&1) && fail "set skill points on an online character"
+# add-intel adds to the current Intel points.
+out=$(char add-intel Alice 5 2>&1) || fail "add-intel failed: $out"
+[ "$(intel 10)" = 105 ] || fail "add-intel: want 105, got $(intel 10)"
+out=$(char add-intel Alice 0 2>&1); [ $? -eq 2 ] || fail "add-intel 0 not a usage error"
+out=$(char add-intel Carol 5 2>&1) && fail "added Intel to a character lacking TechKnowledgePlayerComponent"
+out=$(char set-research Alice 1 2>&1); [ $? -eq 2 ] || fail "old set-research command still accepted"
 [ "$(find "$work/backups" -type f -name '*fgl*' | wc -l)" -ge 1 ] || fail "no backup of the FGL entity before the skill edit"
 out=$(char add-skill-points Bob 20 2>&1) && fail "added skill points to an online character"
 out=$(char add-skill-points Carol 5 2>&1) && fail "added skill points to a character lacking FLevelComponent"
@@ -93,7 +104,7 @@ for c in "export Alice" "validate /dev/null" "import /dev/null"; do
 	[[ "$out" == *chema*character_transfer_export* ]] || fail "$c did not name the missing transfer procedure: $out"
 done
 admin "alter table dune.encrypted_player_state rename column online_status to connection_state"
-out=$(char set-research Alice 7 2>&1) && fail "ran against a schema missing online_status"
+out=$(char set-intel Alice 7 2>&1) && fail "ran against a schema missing online_status"
 [[ "$out" == *chema* ]] || fail "schema refusal does not say so: $out"
-[ "$(research 10)" = 100 ] || fail "wrote despite failed schema detection"
+[ "$(intel 10)" = 105 ] || fail "wrote despite failed schema detection"
 exit "$failures"

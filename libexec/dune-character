@@ -60,10 +60,13 @@ Usage: dune-character [options] <command> [args]
 View and edit characters in the Dune: Awakening self-hosted world database.
 
 Commands:
-  list                        List characters with online state and research points
+  list                        List characters with online state, Intel points, skill points and XP
   show <character>            Show one character (name or numeric id)
-  set-research <character> N  Set research points (Tech Knowledge / "Intel") to N (offline characters only)
-  add-skill-points <character> N  Add N skill points (unspent and lifetime total; offline characters only)
+  set-intel <character> N     Set Intel points (spent on research) to N
+  add-intel <character> N     Add N Intel points
+  set-skill-points <character> N  Set unspent skill points to N (the lifetime total moves by the same amount)
+  add-skill-points <character> N  Add N skill points (unspent and lifetime total)
+                              Edits need the character's account offline and write a 0600 backup first.
   export <character>          Write the character's account as editable, indented JSON (Funcom's character
                               transfer format plus a _dune_character header); -o FILE, default stdout
   validate <file>             Check a transfer file against this world: header, offline account, then the
@@ -268,7 +271,7 @@ local function characters(db, schema, where, ...)
 	local rows = db:query(string.format([[select ps.id, %s as name, exists (select 1 from dune.encrypted_player_state o
 		where o.account_id = ps.account_id and o.online_status::text <> 'Offline' and not %s) as account_online,
 		ps.player_pawn_id as pawn, (a.properties ? '%s') as has_tk,
-		a.properties -> '%s' ->> 'm_TechKnowledgePoints' as research %s
+		a.properties -> '%s' ->> 'm_TechKnowledgePoints' as intel %s
 		from dune.encrypted_player_state ps left join dune.actors a on a.id = ps.player_pawn_id %s where not %s %s order by ps.id]],
 		schema.name_expr, schema.deleted("o"), TK, TK, skills_sql, skills_join, schema.deleted("ps"), where or ""), ...)
 	local out = {}
@@ -276,7 +279,7 @@ local function characters(db, schema, where, ...)
 	for _, r in ipairs(rows) do
 		out[#out + 1] = {
 			id = tonumber(r.id), name = r.name, online = r.account_online == "t", pawn_actor_id = tonumber(r.pawn),
-			research_points = r.has_tk == "t" and (tonumber(r.research) or 0) or cjson.null,
+			intel_points = r.has_tk == "t" and (tonumber(r.intel) or 0) or cjson.null,
 			skill_points_unspent = num(r.unspent), skill_points_total = num(r.total_skill), xp_total = num(r.xp),
 			level_entity_id = r.level_entity or cjson.null,
 		}
@@ -300,8 +303,8 @@ local function print_characters(opts, list)
 	if opts.json then io.stdout:write(cjson.encode(list), "\n"); return end
 	for _, c in ipairs(list) do
 		local function fmt(v) return v == cjson.null and "n/a" or tostring(v) end
-		io.stdout:write(string.format("%s %-4d %-24s research %-5s skill points %s unspent / %s total  xp %s\n",
-			c.online and paint(opts, "32", "●") or paint(opts, "2", "○"), c.id, c.name, fmt(c.research_points),
+		io.stdout:write(string.format("%s %-4d %-24s intel %-5s skill points %s unspent / %s total  xp %s\n",
+			c.online and paint(opts, "32", "●") or paint(opts, "2", "○"), c.id, c.name, fmt(c.intel_points),
 			fmt(c.skill_points_unspent), fmt(c.skill_points_total), fmt(c.xp_total)))
 	end
 end
@@ -320,6 +323,14 @@ local function backup_dir(opts)
 	local dir = os.getenv("DUNE_CHARACTER_BACKUP_DIR") or (opts.state_dir .. "/char-backups")
 	ffi.C.mkdir(dir, tonumber("700", 8))
 	return dir
+end
+
+-- A fresh backup path: "<dir>/<UTC stamp>-<what>.json", with -2, -3, ... when edits land within the same second.
+local function backup_path(opts, what)
+	local base = string.format("%s/%s-%s", backup_dir(opts), os.date("!%Y%m%dT%H%M%SZ"), what)
+	local p, i = base .. ".json", 2
+	while read_file(p) do p = string.format("%s-%d.json", base, i); i = i + 1 end
+	return p
 end
 
 -- Commands ------------------------------------------------------------------------------------------------------
@@ -351,7 +362,9 @@ local function report(opts, db, schema, c, backup, what)
 	else io.stdout:write(string.format("%s %s (backup %s)\n", after.name, what(after), backup)) end
 end
 
-local function cmd_add_skill_points(opts, db, schema, ref, amount)
+-- Skill points live on the character's FGL entity (FLevelComponent). "add" grows the unspent pool and the lifetime
+-- total by n; "set" makes the unspent pool n and moves the total by the same difference, so spent points stay counted.
+local function cmd_skill_points(opts, db, schema, ref, amount, mode)
 	local n = tonumber(amount)
 	if not schema.has_fgl then die(EXIT_ERR, "unexpected database schema; missing: dune.fgl_entities / dune.actor_fgl_entities") end
 	local c = find_character(db, schema, ref)
@@ -368,21 +381,23 @@ local function cmd_add_skill_points(opts, db, schema, ref, amount)
 		if type(lvl) ~= "table" or type(lvl.UnspentSkillPoints) ~= "number" or type(lvl.TotalSkillPoints) ~= "number" then
 			error("character " .. c.name .. " has no " .. LEVEL .. " with UnspentSkillPoints/TotalSkillPoints (unexpected entity shape)", 0)
 		end
-		backup = string.format("%s/%s-char%d-fgl%s.json", backup_dir(opts), os.date("!%Y%m%dT%H%M%SZ"), c.id, ent.entity_id)
+		backup = backup_path(opts, string.format("char%d-fgl%s", c.id, ent.entity_id))
 		write_private(backup, cjson.encode({ character_id = c.id, entity_id = ent.entity_id, components = comps,
-			reason = "before add-skill-points " .. n }))
-		-- Keep the game's bookkeeping consistent: both the unspent pool and the lifetime total grow by n.
+			reason = "before " .. mode .. "-skill-points " .. n }))
+		local delta = mode == "add" and n or (n - lvl.UnspentSkillPoints)
+		if lvl.TotalSkillPoints + delta < 0 then error("that would make the lifetime skill-point total negative", 0) end
 		db:query([[update dune.fgl_entities set components =
 			jsonb_set(jsonb_set(components, '{FLevelComponent,1,UnspentSkillPoints}', to_jsonb($2::int)),
 				'{FLevelComponent,1,TotalSkillPoints}', to_jsonb($3::int)) where entity_id = $1]],
-			ent.entity_id, lvl.UnspentSkillPoints + n, lvl.TotalSkillPoints + n)
+			ent.entity_id, lvl.UnspentSkillPoints + delta, lvl.TotalSkillPoints + delta)
 	end)
 	report(opts, db, schema, c, backup, function(a)
 		return string.format("skill points: %s unspent / %s total", tostring(a.skill_points_unspent), tostring(a.skill_points_total))
 	end)
 end
 
-local function cmd_set_research(opts, db, schema, ref, amount)
+-- Intel points (spent on research) are the pawn actor's TechKnowledgePlayerComponent.m_TechKnowledgePoints.
+local function cmd_intel(opts, db, schema, ref, amount, mode)
 	local n = tonumber(amount)
 	local c = find_character(db, schema, ref)
 	local backup
@@ -392,13 +407,15 @@ local function cmd_set_research(opts, db, schema, ref, amount)
 		if not actor then error("character " .. c.name .. " has no pawn actor", 0) end
 		local props = cjson.decode(actor.properties)
 		if type(props[TK]) ~= "table" then error("character " .. c.name .. " has no " .. TK .. " (unexpected actor shape)", 0) end
-		backup = string.format("%s/%s-char%d-actor%s.json", backup_dir(opts), os.date("!%Y%m%dT%H%M%SZ"), c.id, actor.id)
+		backup = backup_path(opts, string.format("char%d-actor%s", c.id, actor.id))
 		write_private(backup, cjson.encode({ character_id = c.id, actor_id = tonumber(actor.id), class = actor.class,
-			properties = props, reason = "before set-research " .. n }))
+			properties = props, reason = "before " .. mode .. "-intel " .. n }))
+		local value = mode == "add" and ((tonumber(props[TK].m_TechKnowledgePoints) or 0) + n) or n
+		if value > 2147483647 then error("that would exceed the maximum Intel value", 0) end
 		db:query(string.format("update dune.actors set properties = jsonb_set(properties, '{%s,m_TechKnowledgePoints}', to_jsonb($2::int), true) where id = $1", TK),
-			actor.id, n)
+			actor.id, value)
 	end)
-	report(opts, db, schema, c, backup, function(a) return "research points: " .. tostring(a.research_points) end)
+	report(opts, db, schema, c, backup, function(a) return "Intel points: " .. tostring(a.intel_points) end)
 end
 
 -- Character transfer: export / validate / import --------------------------------------------------------------
@@ -562,14 +579,16 @@ local function main(argv)
 	local opts = parse_args(argv)
 	local cmd = table.remove(opts.positional, 1)
 	if not cmd then io.stderr:write(USAGE); os.exit(EXIT_USAGE) end
-	local want = { list = 0, show = 1, ["set-research"] = 2, ["add-skill-points"] = 2, export = 1, validate = 1, import = 1 }
+	local want = { list = 0, show = 1, ["set-intel"] = 2, ["add-intel"] = 2, ["set-skill-points"] = 2, ["add-skill-points"] = 2,
+		export = 1, validate = 1, import = 1 }
 	if want[cmd] == nil then die(EXIT_USAGE, "unknown command %s (see --help)", cmd) end
 	if #opts.positional ~= want[cmd] then die(EXIT_USAGE, "%s takes %d argument(s)", cmd, want[cmd]) end
 	local n = tonumber(opts.positional[2] or "")
-	if cmd == "set-research" and (not n or n < 0 or n ~= math.floor(n) or n > 2147483647) then
-		die(EXIT_USAGE, "research points must be a whole number >= 0")
-	elseif cmd == "add-skill-points" and (not n or n < 1 or n ~= math.floor(n) or n > 100000) then
-		die(EXIT_USAGE, "skill points to add must be a whole number from 1 to 100000")
+	local limits = { ["set-intel"] = { 0, 2147483647 }, ["add-intel"] = { 1, 2147483647 },
+		["set-skill-points"] = { 0, 100000 }, ["add-skill-points"] = { 1, 100000 } }
+	local lim = limits[cmd]
+	if lim and (not n or n < lim[1] or n > lim[2] or n ~= math.floor(n)) then
+		die(EXIT_USAGE, "%s needs a whole number from %d to %d", cmd, lim[1], lim[2])
 	end
 	load_libpq()
 	local db = connect(db_settings(opts.server_root))
@@ -581,8 +600,11 @@ local function main(argv)
 	elseif cmd == "export" then cmd_export(opts, db, schema, opts.positional[1])
 	elseif cmd == "validate" then cmd_validate(opts, db, schema, opts.positional[1])
 	elseif cmd == "import" then cmd_import(opts, db, schema, opts.positional[1])
-	elseif cmd == "add-skill-points" then cmd_add_skill_points(opts, db, schema, opts.positional[1], opts.positional[2])
-	else cmd_set_research(opts, db, schema, opts.positional[1], opts.positional[2]) end
+	else
+		local mode, what = cmd:match("^(%a+)%-(.+)$")
+		if what == "intel" then cmd_intel(opts, db, schema, opts.positional[1], opts.positional[2], mode)
+		else cmd_skill_points(opts, db, schema, opts.positional[1], opts.positional[2], mode) end
+	end
 	db:close()
 end
 

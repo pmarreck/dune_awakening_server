@@ -7,7 +7,7 @@ annotate=[
 	INTENT.md = Private two-player Linux hosting purpose and constraints
 	libexec/dune-admin = live-world commands via Funcom server-command channel: players, say, kick, teleport, water, xp, exec (ServerExec), worm, raw
 	libexec/dune-backup = Backups: pg_dump -Fc of world DBs + roles + operator config, sha256 manifest; verify = restore drill; guarded restore; prune to trash
-	libexec/dune-character = LuaJIT character viewer/editor: list/show/set-research/add-skill-points, export/validate/import via Funcom transfer procs
+	libexec/dune-character = LuaJIT character viewer/editor: list/show/set-intel/add-intel/set-skill-points/add-skill-points, export/validate/import via Funcom transfer procs
 	libexec/dune-db-setup = Run Funcom updatedb.py against our cluster with private UserGame.ini credentials
 	libexec/dune-director = Run Director natively: FLS registration, conf.d override, private log
 	libexec/dune-dotnet-prepare = Native copy of Funcom musl .NET apps: patchelf interpreter + flake netcoredeps

@@ -65,8 +65,9 @@ Overnight stability samples: `runtime/stability.ndjson` holds one status line ev
 All commands read the database settings from the game's own ini chain, so they reach whatever database the server uses. Edits and imports refuse while any live character on the account is online, because the server would overwrite them. Rows the server marked `character_state = Deleted` are ignored; its first-login placeholder stays "Online" forever.
 
 ```bash
-dune-world character list                          # ● online / ○ offline, research, skill points, XP
-dune-world character set-research PlayerOne 100     # backup of the pawn actor first
+dune-world character list                          # ● online / ○ offline, Intel, skill points, XP
+dune-world character set-intel PlayerOne 100        # Intel points (spent on research); add-intel adds
+dune-world character set-skill-points PlayerOne 10  # unspent pool; the lifetime total moves with it
 dune-world character add-skill-points PlayerOne 20  # unspent and lifetime total both grow
 dune-world character export PlayerOne -o playerone.json   # 0600; default stdout
 dune-world character validate playerone.json        # dry run of the server's own import; exit 1 with reasons

@@ -34,7 +34,7 @@ Commands:
                   timeout on/off/status (aliases bio-break, call-timeout, safety-first)
   update ...      Steam build: check (exit 1 = update available), apply (backup, stop, download, start)
   backup ...      create, list, verify (restore drill), restore --yes, prune (policy in backup.conf)
-  character ...   list, show, set-research, add-skill-points, export, validate, import
+  character ...   list, show, set-intel, add-intel, set-skill-points, add-skill-points, export, validate, import
   init ...        One-time setup: write world.conf from your Funcom token
   units ...       render DEST: systemd user units for unattended running
 
