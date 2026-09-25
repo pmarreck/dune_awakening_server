@@ -3,12 +3,10 @@
 	inputs = {
 		# Reuse the host configuration's existing package revision without changing it.
 		nixpkgs.url = "github:NixOS/nixpkgs/c0a89c379b4ac67c7b13b051ddbd4e0dbc9b0eaf";
-		dash = {
-			url = "github:snapetech/DuneAwakeningSelfHost/b3a26c1b2a49c02399e8fd180f69067ad6c6ed04";
-			flake = false;
-		};
+		# Locale-free, reproducible line sorting (`collate`) for scripts and tests.
+		romantic_collation.url = "github:pmarreck/romantic_collation";
 	};
-	outputs = { self, nixpkgs, dash }:
+	outputs = { self, nixpkgs, romantic_collation }:
 		let
 			system = "x86_64-linux";
 			# Only steamcmd and its steam-unwrapped bootstrap are admitted as unfree; review any addition.
@@ -21,6 +19,7 @@
 				(pkgs.python312.withPackages (ps: [ ps.psycopg2 ps.python-dateutil ps.debugpy ])) pkgs.rsync pkgs.gnumake pkgs.ripgrep
 				pkgs.gnugrep pkgs.gnused pkgs.gawk pkgs.findutils
 				pkgs.gnutar pkgs.gzip pkgs.util-linux pkgs.procps pkgs.cacert
+				romantic_collation.packages.${system}.default
 				pkgs.steamcmd pkgs.postgresql_17 pkgs.rabbitmq-server pkgs.socat pkgs.patchelf pkgs.iproute2 pkgs.systemd
 				# Mirrors the host's global luajit.withPackages set so scripts behave the same inside and outside the dev shell.
 				(pkgs.luajit.withPackages (ps: with ps; [
@@ -45,12 +44,7 @@
 				DUNE_LIBPQ = "${pkgs.postgresql_17.lib}/lib/libpq.so.5";
 			};
 		in {
-			packages.${system}.default = pkgs.runCommand "dash-source-${builtins.substring 0 12 dash.rev}" { } ''
-				mkdir -p "$out/share/dash"
-				cp -r ${dash}/. "$out/share/dash/"
-			'';
 			checks.${system} = {
-				dash-source = self.packages.${system}.default;
 				operator-tools = pkgs.runCommand "dune-operator-tools-check" {
 					nativeBuildInputs = tools;
 					inherit (dotnetEnv) DUNE_MUSL_LOADER DUNE_NETCOREDEPS DUNE_GLIBC_LOADER DUNE_GCC_LIB DUNE_LIBPQ;
@@ -67,7 +61,6 @@
 			};
 			devShells.${system}.default = pkgs.mkShell {
 				packages = tools;
-				DASH_SOURCE = "${dash}";
 				inherit (dotnetEnv) DUNE_MUSL_LOADER DUNE_NETCOREDEPS DUNE_GLIBC_LOADER DUNE_GCC_LIB DUNE_LIBPQ;
 			};
 		};

@@ -3,7 +3,7 @@
 set -u
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
-for tool in bash curl git jq openssl python3 rsync make steamcmd psql initdb pg_ctl; do
+for tool in bash curl git jq openssl python3 rsync make steamcmd psql initdb pg_ctl collate; do
 	command -v "$tool" >/dev/null || fail "missing tool: $tool"
 done
 for engine in docker docker-compose podman; do

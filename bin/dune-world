@@ -366,7 +366,7 @@ end
 -- Templates copied from the repo's config.sample/ must be filled in and renamed (suffix dropped) before use.
 local function warn_templates(opts, config_dir)
 	if opts.no_warn or getenv("DUNE_NO_WARNINGS") then return end
-	local out = capture("find " .. q(config_dir) .. " -type f \\( -name '*.sample' -o -name '*.default' \\) 2>/dev/null | sort")
+	local out = capture("find " .. q(config_dir) .. " -type f \\( -name '*.sample' -o -name '*.default' \\) 2>/dev/null | collate")
 	local files = {}
 	for line in out:gmatch("[^\n]+") do files[#files + 1] = line:sub(#config_dir + 2) end
 	if #files == 0 then return end

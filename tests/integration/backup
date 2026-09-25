@@ -81,11 +81,11 @@ libexec/dune-backup prune --keep 1 >/dev/null 2>&1 || fail "prune failed"
 	drop="20260915T040000.000Z 20260909T040000.000Z 20260626T040000.000Z 20260601T040000.000Z 20250101T000000.000Z"
 	for b in $keep $drop; do mkdir -p "$DUNE_BACKUP_DIR/$b"; echo '{"label":"","created_at":"x","databases":[]}' > "$DUNE_BACKUP_DIR/$b/manifest.json"; done
 	out=$(libexec/dune-backup prune 2>&1) || fail "policy prune failed: $out"
-	got=$(find "$DUNE_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
-	want=$(printf '%s\n' $keep | sort | paste -sd' ' -)
+	got=$(find "$DUNE_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | collate | paste -sd' ' -)
+	want=$(printf '%s\n' $keep | collate | paste -sd' ' -)
 	[ "$got" = "$want" ] || fail "retention kept: $got (want: $want)"
-	gone=$(find "$DUNE_TRASH_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
-	[ "$gone" = "$(printf '%s\n' $drop | sort | paste -sd' ' -)" ] || fail "retention trashed: $gone"
+	gone=$(find "$DUNE_TRASH_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | collate | paste -sd' ' -)
+	[ "$gone" = "$(printf '%s\n' $drop | collate | paste -sd' ' -)" ] || fail "retention trashed: $gone"
 	# The policy is editable in DUNE_CONFIG_DIR/backup.conf (KEEP_ALL_DAYS, KEEP_WEEKLY_DAYS); bad input is rejected.
 	export DUNE_CONFIG_DIR="$work/policy-config" DUNE_BACKUP_DIR="$work/policy2" DUNE_TRASH_DIR="$work/policy2-trash"
 	mkdir -p "$DUNE_CONFIG_DIR"
@@ -94,7 +94,7 @@ libexec/dune-backup prune --keep 1 >/dev/null 2>&1 || fail "prune failed"
 	done
 	printf '# comment\nKEEP_ALL_DAYS=2\n\nKEEP_WEEKLY_DAYS=12\n' > "$DUNE_CONFIG_DIR/backup.conf"
 	libexec/dune-backup prune >/dev/null 2>&1 || fail "prune with backup.conf failed"
-	got=$(find "$DUNE_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
+	got=$(find "$DUNE_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | collate | paste -sd' ' -)
 	[ "$got" = "20260916T040000.000Z 20260922T040000.000Z 20260925T110000.000Z" ] || fail "backup.conf policy kept: $got"
 	for bad in 'KEEP_ALL_DAYS=seven' 'KEEP_WEEKLY=91' 'KEEP_ALL_DAYS=10
 KEEP_WEEKLY_DAYS=5'; do

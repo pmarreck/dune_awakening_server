@@ -61,7 +61,7 @@ pg() { PGPASSWORD=$(admin_pw) "$@" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres; 
 sql() { pg psql -X -A -t -q -v ON_ERROR_STOP=1 -d "${2:-postgres}" -c "$1"; }
 world_dbs() { sql "select datname from pg_database where not datistemplate and datname <> 'postgres' order by 1"; }
 server_running() { local p; p=$(cat "$DUNE_STATE_DIR/server/pid" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
-backups() { find "$DUNE_BACKUP_DIR" -mindepth 2 -maxdepth 2 -name manifest.json -printf '%h\n' 2>/dev/null | grep -v '\.partial$' | sort -r; }
+backups() { find "$DUNE_BACKUP_DIR" -mindepth 2 -maxdepth 2 -name manifest.json -printf '%h\n' 2>/dev/null | grep -v '\.partial$' | collate | tac; }
 
 cmd_create() {
 	local dbs ts dir final db owner n entries="[]" buildid

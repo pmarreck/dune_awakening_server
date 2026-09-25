@@ -9,6 +9,6 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/dune-units-verify.XXXXXX") || exit 1
 trap 'rm -r -- "$work"' EXIT
 out="$work/units out"
 msg=$(libexec/dune-units render "$out" 2>&1) || fail "render failed: $msg"
-units=(); while IFS= read -r f; do units+=("$f"); done < <(find "$out" -type f | sort)
+units=(); while IFS= read -r f; do units+=("$f"); done < <(find "$out" -type f | collate)
 msg=$(SYSTEMD_LOG_LEVEL=err systemd-analyze verify --man=no "${units[@]}" 2>&1) || fail "systemd-analyze verify: $msg"
 exit "$failures"
