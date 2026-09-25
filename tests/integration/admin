@@ -17,10 +17,27 @@ libexec/dune-postgres init >/dev/null 2>&1 && libexec/dune-postgres start >/dev/
 admin_pw=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password")
 q() { PGPASSWORD="$admin_pw" psql -X -A -t -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "${2:-dune_sb_9_9_9_9}" -c "$1"; }
 q "create database dune_sb_9_9_9_9" postgres
-q "create schema dune; create table dune.accounts (id bigint primary key, \"user\" text, funcom_id text);
-	create table dune.player_state (id bigint primary key, account_id bigint, character_name text, online_status text);
+q "set check_function_bodies = off; create schema dune; create table dune.accounts (id bigint primary key, \"user\" text, funcom_id text);
+	create table dune.player_state (id bigint primary key, account_id bigint, character_name text, online_status text, player_pawn_id bigint);
+	create type dune.vector as (x double precision, y double precision, z double precision);
+	create type dune.transform as (location dune.vector, rotation text);
+	create table dune.world_partition (partition_id bigint primary key, map text, dimension_index int, label text);
+	create table dune.actors (id bigint primary key, map text, partition_id bigint, transform dune.transform);
 	insert into dune.accounts values (1, 'fls-1', 'funcom-tester'), (2, 'fls-2', 'funcom-o''brien');
-	insert into dune.player_state values (1, 1, 'Tester', 'Online'), (2, 2, 'O''Brien', 'Offline')"
+	insert into dune.player_state values (1, 1, 'Tester', 'Online', 11), (2, 2, 'O''Brien', 'Offline', 12);
+	insert into dune.world_partition values (1, 'Survival_1', 0, 'Abbir'), (2, 'DeepDesert_1', 0, 'Deep');
+	insert into dune.actors values (11, 'HaggaBasin', 1, row(row(1, 2, 3), 'r')), (12, 'HaggaBasin', 1, row(row(10.5, -20, 30), 'r'));
+	-- Stand-ins with the contracts of Funcom's procedures (same names, arguments, offline check and error text).
+	create function dune.is_player_offline(in_fls_id text) returns boolean language sql as
+		\$\$ select not exists (select 1 from player_state ps join accounts a on a.id = ps.account_id where a.\"user\" = in_fls_id and ps.online_status <> 'Offline') \$\$;
+	create function dune.admin_move_offline_player_to_partition(in_fls_id text, in_target_partition_id bigint, in_target_location dune.vector)
+	returns void language plpgsql as \$\$ begin
+		if exists (select 1 from player_state ps join accounts a on a.id = ps.account_id where a.\"user\" = in_fls_id and ps.online_status <> 'Offline') then
+			raise exception 'Player must be Offline'; end if;
+		update actors set transform = (in_target_location, (transform).rotation), partition_id = in_target_partition_id,
+			map = (select map from world_partition where partition_id = in_target_partition_id)
+		where id = (select ps.player_pawn_id from player_state ps join accounts a on a.id = ps.account_id where a.\"user\" = in_fls_id);
+	end \$\$"
 export DUNE_DB_NAME=dune_sb_9_9_9_9
 printf 'sekrit-token-value\n' > "$DUNE_SECRETS_DIR/server_commands_token"; chmod 600 "$DUNE_SECRETS_DIR/server_commands_token"
 
@@ -113,6 +130,57 @@ for alias in call-timeout safety-first; do admin "$alias" >/dev/null 2>&1 || fai
 touch "$work/server-silent"
 out=$(admin timeout on 2>&1); [ $? -eq 1 ] && [[ "$out" == *verif* ]] || fail "unverified timeout not reported: $out"
 unlink "$work/server-silent"
+
+# partitions / where (read-only, straight from world_partition and actors; Funcom's admin_get_* readers are broken in 1.5).
+json=$(admin partitions --json 2>&1) || fail "partitions failed: $json"
+[ "$(jq -c '[.[] | [.id, .label, .map]]' <<<"$json" 2>/dev/null)" = '[[1,"Abbir","Survival_1"],[2,"Deep","DeepDesert_1"]]' ] || fail "partitions: $json"
+json=$(admin where "O'Brien" --json 2>&1) || fail "where failed: $json"
+[ "$(jq -c '[.name, .online, .partition, .map, .x, .y, .z]' <<<"$json" 2>/dev/null)" = '["O'"'"'Brien",false,"Abbir","HaggaBasin",10.5,-20,30]' ] || fail "where: $json"
+out=$(admin where Nobody 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nobody* ]] || fail "where for an unknown player: $out"
+
+# move: offline players only, a backup first, Funcom's procedure does the move.
+cat > "$DUNE_COMPONENTS_DIR/dune-backup" <<FAKE
+#!$BASH
+printf '%s\n' "\$*" >> "$work/backup-argv"
+[ -e "$work/backup-fails" ] && { echo "disk full" >&2; exit 1; }
+echo "backup created"
+FAKE
+chmod +x "$DUNE_COMPONENTS_DIR/dune-backup"
+where_xyz() { admin where "$1" --json 2>/dev/null | jq -c '[.partition, .x, .y, .z]'; }
+: > "$work/backup-argv"
+out=$(admin move "O'Brien" 100 200.5 -300 2>&1) || fail "move failed: $out"
+[ "$(where_xyz "O'Brien")" = '["Abbir",100,200.5,-300]' ] || fail "move did not land: $(where_xyz "O'Brien")"
+[ "$(cat "$work/backup-argv")" = "create --label pre-move" ] || fail "move did not back up first: $(cat "$work/backup-argv")"
+admin move "O'Brien" 1 2 3 --partition Deep >/dev/null 2>&1 && [ "$(where_xyz "O'Brien")" = '["Deep",1,2,3]' ] || fail "move --partition LABEL: $(where_xyz "O'Brien")"
+admin move "O'Brien" 4 5 6 --partition 1 >/dev/null 2>&1 && [ "$(where_xyz "O'Brien")" = '["Abbir",4,5,6]' ] || fail "move --partition ID: $(where_xyz "O'Brien")"
+out=$(admin move "O'Brien" 1 2 3 --partition Nowhere 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nowhere* ]] || fail "unknown partition: $out"
+out=$(admin move Tester 1 2 3 2>&1); [ $? -eq 1 ] && [[ "$out" == *online* ]] && [[ "$out" != *ERROR* ]] || fail "moving an online player not refused cleanly: $out"
+[ "$(where_xyz Tester)" = '["Abbir",1,2,3]' ] || fail "online player moved anyway"
+admin move "O'Brien" 1 x 3 >/dev/null 2>&1; [ $? -eq 2 ] || fail "non-numeric move coordinate not a usage error"
+touch "$work/backup-fails"
+out=$(admin move "O'Brien" 7 8 9 2>&1); [ $? -eq 1 ] && [[ "$out" == *backup* ]] || fail "failed backup not reported: $out"
+[ "$(where_xyz "O'Brien")" = '["Abbir",4,5,6]' ] || fail "moved despite a failed backup"
+unlink "$work/backup-fails"
+
+# whisper: private chat line to an online player through chat.whispers and the player's own <FLS id>_queue.
+cat > "$DUNE_COMPONENTS_DIR/dune-rabbitmq" <<FAKE
+#!$BASH
+printf '%s\n' "\$*" >> "$work/argv"
+[ -e "$work/broker-down" ] && exit 1
+f=\$(printf '%s' "\$*" | sed -n 's/.*file:read_file("\([^"]*\)").*/\1/p')
+[ -n "\$f" ] && cp "\$f" "$work/published.json"
+if [ -e "$work/no-queue" ]; then echo whisper=noqueue; else echo whisper=ok; echo publish=ok; fi
+FAKE
+admin whisper Tester "Water is life" >/dev/null 2>&1 || fail "whisper failed"
+grep -q 'chat.whispers' "$work/argv" && grep -q '<<"fls-1_queue">>' "$work/argv" && grep -q '<<"fls-1">>' "$work/argv" || fail "whisper not routed to chat.whispers / fls-1_queue: $(cat "$work/argv")"
+[ "$(jq -r .Type "$work/published.json" 2>/dev/null)" = TextChat ] || fail "whisper wrapper: $(cat "$work/published.json" 2>/dev/null)"
+[ "$(jq -c '.content | fromjson | [.m_ChannelType, .m_UserNameTo, .m_Message.m_UnlocalizedMessage, .m_SpoofedUserNameFrom.m_UnlocalizedName, .m_bUseSpoofedUserName]' "$work/published.json" 2>/dev/null)" = '["Whispers","Tester","Water is life","Admin",true]' ] || fail "whisper payload: $(jq -c '.content | fromjson' "$work/published.json" 2>/dev/null)"
+[[ "$(jq -r '.content | fromjson | .m_TimeStamp' "$work/published.json" 2>/dev/null)" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]{2}\.[0-9]{2}\.[0-9]{2}$ ]] || fail "whisper timestamp format"
+admin whisper Tester hello there --from Paul >/dev/null 2>&1 && [ "$(jq -r '.content | fromjson | [.m_SpoofedUserNameFrom.m_UnlocalizedName, .m_Message.m_UnlocalizedMessage] | join("|")' "$work/published.json")" = "Paul|hello there" ] || fail "whisper --from / multi-word message"
+touch "$work/no-queue"
+out=$(admin whisper "O'Brien" hi 2>&1); [ $? -eq 1 ] && [[ "$out" == *online* ]] || fail "whisper to a player without a chat queue: $out"
+unlink "$work/no-queue"
+admin whisper Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "whisper without a message not a usage error"
 
 touch "$work/broker-down"
 out=$(admin kick Tester 2>&1); [ $? -eq 1 ] && [[ "$out" == *publish* ]] || fail "broker failure not reported: $out"

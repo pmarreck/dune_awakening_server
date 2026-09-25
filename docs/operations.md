@@ -166,6 +166,14 @@ KEEP_WEEKLY_DAYS=91   # then one per week until this age
 
 The file is optional, read on every prune, and validated: an unknown key, a value that is not a whole number, or `KEEP_WEEKLY_DAYS` below `KEEP_ALL_DAYS` stops the prune with an error that names the file and line. `dune-world backup prune --keep N` keeps the newest N instead, ignoring the policy.
 
+### Moving and messaging players
+
+`dune-world admin where <player>` prints a character's partition, map and X Y Z; `admin partitions` lists the partitions. Both read the tables directly, because Funcom's own `admin_get_character_details` and `admin_get_partitions` refer to objects that no longer exist in 1.5.
+
+`dune-world admin move <player> X Y Z [--partition LABEL|ID]` rescues a stuck character while they are offline. It refuses online players (Funcom's `is_player_offline`, which also counts a player whose server is gone as offline), takes a `pre-move` backup, then calls Funcom's `admin_move_offline_player_to_partition`. The partition defaults to the one they are in. Use `teleport` for online players.
+
+`dune-world admin whisper <player> <message> [--from NAME]` sends a private chat line, shown as coming from NAME (default `Admin`). It follows the route DASH confirmed in game: a `TextChat` courier with channel `Whispers` published to exchange `chat.whispers` with the player's FLS id as routing key, bound for the call to their own `<FLS id>_queue`. That queue exists only while they are online, so an offline player gets an error. A binding the game made itself is left in place.
+
 ### Timeout (a break without logging off)
 
 `dune-world admin timeout on` (also `bio-break`, `call-timeout`, `safety-first`) records the current values of four world-level console variables, sets them off, verifies each change in the map server's log, and broadcasts it: `Dac.DamageEnabled` (all damage), `sandworm.dune.Enabled`, `Sandstorm.Enabled`, `Coriolis.Enabled`. `timeout off` restores the recorded values (kept in `runtime/timeout.state`), so a hazard you had disabled on purpose stays disabled. `timeout status` reads the live value.

@@ -21,6 +21,14 @@ Send commands to the running Dune world (map server must be up; commands for a p
 
 Commands:
   players                         Characters with online state (read-only)
+  partitions                      World partitions: id, label, map (read-only)
+  where <player>                  A character's partition, map and X Y Z (read-only)
+  move <player> X Y Z [--partition LABEL|ID]
+                                  Move an OFFLINE character (Funcom's admin_move_offline_player_to_partition),
+                                  after a backup; the partition defaults to their current one. Rescues a stuck player
+  whisper <player> <message> [--from NAME]
+                                  Private chat line to an online player (chat.whispers to their own queue; the
+                                  sender shown is NAME, default Admin)
   kick <player> | --all           Disconnect a player, or everyone online
   teleport <player> X Y Z [YAW]   Move an online player (world coordinates, centimetres)
   say <message> [--duration S]    On-screen broadcast to everyone (default 20 s)
@@ -37,7 +45,7 @@ Commands:
   raw <ServerCommand> [--player P] [Key=value[:int|:float]...]
                                   Any other server command, for exploration (see the server log for the result)
 
-Options: --json (players), --about, -h/--help. A <player> is a character name.
+Options: --json (players, partitions, where), --about, -h/--help. A <player> is a character name.
 Environment: DUNE_STATE_DIR, DUNE_SECRETS_DIR, DUNE_PG_PORT, DUNE_DB_NAME (default: the newest dune_sb_* database).
 EOF
 }
@@ -53,7 +61,8 @@ sql() {
 			-c "select datname from pg_database where datname like 'dune\_sb\_%' order by 1 desc limit 1" 2>/dev/null) || die "cannot reach postgres"
 		[ -n "$db" ] || die "no dune_sb_* database found"
 	fi
-	psql -X -A -t -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "$db" "$@"
+	# Funcom's procedures name their tables without a schema, as the game server's own connections do.
+	PGOPTIONS="-c search_path=dune,public" psql -X -A -t -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "$db" "$@"
 }
 
 # Character name -> Funcom id (the PlayerId server commands expect). Name passed as a psql variable, never spliced.
@@ -63,6 +72,71 @@ funcom_id() {
 		die "database lookup failed"
 	[ -n "$id" ] || die "no character named $1"
 	printf '%s' "$id"
+}
+
+# Character name -> FLS id (accounts.user): what Funcom's procedures and the per-player chat queues use.
+fls_id() {
+	local id
+	id=$(sql -v name="$1" -f - <<<"select a.\"user\" from dune.player_state ps join dune.accounts a on a.id = ps.account_id where ps.character_name = :'name' limit 1;") ||
+		die "database lookup failed"
+	[ -n "$id" ] || die "no character named $1"
+	[[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "unexpected FLS id format for $1"
+	printf '%s' "$id"
+}
+
+# One character's location as JSON. Reads actors directly: Funcom's admin_get_character_details is broken in 1.5.
+where_json() {
+	sql -v name="$1" -f - <<<"select json_build_object('name', ps.character_name, 'online', ps.online_status::text <> 'Offline',
+		'partition', wp.label, 'partition_id', a.partition_id, 'map', a.map,
+		'x', ((a.transform).location).x, 'y', ((a.transform).location).y, 'z', ((a.transform).location).z)
+	from dune.player_state ps join dune.actors a on a.id = ps.player_pawn_id left join dune.world_partition wp on wp.partition_id = a.partition_id
+	where ps.character_name = :'name' limit 1;"
+}
+
+# Whisper: DASH's confirmed route (docs/private-chat-replies.md). A TextChat courier carrying a Whispers message goes to
+# exchange chat.whispers with the player's FLS id as routing key, bound for the call to their own <FLS id>_queue. The
+# queue exists only while they are online. A binding the game already made is left alone; ours is removed afterwards.
+whisper() {
+	local player=$1 from=$2 msg=$3 fls inner body out
+	fls=$(fls_id "$player") || exit 1
+	inner=$(jq -cn --arg id "$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')" --arg from "$from" --arg to "$player" --arg m "$msg" \
+		--arg ts "$(date -u +%Y.%m.%d-%H.%M.%S)" \
+		'{m_Id: $id, m_ChannelType: "Whispers", m_bUseSpoofedUserName: true,
+		  m_SpoofedUserNameFrom: {m_TableId: "", m_Key: "", m_UnlocalizedName: $from}, m_FuncomIdFrom: "ADMIN#00001",
+		  m_UserNameTo: $to, m_Message: {m_UnlocalizedMessage: $m, m_LocalizedMessage: {m_TableId: "", m_Key: "", m_FormatArgs: []}},
+		  m_TimeStamp: $ts, m_OriginLocation: {X: 0.0, Y: 0.0, Z: 0.0}, m_HasSeenMessage: false}')
+	body=$(mktemp "$DUNE_SECRETS_DIR/.XXXXXX.chat.json") || die "cannot create a private temp file"
+	jq -cn --arg c "$inner" '{content: $c, Type: "TextChat"}' > "$body" || { rm -f -- "$body"; die "cannot build whisper"; }
+	out=$("$DUNE_COMPONENTS_DIR/dune-rabbitmq" ctl game eval \
+		"XName = rabbit_misc:r(<<\"/\">>, exchange, <<\"chat.whispers\">>), QName = rabbit_misc:r(<<\"/\">>, queue, <<\"${fls}_queue\">>), case rabbit_amqqueue:lookup(QName) of {error, not_found} -> io:format(\"whisper=noqueue~n\"); {ok, _} -> B = {binding, XName, <<\"$fls\">>, QName, []}, Added = case rabbit_binding:exists(B) of true -> false; _ -> ok = rabbit_binding:add(B, <<\"dune-admin\">>), true end, {ok, Body} = file:read_file(\"$body\"), X = rabbit_exchange:lookup_or_die(XName), MsgId = list_to_binary(\"dune-admin-\" ++ integer_to_list(erlang:system_time(millisecond))), P = {list_to_atom(\"P_basic\"), <<\"Content\">>, undefined, [], 1, undefined, undefined, undefined, undefined, MsgId, undefined, <<\"text_chat\">>, undefined, undefined, undefined}, Content = rabbit_basic:build_content(P, Body), {ok, Msg} = rabbit_basic:message(XName, <<\"$fls\">>, Content), Result = rabbit_queue_type:publish_at_most_once(X, Msg), case Added of true -> rabbit_binding:remove(B, <<\"dune-admin\">>); false -> ok end, io:format(\"whisper=ok~npublish=~p~n\", [Result]) end." 2>&1)
+	rm -f -- "$body"
+	[[ "$out" == *whisper=noqueue* ]] && die "$player is not online (no chat queue ${fls}_queue)"
+	[[ "$out" == *whisper=ok* && "$out" == *publish=ok* ]] || die "whisper publish failed (is the world up?): $(printf '%s' "$out" | tail -2)"
+	echo "whispered to $player" >&2
+}
+
+# Move an offline character: resolve the target partition, refuse online players (Funcom's is_player_offline, which
+# also treats a player whose server is gone as offline), back up, then call Funcom's procedure.
+move() {
+	local player=$1 x=$2 y=$3 z=$4 partition=$5 fls pid label out offline
+	fls=$(fls_id "$player") || exit 1
+	if [ -z "$partition" ]; then
+		pid=$(sql -v fls="$fls" -f - <<<"select a.partition_id from dune.player_state ps join dune.accounts ac on ac.id = ps.account_id join dune.actors a on a.id = ps.player_pawn_id where ac.\"user\" = :'fls' limit 1;") || die "database lookup failed"
+		[ -n "$pid" ] || die "$player has no body in the world yet; give --partition"
+	else
+		pid=$(sql -v p="$partition" -f - <<<"select partition_id from dune.world_partition where label = :'p' or partition_id::text = :'p' order by (label = :'p') desc limit 1;") || die "database lookup failed"
+		[ -n "$pid" ] || die "no partition $partition (see: dune-world admin partitions)"
+	fi
+	label=$(sql -c "select coalesce(label, partition_id::text) from dune.world_partition where partition_id = $pid") || die "database lookup failed"
+	offline=$(sql -v fls="$fls" -f - 2>&1 <<<"select dune.is_player_offline(:'fls');") || die "database lookup failed: $(printf '%s' "$offline" | sed -n 's/^.*ERROR: *//p' | head -1)"
+	[ "$offline" = t ] ||
+		die "$player is online; move works only for offline players (use teleport while they are online)"
+	out=$("$DUNE_COMPONENTS_DIR/dune-backup" create --label pre-move 2>&1) || die "backup before the move failed, nothing moved: $(printf '%s' "$out" | tail -1)"
+	out=$(sql -v fls="$fls" -f - 2>&1 <<<"select dune.admin_move_offline_player_to_partition(:'fls', $pid, row($x, $y, $z)::dune.vector);") || {
+		[[ "$out" == *"Player must be Offline"* ]] && die "$player came online; nothing moved"
+		die "move failed: $(printf '%s' "$out" | sed -n 's/^.*ERROR: *//p' | head -1)"
+	}
+	echo "moved $player to $label $x $y $z (backup taken first)"
 }
 
 # Publish one inner command object (JSON text) through the game broker.
@@ -160,6 +234,35 @@ case "$cmd" in
 	players)
 		rows=$(sql -c "select coalesce(json_agg(json_build_object('name', ps.character_name, 'online', ps.online_status::text <> 'Offline') order by ps.character_name), '[]') from dune.player_state ps") || die "database lookup failed"
 		if $json; then printf '%s\n' "$rows"; else jq -r '.[] | (if .online then "● " else "○ " end) + .name' <<<"$rows"; fi ;;
+	partitions)
+		rows=$(sql -c "select coalesce(json_agg(json_build_object('id', partition_id, 'label', label, 'map', map, 'dimension', dimension_index) order by partition_id), '[]') from dune.world_partition") ||
+			die "database lookup failed"
+		if $json; then printf '%s\n' "$rows"; else jq -r '.[] | "\(.id)\t\(.label // "-")\t\(.map)"' <<<"$rows"; fi ;;
+	where)
+		[ $# -eq 1 ] || usage_error "where needs a player"
+		row=$(where_json "$1") || die "database lookup failed"
+		[ -n "$row" ] || die "no character named $1 with a body in the world"
+		if $json; then printf '%s\n' "$row"; else jq -r '"\(.name) (\(if .online then "online" else "offline" end)): \(.partition // .partition_id) \(.map) \(.x) \(.y) \(.z)"' <<<"$row"; fi ;;
+	move)
+		partition="" pos=()
+		while [ $# -gt 0 ]; do
+			case "$1" in --partition) [ $# -ge 2 ] || usage_error "--partition needs a label or id"; partition=$2; shift ;; *) pos+=("$1") ;; esac
+			shift
+		done
+		[ ${#pos[@]} -eq 4 ] || usage_error "move needs <player> X Y Z [--partition LABEL|ID]"
+		for n in "${pos[@]:1}"; do number "$n"; done
+		move "${pos[@]}" "$partition" ;;
+	whisper)
+		from=Admin msg="" player=""
+		while [ $# -gt 0 ]; do
+			case "$1" in
+				--from) [ $# -ge 2 ] || usage_error "--from needs a name"; from=$2; shift ;;
+				*) if [ -z "$player" ]; then player=$1; else msg=${msg:+$msg }$1; fi ;;
+			esac
+			shift
+		done
+		[ -n "$player" ] && [ -n "$msg" ] || usage_error "whisper needs <player> <message>"
+		whisper "$player" "$from" "$msg" ;;
 	kick)
 		[ $# -eq 1 ] || usage_error "kick needs a player or --all"
 		if [ "$1" = --all ]; then id='*'; else id=$(funcom_id "$1") || exit 1; fi
