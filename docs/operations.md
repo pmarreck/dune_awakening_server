@@ -164,3 +164,9 @@ KEEP_WEEKLY_DAYS=91   # then one per week until this age
 ```
 
 The file is optional, read on every prune, and validated: an unknown key, a value that is not a whole number, or `KEEP_WEEKLY_DAYS` below `KEEP_ALL_DAYS` stops the prune with an error that names the file and line. `dune-world backup prune --keep N` keeps the newest N instead, ignoring the policy.
+
+### Timeout (a break without logging off)
+
+`dune-world admin timeout on` (also `bio-break`, `call-timeout`, `safety-first`) records the current values of four world-level console variables, sets them off, verifies each change in the map server's log, and broadcasts it: `Dac.DamageEnabled` (all damage), `sandworm.dune.Enabled`, `Sandstorm.Enabled`, `Coriolis.Enabled`. `timeout off` restores the recorded values (kept in `runtime/timeout.state`), so a hazard you had disabled on purpose stays disabled. `timeout status` reads the live value.
+
+Why not a real pause: the engine drops a connection after 60 s without traffic (`ConnectionTimeout=60.0` in the shipped `DefaultEngine.ini`, keepalive every 0.2 s), so freezing the server process would disconnect everyone after a minute, and Funcom's server commands include no pause or time-dilation command (`PauseServer` and `SetTimeDilation` are rejected as unknown). Verified on the server: the four variables exist, are settable at runtime, and read back as changed. Not yet verified in game: whether no damage also covers thirst and heat.

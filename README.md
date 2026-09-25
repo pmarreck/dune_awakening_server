@@ -65,7 +65,7 @@ Everything runs through one command, `bin/dune-world`. It works from any directo
 |---|---|
 | `start`, `stop`, `restart` | Bring the whole world up in dependency order (database, schema, brokers, Funcom services, map server), or down in reverse |
 | `status [--json] [--watch SECS]` | One line per component; `--json` adds world identity, characters online, map-server memory and CPU (for admin pages) |
-| `admin …` | Live-world commands: `players`, `say`, `kick`, `teleport`, `water`, `xp`, `exec`, `worm`, `raw` |
+| `admin …` | Live-world commands: `players`, `say`, `kick`, `teleport`, `water`, `xp`, `exec`, `worm`, `raw`, and `timeout on/off` (a break for everyone: no damage, sandworms or storms) |
 | `update …` | Steam build: `check` (exit 0 current, 1 update available, 3 unknown), `apply` (backup, stop, download, unpack, start, re-check) |
 | `backup …` | `create`, `list`, `verify` (restore drill), `restore --yes`, `prune` (retention policy in `backup.conf`) |
 | `character …` | Characters in the database: `list`, `show`, `set-research`, `add-skill-points`, `export` / `validate` / `import` |

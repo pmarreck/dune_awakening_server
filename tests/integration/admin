@@ -82,6 +82,38 @@ admin raw PrintNumPlayers --player Tester Count=3:int Rate=0.5:float Label=hi >/
 json=$(admin players --json 2>&1) || fail "players failed: $json"
 [ "$(jq -c '[.[] | [.name, .online]]' <<<"$json" 2>/dev/null)" = '[["O'"'"'Brien",false],["Tester",true]]' ] || fail "players: $json"
 
+# timeout: a fake server that applies ServerExec cvar commands and echoes values into its log like the real one.
+export DUNE_SERVER_LOG="$work/server.log" DUNE_TIMEOUT_WAIT=3
+: > "$DUNE_SERVER_LOG"
+printf 'Dac.DamageEnabled=true\nsandworm.dune.Enabled=1\nSandstorm.Enabled=0\nCoriolis.Enabled=1\n' > "$work/cvars"
+cat > "$DUNE_COMPONENTS_DIR/dune-rabbitmq" <<FAKE
+#!$BASH
+f=\$(printf '%s' "\$*" | sed -n 's/.*file:read_file("\([^"]*\)").*/\1/p')
+[ -e "$work/broker-down" ] && exit 1
+[ -e "$work/server-silent" ] && { echo publish=ok; exit 0; }
+exec=\$(jq -r '.MessageContent | fromjson | .Exec // empty' "\$f")
+printf '%s\n' "\$(jq -r '.MessageContent | fromjson | .ServerCommand' "\$f") \$exec" >> "$work/sent"
+if [ -n "\$exec" ]; then
+	set -- \$exec
+	if [ \$# -ge 2 ]; then v=\$2; [ "\$1" = Dac.DamageEnabled ] && { [ "\$2" = 0 ] && v=false || v=true; }; sed -i "s/^\$1=.*/\$1=\$v/" "$work/cvars"; fi
+	printf '[x]Log: %s = "%s"      LastSetBy: Console\n' "\$1" "\$(sed -n "s/^\$1=//p" "$work/cvars")" >> "$DUNE_SERVER_LOG"
+fi
+echo publish=ok
+FAKE
+: > "$work/sent"
+out=$(admin timeout on 2>&1) || fail "timeout on failed: $out"
+[ "$(paste -sd, "$work/cvars")" = "Dac.DamageEnabled=false,sandworm.dune.Enabled=0,Sandstorm.Enabled=0,Coriolis.Enabled=0" ] || fail "timeout on did not switch everything off: $(paste -sd, "$work/cvars")"
+grep -q '^ServiceBroadcast' "$work/sent" || fail "timeout on did not tell the players"
+out=$(admin timeout status 2>&1); [[ "$out" == *on* ]] || fail "timeout status while on: $out"
+admin bio-break >/dev/null 2>&1 || fail "bio-break alias failed while already on"
+out=$(admin timeout off 2>&1) || fail "timeout off failed: $out"
+[ "$(paste -sd, "$work/cvars")" = "Dac.DamageEnabled=true,sandworm.dune.Enabled=1,Sandstorm.Enabled=0,Coriolis.Enabled=1" ] || fail "timeout off did not restore the previous values: $(paste -sd, "$work/cvars")"
+out=$(admin timeout status 2>&1); [[ "$out" == *off* ]] || fail "timeout status after off: $out"
+for alias in call-timeout safety-first; do admin "$alias" >/dev/null 2>&1 || fail "$alias failed"; admin timeout off >/dev/null 2>&1; done
+touch "$work/server-silent"
+out=$(admin timeout on 2>&1); [ $? -eq 1 ] && [[ "$out" == *verif* ]] || fail "unverified timeout not reported: $out"
+unlink "$work/server-silent"
+
 touch "$work/broker-down"
 out=$(admin kick Tester 2>&1); [ $? -eq 1 ] && [[ "$out" == *publish* ]] || fail "broker failure not reported: $out"
 [ -z "$(find "$DUNE_SECRETS_DIR" -name '*.cmd.json')" ] || fail "command body file left behind after a failed publish"

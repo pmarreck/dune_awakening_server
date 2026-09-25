@@ -30,6 +30,10 @@ Commands:
   xp <player> AMOUNT [CATEGORY]   Award XP; CATEGORY is Combat (default), Crafting, Gathering, Exploration or Sabotage
   exec <console command...>       World-level engine console command or variable via ServerExec, e.g.
                                   \`exec t.MaxFPS 5\` (output is not returned; watch the server log)
+  timeout on|off|status           Break for everyone without logging off: turns off all damage, sandworms,
+                                  sandstorms and Coriolis storms (each verified in the server log), announces it,
+                                  and restores the previous values on `off`. Aliases for `on`: bio-break,
+                                  call-timeout, safety-first
   raw <ServerCommand> [--player P] [Key=value[:int|:float]...]
                                   Any other server command, for exploration (see the server log for the result)
 
@@ -77,6 +81,68 @@ publish() {
 }
 
 number() { [[ "$1" =~ ^-?[0-9]+([.][0-9]+)?$ ]] || usage_error "not a number: $1"; }
+
+# Timeout: world-level console variables that make play safe for a break. Values are read back from the map
+# server's log, where it echoes `Log: <cvar> = "<value>"` for every ServerExec query, so each change is verified.
+DUNE_SERVER_LOG=${DUNE_SERVER_LOG:-$DUNE_STATE_DIR/server/server-console.log}
+DUNE_TIMEOUT_WAIT=${DUNE_TIMEOUT_WAIT:-10}
+TIMEOUT_STATE="$DUNE_STATE_DIR/timeout.state"
+TIMEOUT_CVARS=(Dac.DamageEnabled sandworm.dune.Enabled Sandstorm.Enabled Coriolis.Enabled)
+normalize() { case "$1" in false|0) echo 0 ;; true|1) echo 1 ;; *) echo "$1" ;; esac; }
+
+# Ask the server for a console variable's value; print it (normalized) once the server logs it.
+cvar_get() {
+	local name=$1 start line deadline
+	start=$(stat -c %s "$DUNE_SERVER_LOG" 2>/dev/null || echo 0)
+	publish "$(jq -cn --arg e "$name" '{ServerCommand: "ServerExec", Exec: $e}')" 2>/dev/null || return 1
+	deadline=$(( $(date +%s) + DUNE_TIMEOUT_WAIT ))
+	while [ "$(date +%s)" -le "$deadline" ]; do
+		line=$(tail -c +"$((start + 1))" "$DUNE_SERVER_LOG" 2>/dev/null | grep -a -F "Log: $name = " | tail -1)
+		[ -n "$line" ] && { normalize "$(sed -n 's/.*Log: [^ ]* = "\([^"]*\)".*/\1/p' <<<"$line")"; return 0; }
+		sleep 0.2
+	done
+	return 1
+}
+
+cvar_set_verified() {
+	publish "$(jq -cn --arg e "$1 $2" '{ServerCommand: "ServerExec", Exec: $e}')" 2>/dev/null || die "could not send $1"
+	[ "$(cvar_get "$1")" = "$(normalize "$2")" ] || die "could not verify $1 = $2 in the server log ($DUNE_SERVER_LOG)"
+}
+
+broadcast() {
+	publish "$(jq -cn --arg m "$1" '{ServerCommand: "ServiceBroadcast", BroadcastType: "Generic",
+		BroadcastPayload: {BroadcastDuration: 15, LocalizedText: [{Key: "en", Title: "", Body: $m}, {Key: "en-US", Title: "", Body: $m}]}}')" 2>/dev/null
+}
+
+timeout_on() {
+	local c v
+	if [ ! -s "$TIMEOUT_STATE" ]; then
+		local saved=""
+		for c in "${TIMEOUT_CVARS[@]}"; do
+			v=$(cvar_get "$c") || die "could not verify the current value of $c (is the map server up? log: $DUNE_SERVER_LOG)"
+			saved+="$c=$v"$'\n'
+		done
+		(umask 077; mkdir -p "${TIMEOUT_STATE%/*}" && printf '%s' "$saved" > "$TIMEOUT_STATE") || die "cannot write $TIMEOUT_STATE"
+	fi
+	for c in "${TIMEOUT_CVARS[@]}"; do cvar_set_verified "$c" 0; done
+	broadcast "Timeout: no damage, no sandworms, no storms. Take your break."
+	echo "timeout on: damage, sandworms, sandstorms and Coriolis storms are off (dune-world admin timeout off to resume)"
+}
+
+timeout_off() {
+	local c v
+	[ -s "$TIMEOUT_STATE" ] || { echo "timeout is not on"; return 0; }
+	while IFS='=' read -r c v; do [ -n "$c" ] && cvar_set_verified "$c" "$v"; done < "$TIMEOUT_STATE"
+	rm -f -- "$TIMEOUT_STATE"
+	broadcast "Timeout over: the desert is dangerous again."
+	echo "timeout off: previous values restored"
+}
+
+timeout_status() {
+	local v
+	v=$(cvar_get Dac.DamageEnabled) || die "could not read Dac.DamageEnabled from the server log"
+	if [ "$v" = 0 ]; then echo "timeout on (damage is off)"; else echo "timeout off"; fi
+}
 
 json=false args=()
 for a in "$@"; do
@@ -130,6 +196,9 @@ case "$cmd" in
 		case "${3:-Combat}" in Combat|Crafting|Gathering|Exploration|Sabotage) ;; *) usage_error "unknown XP category ${3}" ;; esac
 		id=$(funcom_id "$1") || exit 1
 		publish "$(jq -cn --arg p "$id" --argjson x "$2" --arg c "${3:-Combat}" '{ServerCommand: "AwardXP", PlayerId: $p, Experience: $x, Category: $c}')" ;;
+	timeout)
+		case "${1:-}" in on) timeout_on ;; off) timeout_off ;; status|"") timeout_status ;; *) usage_error "timeout takes on, off or status" ;; esac ;;
+	bio-break|call-timeout|safety-first) timeout_on ;;
 	raw)
 		[ $# -ge 1 ] || usage_error "raw needs a ServerCommand name"
 		obj=$(jq -cn --arg c "$1" '{ServerCommand: $c}'); shift
