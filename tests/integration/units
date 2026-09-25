@@ -15,7 +15,7 @@ libexec/dune-units --help >/dev/null 2>&1 || fail "--help exited nonzero"
 libexec/dune-units bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown command did not exit 2"
 msg=$(libexec/dune-units render "$out" --nix "$fake_nix" 2>&1) || fail "render failed: $msg"
 want="dune-backup-verify.service dune-backup-verify.timer dune-backup.service dune-backup.timer dune-update-check.service dune-update-check.timer dune-world-heal.service dune-world-heal.timer dune-world.service"
-[ "$(ls "$out" 2>/dev/null | sort | paste -sd' ' -)" = "$want" ] || fail "unit set: $(ls "$out" 2>/dev/null | paste -sd' ' -)"
+[ "$(ls "$out" 2>/dev/null | LC_ALL=C sort | paste -sd' ' -)" = "$want" ] || fail "unit set: $(ls "$out" 2>/dev/null | paste -sd' ' -)"
 grep -rq '@[A-Z_]*@' "$out" && fail "unrendered placeholders: $(grep -rho '@[A-Z_]*@' "$out" | sort -u | paste -sd' ' -)"
 # Every Exec* program must be an existing absolute path (the checkout's scripts, the given nix, systemctl).
 while IFS= read -r prog; do
