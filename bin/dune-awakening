@@ -220,6 +220,9 @@ local function setup_env()
 		DUNE_USERSETTINGS_DEFAULTS = steam .. "/scripts/setup/config", DUNE_USERSETTINGS_OVERRIDES = config .. "/UserSettings",
 	}
 	for k, v in pairs(env) do setenv(k, v) end
+	-- Components run at SHLVL >= 2: a Bash tool whose stdin is a socket (SSH, an agent terminal) at SHLVL < 2 takes the
+	-- "started by sshd" path and reads ~/.bashrc, pulling personal shell settings (PATH and more) into the world.
+	if (tonumber(os.getenv("SHLVL") or "") or 0) < 1 then setenv("SHLVL", "1") end
 	return env
 end
 

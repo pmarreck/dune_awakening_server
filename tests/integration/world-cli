@@ -144,6 +144,12 @@ world stop >/dev/null 2>&1 || fail "stop failed"
 got=$(grep -v '^dune-character ' "$work/calls" | cut -d'|' -f1 | paste -sd, -)
 [ "$got" = "server stop,gateway stop,director stop,textrouter stop,rabbitmq stop game,rabbitmq stop admin,postgres stop" ] || fail "stop order wrong: $got"
 
+# Components start at SHLVL >= 2, so a Bash tool with a socket stdin (SSH, an agent terminal) never takes the
+# "started by sshd" path that reads ~/.bashrc (which would pull personal shell settings into the world's tools).
+printf '#!%s\nprintf "%%s\\n" "${SHLVL:-unset}" > "%s"\n' "$BASH" "$work/shlvl" > "$fake/dune-live"
+env -u SHLVL bin/dune-awakening --no-warn world say hi >/dev/null 2>&1
+[ "$(cat "$work/shlvl" 2>/dev/null)" -ge 2 ] 2>/dev/null || fail "components start below SHLVL 2: $(cat "$work/shlvl" 2>/dev/null)"
+
 # stop and restart refuse while anyone is online (they would be disconnected), naming them; --force overrides.
 # Unknown (database unreachable, as above) does not block: then no one can be in the world.
 printf '#!%s\necho '"'"'[{"name":"Alice","online":true},{"name":"Bob","online":false},{"name":"Carol","online":true}]'"'"'\n' "$BASH" > "$fake/dune-character"
