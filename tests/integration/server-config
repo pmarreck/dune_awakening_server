@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # libexec/dune-server configure: the map server's private ini overrides (0600, never on argv) carry the FLS token, the DB
 # password and the server-command channel: a generated ServerCommandsAuthToken (kept in secrets/, stable across
-# restarts) plus server.NotificationSystem.Enabled=true.
+# restarts) plus server.NotificationSystem.Enabled=true, and a generated in-game admin password replacing Funcom's
+# public default (DefaultGame.ini [AdminSetting.Global] Password_Admin=sardaukar), which AdminLogin would accept.
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
 failures=0
@@ -21,7 +22,18 @@ ini="$DUNE_STATE_DIR/server/Saved/Config/LinuxServer/Engine.ini"
 section() { awk -v s="[$1]" '$0 == s { on = 1; next } /^\[/ { on = 0 } on' "$ini"; }
 section FuncomLiveServices | grep -qxF "ServerCommandsAuthToken=$(cat "$tok")" || fail "token not in [FuncomLiveServices]"
 section ConsoleVariables | grep -qx 'server.NotificationSystem.Enabled=true' || fail "notification system not enabled in [ConsoleVariables]"
-first=$(cat "$tok")
+apw="$DUNE_SECRETS_DIR/admin_password"
+[ "$(stat -c %a "$apw" 2>/dev/null)" = 600 ] || fail "admin password missing or not 0600"
+[ "$(tr -d '\n' < "$apw" 2>/dev/null | wc -c)" -ge 20 ] || fail "admin password too short"
+game="$DUNE_STATE_DIR/server/Saved/Config/LinuxServer/Game.ini"
+[ "$(stat -c %a "$game" 2>/dev/null)" = 600 ] || fail "Game.ini not 0600"
+gsection() { awk -v s="[$1]" '$0 == s { on = 1; next } /^\[/ { on = 0 } on' "$game"; }
+# A plain key (no +/-) replaces the default in Unreal's ini layering.
+[ "$(gsection AdminSetting.Global)" = "Password_Admin=$(cat "$apw")" ] || fail "[AdminSetting.Global] does not replace Password_Admin: $(gsection AdminSetting.Global)"
+grep -rqi sardaukar "$DUNE_STATE_DIR/server/Saved/Config" && fail "public default admin password in the private config"
+gsection DuneDatabaseInterfacePSQL | grep -qx 'DatabasePassword=dbpw' || fail "database settings lost from Game.ini"
+first=$(cat "$tok") afirst=$(cat "$apw")
 libexec/dune-server configure >/dev/null 2>&1 || fail "second configure failed"
 [ "$(cat "$tok")" = "$first" ] || fail "command token changed across configure runs"
+[ "$(cat "$apw")" = "$afirst" ] || fail "admin password changed across configure runs"
 exit "$failures"

@@ -167,6 +167,12 @@ An online character cannot be moved in the database: the map server holds it in 
 
 `dune-awakening character whisper <player> <message> [--from NAME]` sends a private chat line, shown as coming from NAME (default `Admin`). It follows the route DASH confirmed in game: a `TextChat` courier with channel `Whispers` published to exchange `chat.whispers` with the player's FLS id as routing key, bound for the call to their own `<FLS id>_queue`. That queue exists only while they are online, so an offline player gets an error. A binding the game made itself is left in place.
 
+### In-game GM (not reachable yet)
+
+The game has its own admin system: `[AdminSetting.Global]` holds a password per privilege (`Password_Admin`, `Password_GM`, `Password_PowerTester`, from `Password_%s`) and allow-lists (`Allowed_Commands` for everyone, `Allowed_GM_Commands` and so on). `AdminLogin <password>` grants the matching privilege; the client also has an Admin Panel widget with a login box and teleport-to-player. Funcom's `DefaultGame.ini` ships `Password_Admin=sardaukar`, a public default, so `dune-server` generates a private one (`runtime/secrets/admin_password`, 0600) and writes it to the private `Game.ini`, the same file the server already reads its database password from.
+
+No way to type `AdminLogin` in the shipping client is known: community reports say the Unreal console is compiled out (the configured `~`/Insert keys do nothing), and no key that opens the Admin Panel has been found. Until one turns up, GM actions come from the host: `dune character move`, `water`, `xp`, `kick`, `whisper`, and `dune world say` / `timeout`.
+
 ### Timeout (a break without logging off)
 
 `dune-awakening world timeout on` (also `bio-break`, `call-timeout`, `safety-first`) records the current values of four world-level console variables, sets them off, verifies each change in the map server's log, and broadcasts it: `Dac.DamageEnabled` (all damage), `sandworm.dune.Enabled`, `Sandstorm.Enabled`, `Coriolis.Enabled`. `timeout off` restores the recorded values (kept in `runtime/timeout.state`), so a hazard you had disabled on purpose stays disabled. `timeout status` reads the live value.
