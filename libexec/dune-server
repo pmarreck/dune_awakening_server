@@ -69,10 +69,17 @@ ensure_command_token() {
 # a public default; admin_password replaces it. gm_password is for a trusted player: GM privilege with Funcom's GM
 # allow-list minus GM_DENIED. Each is generated once and kept private.
 GM_DENIED=(AddItemToInventory DestroyTargetVehicle DestroyTotem DestroyPlaceable DestroyEntireBuilding DestroyBuildingPiece)
+# Passwords are typed in game by players who reach the world only over Tailscale, so they are memorable passphrases:
+# three words from this list and a two-digit number (about 25 bits). Funcom's public default word is not in it.
+PASSPHRASE_WORDS=(arrakis caladan giedi sietch spice melange thumper stillsuit crysknife fremen sandworm ornithopter harkonnen atreides kwisatz mentat gesserit jabbar litany mindkiller desert spicer carryall hunter seeker lasgun shield water muaddib usul stilgar chani leto jessica duncan gurney thufir kynes naib dew sandrider maker shaihulud tleilax ixian guild navigator heighliner landsraad padishah emperor corrino baron rabban feyd ecaz richese salusa kaitain dune coriolis sandstorm windtrap)
+
+random_word() { local n; n=$(od -An -tu4 -N4 /dev/urandom | tr -d ' '); printf '%s' "${PASSPHRASE_WORDS[n % ${#PASSPHRASE_WORDS[@]}]}"; }
+
 ensure_password() {
-	local t="$DUNE_SECRETS_DIR/$1"
+	local t="$DUNE_SECRETS_DIR/$1" n
 	[ -s "$t" ] && return 0
-	(umask 077; openssl rand -hex 12 > "$t") || die "cannot write $t"
+	n=$(od -An -tu4 -N4 /dev/urandom | tr -d ' ')
+	(umask 077; printf '%s-%s-%s-%02d\n' "$(random_word)" "$(random_word)" "$(random_word)" $((10 + n % 90)) > "$t") || die "cannot write $t"
 }
 
 write_secret_ini() {

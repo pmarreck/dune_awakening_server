@@ -27,7 +27,15 @@ section FuncomLiveServices | grep -qxF "ServerCommandsAuthToken=$(secret server_
 section ConsoleVariables | grep -qx 'server.NotificationSystem.Enabled=true' || fail "notification system not enabled in [ConsoleVariables]"
 for pw in admin_password gm_password; do
 	[ "$(stat -c %a "$DUNE_SECRETS_DIR/$pw" 2>/dev/null)" = 600 ] || fail "$pw missing or not 0600"
-	[ "$(secret "$pw" | tr -d '\n' | wc -c)" -ge 20 ] || fail "$pw too short"
+	# Typeable for players behind Tailscale: three Dune words and a two-digit number, e.g. sietch-thumper-kynes-42.
+	[[ "$(secret "$pw")" =~ ^[a-z]+-[a-z]+-[a-z]+-[0-9]{2}$ ]] || fail "$pw is not a word-word-word-NN passphrase: $(secret "$pw" | sed 's/[a-z]/x/g')"
+	secret "$pw" | grep -qi sardaukar && fail "$pw uses Funcom's public default word"
+done
+# Words come from the list in dune-server and vary: 20 fresh configures give at least 10 distinct passphrases.
+seen=$(for i in $(seq 1 20); do mv "$DUNE_SECRETS_DIR/admin_password" "$work/old-$i" 2>/dev/null; libexec/dune-server configure >/dev/null 2>&1; secret admin_password; done | sort -u | wc -l)
+[ "$seen" -ge 10 ] || fail "passphrases barely vary: $seen distinct of 20"
+for w in $(secret admin_password | tr -- '-' ' ' | awk '{print $1, $2, $3}'); do
+	grep -q "^PASSPHRASE_WORDS=.*\b$w\b" libexec/dune-server || fail "word $w not from the Dune word list"
 done
 [ "$(secret gm_password)" != "$(secret admin_password)" ] || fail "GM and admin passwords are the same"
 game="$DUNE_STATE_DIR/server/Saved/Config/LinuxServer/Game.ini"
