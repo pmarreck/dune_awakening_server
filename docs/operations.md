@@ -62,7 +62,7 @@ Overnight stability samples: `runtime/stability.ndjson` holds one status line ev
 
 ## Characters (`dune-awakening character`)
 
-Everything about one character lives here. The record commands below work on the database; the live ones (`move`, `where`, `kick`, `water`, `xp`, `whisper`, `worm`) are described under [Live-world commands](#live-world-commands-dune-awakening-world-dune-awakening-character).
+Everything about one character lives here. The record commands below work on the database; the live ones (`move`, `where`, `kick`, `water`, `xp`, `whisper`, `worm`) are described under [Live-world commands](admin.md).
 
 The record commands read the database settings from the game's own ini chain, so they reach whatever database the server uses. Edits and imports refuse while any live character on the account is online, because the server would overwrite them. Rows the server marked `character_state = Deleted` are ignored; its first-login placeholder stays "Online" forever.
 
@@ -131,53 +131,9 @@ The sandstorm structs come from the server's `DuneSandbox/Config/DefaultGame.ini
 
 `characters` is null when the database is unreachable; `server` fields are null when the map server is down. CPU % = Δ`cpu_seconds` / Δwall-clock × 100 (per core). RabbitMQ is probed with `dune-rabbitmq status BROKER --quick` (process alive + distribution port), because the full check boots an Erlang VM (~1 s).
 
-## Live-world commands (`dune-awakening world`, `dune-awakening character`)
+## Live-world commands and in-game GM
 
-The map server starts with Funcom's server-command channel on: `dune-server` writes a generated `ServerCommandsAuthToken` (kept in `runtime/secrets/server_commands_token`, 0600) and `server.NotificationSystem.Enabled=true` into its private `Engine.ini`. `dune-live` wraps a command in Funcom's Version 2 envelope and has the game RabbitMQ node publish it (exchange `heartbeats`, routing key `notifications`, user `fls`, app `fls_backend`); the envelope travels through a 0600 file, never a command line. Commands are grouped by what they act on: `world` for the whole world, `character` for one character (the character tool hands its live subcommands to `dune-live`). Players are named by character; the tool resolves their Funcom id.
-
-```bash
-dune-awakening world say "Restart in 5 minutes" --duration 30
-dune-awakening world kick-all
-dune-awakening world exec t.MaxFPS 5            # world-level engine command or variable (ServerExec)
-dune-awakening world partitions
-dune-awakening world raw <ServerCommand> [--player P] [Key=value[:int|:float]...]
-dune-awakening character list                   # ● online / ○ offline, Intel, skill points
-dune-awakening character move <player> [to] <target>
-dune-awakening character move <player> X Y Z [--partition LABEL|ID]
-dune-awakening character where <player>
-dune-awakening character kick <player>
-dune-awakening character water <player> 5000
-dune-awakening character xp <player> 1000 [Combat|Crafting|Gathering|Exploration|Sabotage]
-dune-awakening character whisper <player> "message" [--from NAME]
-dune-awakening character worm <player>          # experimental: SandwormTargetPlayer in the player's context
-```
-
-The server logs each command: `LogDuneServerCommands: Now running ServerCommand '…'`, or `unknown Server Command '…'` for names it does not implement. Verified live on build 2124138: `ServiceBroadcast` and `ServerExec` run; `ServerExec` changes engine variables at runtime (`t.MaxFPS 5` cut the map server from 32% to 11% of a core, `t.MaxFPS 0` restored it), but console output is not returned. Cheat-manager names (`SandwormTargetPlayer`, `PrintNumPlayers`, ...) are not server commands in their own right.
-
-### Moving and messaging players
-
-`dune-awakening character where <player>` prints a character's partition, map and X Y Z; `dune-awakening world partitions` lists the partitions. Both read the tables directly, because Funcom's own `admin_get_character_details` and `admin_get_partitions` refer to objects that no longer exist in 1.5.
-
-`dune-awakening character move` works whether the player is online or not; Funcom's `is_player_offline` decides (it also counts a player whose server is gone as offline, so a stuck player can be rescued).
-
-- `move <player> X Y Z`: online, the server's `TeleportTo` (same partition only); offline, a `pre-move` backup and then Funcom's `admin_move_offline_player_to_partition`, where `--partition LABEL|ID` may also change partition (default: the current one).
-- `move <player> [to] <target>`: both online, the game's own `TeleportToPlayer <target>` console command run in the player's context, so the server chooses the landing spot; player offline, the offline move onto the target's last saved spot (ground a character stood on), after a backup. An online player is not sent to an offline target, whose body is not in the world.
-
-An online character cannot be moved in the database: the map server holds it in memory, is authoritative for it and writes it back on its own schedule, so Funcom's procedure refuses with "Player must be Offline" (its Director depends on that text).
-
-`dune-awakening character whisper <player> <message> [--from NAME]` sends a private chat line, shown as coming from NAME (default `Admin`). It follows the route DASH confirmed in game: a `TextChat` courier with channel `Whispers` published to exchange `chat.whispers` with the player's FLS id as routing key, bound for the call to their own `<FLS id>_queue`. That queue exists only while they are online, so an offline player gets an error. A binding the game made itself is left in place.
-
-### In-game GM (not reachable yet)
-
-The game has its own admin system: `[AdminSetting.Global]` holds a password per privilege (`Password_Admin`, `Password_GM`, `Password_PowerTester`, from `Password_%s`) and allow-lists (`Allowed_Commands` for everyone, `Allowed_GM_Commands` and so on). `AdminLogin <password>` grants the matching privilege; the client also has an Admin Panel widget with a login box and teleport-to-player. Funcom's `DefaultGame.ini` ships `Password_Admin=sardaukar`, a public default, so `dune-server` generates a private one (`runtime/secrets/admin_password`, 0600) and writes it to the private `Game.ini`, the same file the server already reads its database password from.
-
-No way to type `AdminLogin` in the shipping client is known: community reports say the Unreal console is compiled out (the configured `~`/Insert keys do nothing), and no key that opens the Admin Panel has been found. Until one turns up, GM actions come from the host: `dune character move`, `water`, `xp`, `kick`, `whisper`, and `dune world say` / `timeout`.
-
-### Timeout (a break without logging off)
-
-`dune-awakening world timeout on` (also `bio-break`, `call-timeout`, `safety-first`) records the current values of four world-level console variables, sets them off, verifies each change in the map server's log, and broadcasts it: `Dac.DamageEnabled` (all damage), `sandworm.dune.Enabled`, `Sandstorm.Enabled`, `Coriolis.Enabled`. `timeout off` restores the recorded values (kept in `runtime/timeout.state`), so a hazard you had disabled on purpose stays disabled. `timeout status` reads the live value.
-
-Why not a real pause: the engine drops a connection after 60 s without traffic (`ConnectionTimeout=60.0` in the shipped `DefaultEngine.ini`, keepalive every 0.2 s), so freezing the server process would disconnect everyone after a minute, and Funcom's server commands include no pause or time-dilation command (`PauseServer` and `SetTimeDilation` are rejected as unknown). Verified on the server: the four variables exist, are settable at runtime, and read back as changed. Not yet verified in game: whether no damage also covers thirst and heat.
+Everything about administering the running world (the command channel, world and character commands, moving and messaging players, the break timeout, and the game's own GM system) is in [admin.md](admin.md).
 
 ## Backups and retention
 

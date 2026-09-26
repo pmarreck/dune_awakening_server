@@ -11,6 +11,7 @@ annotate=[
 	config.sample = operator config templates (*.sample): copy to ~/.config/dune_awakening_server and drop the suffix
 	config.sample/backup.conf.sample = backup retention template: KEEP_ALL_DAYS, KEEP_WEEKLY_DAYS
 	docs/acquisition.md = Steam package, FLS token, private inputs, and sizing findings from pinned DASH
+	docs/admin.md = Everything about administering the world: host commands, moves, whispers, timeout, and the game's in-game GM system (AdminSetting, passwords, Admin Panel key hunt)
 	docs/architecture.md = Synthesis: component graph, 1.5 version proof, native NixOS gap list
 	docs/operations.md = How to run, stop, inspect the native world; files, logs, ports
 	docs/payload/steam-4754530-build-25486303.sha256 = SHA-256 of official Steam server payload files, build 25486303 / image 2124138

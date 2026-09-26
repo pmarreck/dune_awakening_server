@@ -90,6 +90,7 @@ nix flake check
 
 - [docs/architecture.md](docs/architecture.md): how Funcom's components connect, and what replaces Kubernetes here
 - [docs/operations.md](docs/operations.md): day-to-day operation, characters, gameplay settings
+- [docs/admin.md](docs/admin.md): administering the world in one place: host commands, moving and messaging players, the break timeout, and the game's in-game GM system
 - [docs/postgres-parity.md](docs/postgres-parity.md): Funcom's PostgreSQL fork vs nixpkgs PostgreSQL, and the locale match
 - [docs/acquisition.md](docs/acquisition.md): the Steam payload and the Funcom token
 - [docs/readiness.md](docs/readiness.md): evidence from the first bring-up
