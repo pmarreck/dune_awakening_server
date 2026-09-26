@@ -52,7 +52,9 @@ game="$DUNE_STATE_DIR/server/Saved/Config/LinuxServer/Game.ini"
 [ "$(stat -c %a "$game" 2>/dev/null)" = 600 ] || fail "Game.ini not 0600"
 gsection() { awk -v s="[$1]" '$0 == s { on = 1; next } /^\[/ { on = 0 } on' "$game"; }
 # Plain keys (no +/-) replace Funcom's values in Unreal's ini layering; "-" entries remove items from its arrays.
-want=$(printf '%s\n' "Password_Admin=$(secret admin_password)" "Password_GM=$(secret gm_password)" \
+# RequiresAdminPassword is a key the server reads from this section (GConfig GetBool, next to Password_%s); Funcom
+# never sets it. True turns on the password-gated admin login (Admin Panel, Home key).
+want=$(printf '%s\n' RequiresAdminPassword=True "Password_Admin=$(secret admin_password)" "Password_GM=$(secret gm_password)" \
 	-Allowed_GM_Commands=AddItemToInventory -Allowed_GM_Commands=DestroyTargetVehicle -Allowed_GM_Commands=DestroyTotem \
 	-Allowed_GM_Commands=DestroyPlaceable -Allowed_GM_Commands=DestroyEntireBuilding -Allowed_GM_Commands=DestroyBuildingPiece)
 [ "$(gsection AdminSetting.Global)" = "$want" ] || fail "[AdminSetting.Global] wrong: $(gsection AdminSetting.Global | grep -v '^Password_')"

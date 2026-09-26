@@ -76,6 +76,19 @@ To try in game: press **Home**. Compact keyboards without a Home key usually hav
 
 How the key was found (repeatable after game updates): build [retoc](https://github.com/trumank/retoc) in a scratch directory with `nix-shell -p cargo rustc pkg-config openssl --run 'cargo build --release'` (not part of the flake). Its Oodle loader fetches `liboo2corelinux64.so.9` and checks a pinned SHA-256; on NixOS run retoc with `LD_LIBRARY_PATH` pointing at nixpkgs `stdenv.cc.cc.lib` for `libstdc++`. `retoc to-legacy --no-shaders -f IMC_General -f IA_AdminPanel Content/Paks OUT` converts the two assets. In the legacy `IMC_General.uexp`, each mapping stores its `Action` as an import index; `IA_AdminPanel` is import -12, and the `Key` struct after it holds a `KeyName` `NameProperty` whose value is the key's name (`Home`).
 
+### Why Home did nothing, and the fix being tried (2026-09-26)
+
+Pressing Home (Fn+PgUp) on the first test did not open anything, and the configured console keys do nothing in the shipping client. What the game files show (client build fetched through Steam, server build 2124138):
+
+- **The binding is the same in the client.** The client's `IMC_General` and `IA_AdminPanel` are byte-identical to the server's; Home is bound to `IA_AdminPanel` (**verified**). The same mapping context holds the everyday bindings (I, M, Tab, E), so it is active in game.
+- **The panel is meant to open before you are an admin.** `W_AdminPanel` has an `m_AdminCheckWidgetSwitcher` that switches between a login page (`m_AdminLoginEditableTextBox`, a show-password toggle, a "Login As" combo box for the privilege level, `m_AdminLoginButton`) and the cheat tabs (Player, Items, Spawns, Sandworm, Time and Weather, NPCs, Skills, Contracts, Landsraad, Spice, Audio, UI, Server). `W_EscapeMenu` also has an Admin button (`m_AdminButton` in `OpenAdminPanelHBox`) whose visibility is switched at runtime.
+- **Privileges are server-granted and replicated.** The client carries `m_AuthenticatedPrivileges` with `OnRep_AuthenticatedPrivileges`, `GetAuthenticatedPrivileges` and `HasAdminPrivileges_FromController`; the server side has `UPlayerPrivilegeComponent`, `SetAuthenticatedPrivileges`, and `FDuneAdministrationSettings` (`m_AdminPasswords`, `m_bRequiresAdminPassword`), which sits next to the replicated server custom settings.
+- **A hidden switch.** Disassembling the server's config reader (x86-64, around `0xdd3cd20` in `DuneSandboxServer-Linux-Shipping`) shows it read `[AdminSetting.Global]` in this order: a boolean **`RequiresAdminPassword`** into the administration settings, then `Password_<Privilege>` for each `EDunePrivileges` value into `m_AdminPasswords`. Funcom's configs never set `RequiresAdminPassword`, so it takes its compiled-in default. The call targets are inferred from the shape of Unreal's config API, not from symbols.
+
+**Hypothesis:** with `RequiresAdminPassword` at its default, the admin login flow (the Escape-menu button, the Home key) is disabled, so the panel never opens. `dune-server` now writes `RequiresAdminPassword=True`. That direction is safe regardless: both privilege levels already have private passwords, so it can only require one. **To test:** press Home, or open the Escape menu and look for an Admin entry; if the panel opens, choose the privilege level in "Login As" and enter the matching password.
+
+If this is wrong, the next step is disassembling the client's handler for `IA_AdminPanel` to see which check it makes before opening.
+
 ### Other routes considered
 
 - `-ExecCmds="AdminLogin …"` as a Steam launch option is suggested in community notes but unverified; it would run before any server connection exists.

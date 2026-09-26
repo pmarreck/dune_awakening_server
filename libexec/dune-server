@@ -67,7 +67,9 @@ ensure_command_token() {
 
 # In-game privilege passwords (AdminLogin). Funcom's DefaultGame.ini ships [AdminSetting.Global] Password_Admin=sardaukar,
 # a public default; admin_password replaces it. gm_password is for a trusted player: GM privilege with Funcom's GM
-# allow-list minus GM_DENIED. Each is generated once and kept private.
+# allow-list minus GM_DENIED. Each is generated once and kept private. RequiresAdminPassword=True: the server reads
+# this key from [AdminSetting.Global] (next to Password_%s) and Funcom never sets it; True enables the password-gated
+# admin login that the in-game Admin Panel (Home key) offers.
 GM_DENIED=(AddItemToInventory DestroyTargetVehicle DestroyTotem DestroyPlaceable DestroyEntireBuilding DestroyBuildingPiece)
 # Passwords are typed in game by players who reach the world only over Tailscale, so they are memorable passphrases:
 # three words from this list and a two-digit number (about 25 bits). Funcom's public default word is not in it.
@@ -102,7 +104,7 @@ write_secret_ini() {
 			> "$saved/Config/LinuxServer/Engine.ini" &&
 		{
 			printf '[DuneDatabaseInterfacePSQL]\nDatabaseHost=127.0.0.1:%s\nDatabaseUser=dune\nDatabasePassword=%s\n\n' "$DUNE_PG_PORT" "$dune_pw"
-			printf '[AdminSetting.Global]\nPassword_Admin=%s\nPassword_GM=%s\n' "$admin_pw" "$gm_pw"
+			printf '[AdminSetting.Global]\nRequiresAdminPassword=True\nPassword_Admin=%s\nPassword_GM=%s\n' "$admin_pw" "$gm_pw"
 			for c in "${GM_DENIED[@]}"; do printf -- '-Allowed_GM_Commands=%s\n' "$c"; done
 		} > "$saved/Config/LinuxServer/Game.ini"
 	) || die "cannot write secret ini overrides"
