@@ -33,6 +33,7 @@ int open(const char *path, int flags, int mode);
 long write(int fd, const void *buf, unsigned long n);
 int close(int fd);
 int mkdir(const char *path, int mode);
+int execvp(const char *file, char *const argv[]);
 ]]
 
 local PGRES_COMMAND_OK, PGRES_TUPLES_OK, CONNECTION_OK = 1, 2, 0
@@ -57,9 +58,9 @@ end
 local USAGE = [[
 Usage: dune-character [options] <command> [args]
 
-View and edit characters in the Dune: Awakening self-hosted world database.
+Everything about one character: records in the world database, and live commands for the running world.
 
-Commands:
+Records (edits need the account offline):
   list                        List characters with online state, Intel points, skill points and XP
   show <character>            Show one character (name or numeric id)
   set-intel <character> N     Set Intel points (spent on research) to N
@@ -73,6 +74,18 @@ Commands:
                               server's own import run as a dry run (always rolled back). "-"/@stdin reads stdin
   import <file>               Validate, back up the account as an export, then import through the server's own
                               character_transfer_import (replaces the account's character; names re-encrypted)
+
+Live (online or offline is detected; handled by dune-live, see `dune-live --help` for details):
+  move <player> [to] <target>  Bring a player to another (online: the game's TeleportToPlayer; offline: onto the
+                              target's last saved spot, after a backup)
+  move <player> X Y Z [--partition LABEL|ID]
+                              Online: the server's TeleportTo. Offline: Funcom's offline move, after a backup
+  where <player>              Partition, map and X Y Z
+  kick <player>               Disconnect a player
+  water <player> AMOUNT       Fill the player's water containers
+  xp <player> AMOUNT [CATEGORY]  Award XP (Combat, Crafting, Gathering, Exploration, Sabotage)
+  whisper <player> <message> [--from NAME]  Private chat line to an online player
+  worm <player>               Send a nearby sandworm at the player (experimental)
 
 Options:
   --server-root DIR   Server tree holding the game's ini chain (default: $DUNE_STATE_DIR/server/tree)
@@ -575,7 +588,39 @@ local function cmd_import(opts, db, schema, path)
 	else io.stdout:write(string.format("%s imported%s\n", info.character_name, backup and (" (backup " .. backup .. ")") or "")) end
 end
 
+-- Live commands belong to dune-live's character group. They are handed over with the user's arguments in order,
+-- minus this tool's own options, before any database work here.
+local LIVE = { move = true, where = true, kick = true, water = true, xp = true, whisper = true, worm = true }
+local OWN_WITH_VALUE = { ["--server-root"] = true, ["-o"] = true, ["--output"] = true }
+local OWN_FLAGS = { ["--text"] = true, ["--no-color"] = true, ["--"] = true }
+
+local function hand_over_live(argv)
+	local cmd_at
+	local i = 1
+	while i <= #argv do
+		local a = argv[i]
+		if OWN_WITH_VALUE[a] then i = i + 1
+		elseif a:sub(1, 1) ~= "-" then cmd_at = i; break end
+		i = i + 1
+	end
+	if not cmd_at or not LIVE[argv[cmd_at]] then return end
+	local dir = os.getenv("DUNE_COMPONENTS_DIR") or (arg[0]:match("^(.*)/[^/]*$") or ".")
+	local out = { dir .. "/dune-live", "character", argv[cmd_at] }
+	i = 1
+	while i <= #argv do
+		local a = argv[i]
+		if OWN_WITH_VALUE[a] then i = i + 1
+		elseif i ~= cmd_at and not OWN_FLAGS[a] then out[#out + 1] = a end
+		i = i + 1
+	end
+	local cargv, keep = ffi.new("char*[?]", #out + 1), {}
+	for j, a in ipairs(out) do keep[j] = ffi.new("char[?]", #a + 1, a); cargv[j - 1] = keep[j] end
+	ffi.C.execvp(out[1], cargv)
+	die(EXIT_ERR, "cannot run %s", out[1])
+end
+
 local function main(argv)
+	hand_over_live(argv)
 	local opts = parse_args(argv)
 	local cmd = table.remove(opts.positional, 1)
 	if not cmd then io.stderr:write(USAGE); os.exit(EXIT_USAGE) end

@@ -65,16 +65,16 @@ Everything runs through one command, `bin/dune-world`. It works from any directo
 |---|---|
 | `start`, `stop`, `restart` | Bring the whole world up in dependency order (database, schema, brokers, Funcom services, map server), or down in reverse |
 | `status [--json] [--watch SECS]` | One line per component; `--json` adds world identity, characters online, map-server memory and CPU (for admin pages) |
-| `admin …` | Live-world commands: `players`, `partitions`, `where`, `move` (offline players, after a backup), `whisper`, `say`, `kick`, `teleport`, `water`, `xp`, `exec`, `worm`, `raw`, and `timeout on/off` (a break for everyone: no damage, sandworms or storms) |
+| `world …` | Whole-world live commands: `say`, `timeout on/off` (a break for everyone: no damage, sandworms or storms), `kick-all`, `exec`, `partitions`, `raw` |
 | `update …` | Steam build: `check` (exit 0 current, 1 update available, 3 unknown), `apply` (backup, stop, download, unpack, start, re-check) |
 | `backup …` | `create`, `list`, `verify` (restore drill), `restore --yes`, `prune` (retention policy in `backup.conf`) |
-| `character …` | Characters in the database: `list`, `show`, `set-intel` / `add-intel`, `set-skill-points` / `add-skill-points`, `export` / `validate` / `import` |
+| `character …` | One character: `list`, `show`, `set-intel`/`add-intel`, `set-skill-points`/`add-skill-points`, `export`, `validate`, `import`, and live or offline: `move` (to another player or X Y Z), `where`, `kick`, `water`, `xp`, `whisper`, `worm` |
 | `init …` | One-time setup: writes `world.conf` from your Funcom token |
 | `units render DEST` | systemd user units for unattended running (world at boot, self-heal, backups, update check) |
 
 `dune-world <subcommand> --help` lists each subcommand's options.
 
-**Components** live in `libexec/`. `dune-world` calls them; you rarely run them directly. Each manages one piece of Funcom's stack: `dune-server` (the map server, Funcom's Unreal binary), `dune-postgres` (database cluster), `dune-db-setup` (Funcom's schema installer), `dune-world-partitions`, `dune-rabbitmq` (admin and game message brokers), `dune-textrouter`, `dune-director` and `dune-gateway` (Funcom's broker authentication, director and gateway services), plus setup helpers `dune-dotnet-prepare`, `dune-unpack` and `dune-usersettings`. The subcommand tools (`dune-admin`, `dune-update`, `dune-backup`, `dune-character`, `dune-world-init`, `dune-units`) live there too.
+**Components** live in `libexec/`. `dune-world` calls them; you rarely run them directly. Each manages one piece of Funcom's stack: `dune-server` (the map server, Funcom's Unreal binary), `dune-postgres` (database cluster), `dune-db-setup` (Funcom's schema installer), `dune-world-partitions`, `dune-rabbitmq` (admin and game message brokers), `dune-textrouter`, `dune-director` and `dune-gateway` (Funcom's broker authentication, director and gateway services), plus setup helpers `dune-dotnet-prepare`, `dune-unpack` and `dune-usersettings`. The subcommand tools (`dune-live` for live `world` and `character` commands, `dune-update`, `dune-backup`, `dune-character`, `dune-world-init`, `dune-units`) live there too.
 
 Gameplay settings (XP, harvest yield, crafting time, death penalties, sandstorm damage and more) go in override files under `~/.config/dune_awakening_server/UserSettings/`; see [docs/operations.md](docs/operations.md#gameplay-settings). Funcom's guide describes the same `UserSettings` files for its VM.
 

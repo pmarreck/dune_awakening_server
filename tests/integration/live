@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# libexec/dune-admin: live-world commands through Funcom's server-command channel (Version 2 envelope published by the
+# libexec/dune-live: live-world commands, grouped by what they act on (world, character), through Funcom's server-command channel (Version 2 envelope published by the
 # game RabbitMQ node into exchange heartbeats / routing key notifications, as user fls / app fls_backend), with
 # players resolved to Funcom ids from a synthetic database. The broker is a fake dune-rabbitmq that records what
 # would be published; the auth token must never appear on any command line.
@@ -8,7 +8,7 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
 . tests/lib/ports.bash
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
-work=$(mktemp -d "${TMPDIR:-/tmp}/dune-admin-test.XXXXXX") || exit 1
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-live-test.XXXXXX") || exit 1
 export DUNE_PG_DATA="$work/pg" DUNE_SECRETS_DIR="$work/secrets" DUNE_STATE_DIR="$work/state" DUNE_PG_PORT=$(pick_port_base 1)
 export DUNE_COMPONENTS_DIR="$work/fake"
 cleanup() { libexec/dune-postgres stop >/dev/null 2>&1; rm -r -- "$work"; }
@@ -52,13 +52,19 @@ f=\$(printf '%s' "\$*" | sed -n 's/.*file:read_file("\([^"]*\)").*/\1/p')
 printf 'publish=ok exchange=heartbeats routing=notifications\n'
 EOF
 chmod +x "$DUNE_COMPONENTS_DIR/dune-rabbitmq"
-admin() { : > "$work/argv"; rm -f -- "$work/published.json"; libexec/dune-admin "$@"; }
+world() { : > "$work/argv"; rm -f -- "$work/published.json"; libexec/dune-live world "$@"; }
+char() { : > "$work/argv"; rm -f -- "$work/published.json"; libexec/dune-live character "$@"; }
 inner() { jq -c '.MessageContent | fromjson' "$work/published.json" 2>/dev/null; }
 
-libexec/dune-admin --help >/dev/null 2>&1 || fail "--help exited nonzero"
-libexec/dune-admin bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown command did not exit 2"
+libexec/dune-live --help >/dev/null 2>&1 || fail "--help exited nonzero"
+world bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown world command did not exit 2"
+# Commands are namespaced by what they act on: a character command is not a world command and vice versa.
+libexec/dune-live kick Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "a command without its world/character group was accepted"
+world kick Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "kick accepted as a world command"
+char say hi >/dev/null 2>&1; [ $? -eq 2 ] || fail "say accepted as a character command"
+world players >/dev/null 2>&1; [ $? -eq 2 ] || fail "players still exists (character list covers it)"
 
-out=$(admin kick Tester 2>&1) || fail "kick failed: $out"
+out=$(char kick Tester 2>&1) || fail "kick failed: $out"
 [ "$(jq -r '[.Version, .AuthToken] | join(",")' "$work/published.json" 2>/dev/null)" = "2,sekrit-token-value" ] || fail "envelope wrong: $(cat "$work/published.json" 2>/dev/null)"
 [ "$(inner)" = '{"ServerCommand":"KickPlayer","PlayerId":"funcom-tester"}' ] || fail "kick payload: $(inner)"
 [ "$(cat "$work/published.mode")" = 600 ] || fail "published body file not 0600"
@@ -66,38 +72,40 @@ grep -q 'heartbeats' "$work/argv" && grep -q 'notifications' "$work/argv" && gre
 grep -q sekrit "$work/argv" && fail "auth token appeared on the broker command line"
 [ -z "$(find "$DUNE_SECRETS_DIR" -name '*.cmd.json')" ] || fail "command body file left behind"
 
-admin kick --all >/dev/null 2>&1 || fail "kick --all failed"
-[ "$(inner | jq -r .PlayerId)" = '*' ] || fail "kick --all not PlayerId *"
-admin kick "O'Brien" >/dev/null 2>&1 || fail "kick of a quoted name failed"
+world kick-all >/dev/null 2>&1 || fail "kick-all failed"
+[ "$(inner | jq -r .PlayerId)" = '*' ] || fail "kick-all not PlayerId *"
+char kick "O'Brien" >/dev/null 2>&1 || fail "kick of a quoted name failed"
 [ "$(inner | jq -r .PlayerId)" = "funcom-o'brien" ] || fail "name with a quote resolved wrongly: $(inner)"
-out=$(admin kick Nobody 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nobody* ]] || fail "unknown player: $out"
+out=$(char kick Nobody 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nobody* ]] || fail "unknown player: $out"
 
-admin teleport Tester 1.5 -2 300 90 >/dev/null 2>&1 || fail "teleport failed"
-[ "$(inner | jq -c '[.ServerCommand, .X, .Y, .Z, .Yaw]')" = '["TeleportTo",1.5,-2,300,90]' ] || fail "teleport payload: $(inner)"
-admin teleport Tester 1 x 3 >/dev/null 2>&1; [ $? -eq 2 ] || fail "non-numeric teleport coordinate not a usage error"
+# character move with coordinates, player online: the server's TeleportTo (no database write, no backup).
+char move Tester 1.5 -2 300 >/dev/null 2>&1 || fail "online character move failed"
+[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .X, .Y, .Z]')" = '["TeleportTo","funcom-tester",1.5,-2,300]' ] || fail "online move payload: $(inner)"
+char move Tester 1 x 3 >/dev/null 2>&1; [ $? -eq 2 ] || fail "non-numeric coordinate not a usage error"
+char >/dev/null 2>&1; [ $? -eq 2 ] || fail "char without a subcommand not a usage error"
+char dance Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown char subcommand not a usage error"
+char teleport Tester 1 2 3 >/dev/null 2>&1; [ $? -eq 2 ] || fail "old teleport still accepted (move replaces it)"
 
-admin say "Spice must flow" --duration 12 >/dev/null 2>&1 || fail "say failed"
+world say "Spice must flow" --duration 12 >/dev/null 2>&1 || fail "say failed"
 [ "$(inner | jq -c '[.ServerCommand, .BroadcastType, .BroadcastPayload.BroadcastDuration, .BroadcastPayload.LocalizedText[0].Body]')" = '["ServiceBroadcast","Generic",12,"Spice must flow"]' ] || fail "say payload: $(inner)"
 
-admin worm Tester >/dev/null 2>&1 || fail "worm failed"
+char worm Tester >/dev/null 2>&1 || fail "worm failed"
 [ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Exec]')" = '["ServerExec","funcom-tester","SandwormTargetPlayer Tester"]' ] || fail "worm payload: $(inner)"
 
 # exec: a world-level console command or variable through ServerExec (arguments joined).
-admin exec t.MaxFPS 5 >/dev/null 2>&1 || fail "exec failed"
+world exec t.MaxFPS 5 >/dev/null 2>&1 || fail "exec failed"
 [ "$(inner)" = '{"ServerCommand":"ServerExec","Exec":"t.MaxFPS 5"}' ] || fail "exec payload: $(inner)"
-admin exec >/dev/null 2>&1; [ $? -eq 2 ] || fail "exec without a command not a usage error"
-admin water Tester 5000 >/dev/null 2>&1 || fail "water failed"
+world exec >/dev/null 2>&1; [ $? -eq 2 ] || fail "exec without a command not a usage error"
+char water Tester 5000 >/dev/null 2>&1 || fail "water failed"
 [ "$(inner | jq -c '[.ServerCommand, .PlayerId, .WaterAmount]')" = '["UpdateAllWaterFillables","funcom-tester",5000]' ] || fail "water payload: $(inner)"
-admin xp Tester 1000 >/dev/null 2>&1 || fail "xp failed"
+char xp Tester 1000 >/dev/null 2>&1 || fail "xp failed"
 [ "$(inner | jq -c '[.ServerCommand, .Experience, .Category]')" = '["AwardXP",1000,"Combat"]' ] || fail "xp payload: $(inner)"
-admin xp Tester 10 Gathering >/dev/null 2>&1 && [ "$(inner | jq -r .Category)" = Gathering ] || fail "xp category"
-admin xp Tester 10 Dancing >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown xp category not a usage error"
+char xp Tester 10 Gathering >/dev/null 2>&1 && [ "$(inner | jq -r .Category)" = Gathering ] || fail "xp category"
+char xp Tester 10 Dancing >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown xp category not a usage error"
 
-admin raw PrintNumPlayers --player Tester Count=3:int Rate=0.5:float Label=hi >/dev/null 2>&1 || fail "raw failed"
+world raw PrintNumPlayers --player Tester Count=3:int Rate=0.5:float Label=hi >/dev/null 2>&1 || fail "raw failed"
 [ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Count, .Rate, .Label]')" = '["PrintNumPlayers","funcom-tester",3,0.5,"hi"]' ] || fail "raw payload: $(inner)"
 
-json=$(admin players --json 2>&1) || fail "players failed: $json"
-[ "$(jq -c '[.[] | [.name, .online]]' <<<"$json" 2>/dev/null)" = '[["O'"'"'Brien",false],["Tester",true]]' ] || fail "players: $json"
 
 # timeout: a fake server that applies ServerExec cvar commands and echoes values into its log like the real one.
 export DUNE_SERVER_LOG="$work/server.log" DUNE_TIMEOUT_WAIT=3
@@ -118,25 +126,25 @@ fi
 echo publish=ok
 FAKE
 : > "$work/sent"
-out=$(admin timeout on 2>&1) || fail "timeout on failed: $out"
+out=$(world timeout on 2>&1) || fail "timeout on failed: $out"
 [ "$(paste -sd, "$work/cvars")" = "Dac.DamageEnabled=false,sandworm.dune.Enabled=0,Sandstorm.Enabled=0,Coriolis.Enabled=0" ] || fail "timeout on did not switch everything off: $(paste -sd, "$work/cvars")"
 grep -q '^ServiceBroadcast' "$work/sent" || fail "timeout on did not tell the players"
-out=$(admin timeout status 2>&1); [[ "$out" == *on* ]] || fail "timeout status while on: $out"
-admin bio-break >/dev/null 2>&1 || fail "bio-break alias failed while already on"
-out=$(admin timeout off 2>&1) || fail "timeout off failed: $out"
+out=$(world timeout status 2>&1); [[ "$out" == *on* ]] || fail "timeout status while on: $out"
+world bio-break >/dev/null 2>&1 || fail "bio-break alias failed while already on"
+out=$(world timeout off 2>&1) || fail "timeout off failed: $out"
 [ "$(paste -sd, "$work/cvars")" = "Dac.DamageEnabled=true,sandworm.dune.Enabled=1,Sandstorm.Enabled=0,Coriolis.Enabled=1" ] || fail "timeout off did not restore the previous values: $(paste -sd, "$work/cvars")"
-out=$(admin timeout status 2>&1); [[ "$out" == *off* ]] || fail "timeout status after off: $out"
-for alias in call-timeout safety-first; do admin "$alias" >/dev/null 2>&1 || fail "$alias failed"; admin timeout off >/dev/null 2>&1; done
+out=$(world timeout status 2>&1); [[ "$out" == *off* ]] || fail "timeout status after off: $out"
+for alias in call-timeout safety-first; do world "$alias" >/dev/null 2>&1 || fail "$alias failed"; world timeout off >/dev/null 2>&1; done
 touch "$work/server-silent"
-out=$(admin timeout on 2>&1); [ $? -eq 1 ] && [[ "$out" == *verif* ]] || fail "unverified timeout not reported: $out"
+out=$(world timeout on 2>&1); [ $? -eq 1 ] && [[ "$out" == *verif* ]] || fail "unverified timeout not reported: $out"
 unlink "$work/server-silent"
 
 # partitions / where (read-only, straight from world_partition and actors; Funcom's admin_get_* readers are broken in 1.5).
-json=$(admin partitions --json 2>&1) || fail "partitions failed: $json"
+json=$(world partitions --json 2>&1) || fail "partitions failed: $json"
 [ "$(jq -c '[.[] | [.id, .label, .map]]' <<<"$json" 2>/dev/null)" = '[[1,"Abbir","Survival_1"],[2,"Deep","DeepDesert_1"]]' ] || fail "partitions: $json"
-json=$(admin where "O'Brien" --json 2>&1) || fail "where failed: $json"
+json=$(char where "O'Brien" --json 2>&1) || fail "where failed: $json"
 [ "$(jq -c '[.name, .online, .partition, .map, .x, .y, .z]' <<<"$json" 2>/dev/null)" = '["O'"'"'Brien",false,"Abbir","HaggaBasin",10.5,-20,30]' ] || fail "where: $json"
-out=$(admin where Nobody 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nobody* ]] || fail "where for an unknown player: $out"
+out=$(char where Nobody 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nobody* ]] || fail "where for an unknown player: $out"
 
 # move: offline players only, a backup first, Funcom's procedure does the move.
 cat > "$DUNE_COMPONENTS_DIR/dune-backup" <<FAKE
@@ -146,19 +154,19 @@ printf '%s\n' "\$*" >> "$work/backup-argv"
 echo "backup created"
 FAKE
 chmod +x "$DUNE_COMPONENTS_DIR/dune-backup"
-where_xyz() { admin where "$1" --json 2>/dev/null | jq -c '[.partition, .x, .y, .z]'; }
+where_xyz() { char where "$1" --json 2>/dev/null | jq -c '[.partition, .x, .y, .z]'; }
 : > "$work/backup-argv"
-out=$(admin move "O'Brien" 100 200.5 -300 2>&1) || fail "move failed: $out"
+out=$(char move "O'Brien" 100 200.5 -300 2>&1) || fail "move failed: $out"
 [ "$(where_xyz "O'Brien")" = '["Abbir",100,200.5,-300]' ] || fail "move did not land: $(where_xyz "O'Brien")"
 [ "$(cat "$work/backup-argv")" = "create --label pre-move" ] || fail "move did not back up first: $(cat "$work/backup-argv")"
-admin move "O'Brien" 1 2 3 --partition Deep >/dev/null 2>&1 && [ "$(where_xyz "O'Brien")" = '["Deep",1,2,3]' ] || fail "move --partition LABEL: $(where_xyz "O'Brien")"
-admin move "O'Brien" 4 5 6 --partition 1 >/dev/null 2>&1 && [ "$(where_xyz "O'Brien")" = '["Abbir",4,5,6]' ] || fail "move --partition ID: $(where_xyz "O'Brien")"
-out=$(admin move "O'Brien" 1 2 3 --partition Nowhere 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nowhere* ]] || fail "unknown partition: $out"
-out=$(admin move Tester 1 2 3 2>&1); [ $? -eq 1 ] && [[ "$out" == *online* ]] && [[ "$out" != *ERROR* ]] || fail "moving an online player not refused cleanly: $out"
+char move "O'Brien" 1 2 3 --partition Deep >/dev/null 2>&1 && [ "$(where_xyz "O'Brien")" = '["Deep",1,2,3]' ] || fail "move --partition LABEL: $(where_xyz "O'Brien")"
+char move "O'Brien" 4 5 6 --partition 1 >/dev/null 2>&1 && [ "$(where_xyz "O'Brien")" = '["Abbir",4,5,6]' ] || fail "move --partition ID: $(where_xyz "O'Brien")"
+out=$(char move "O'Brien" 1 2 3 --partition Nowhere 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nowhere* ]] || fail "unknown partition: $out"
+out=$(char move Tester 1 2 3 --partition Deep 2>&1); [ $? -eq 1 ] && [[ "$out" == *offline* ]] && [[ "$out" != *ERROR* ]] || fail "partition change for an online player not refused cleanly: $out"
 [ "$(where_xyz Tester)" = '["Abbir",1,2,3]' ] || fail "online player moved anyway"
-admin move "O'Brien" 1 x 3 >/dev/null 2>&1; [ $? -eq 2 ] || fail "non-numeric move coordinate not a usage error"
+char move "O'Brien" 1 x 3 >/dev/null 2>&1; [ $? -eq 2 ] || fail "non-numeric move coordinate not a usage error"
 touch "$work/backup-fails"
-out=$(admin move "O'Brien" 7 8 9 2>&1); [ $? -eq 1 ] && [[ "$out" == *backup* ]] || fail "failed backup not reported: $out"
+out=$(char move "O'Brien" 7 8 9 2>&1); [ $? -eq 1 ] && [[ "$out" == *backup* ]] || fail "failed backup not reported: $out"
 [ "$(where_xyz "O'Brien")" = '["Abbir",4,5,6]' ] || fail "moved despite a failed backup"
 unlink "$work/backup-fails"
 
@@ -171,18 +179,33 @@ f=\$(printf '%s' "\$*" | sed -n 's/.*file:read_file("\([^"]*\)").*/\1/p')
 [ -n "\$f" ] && cp "\$f" "$work/published.json"
 if [ -e "$work/no-queue" ]; then echo whisper=noqueue; else echo whisper=ok; echo publish=ok; fi
 FAKE
-admin whisper Tester "Water is life" >/dev/null 2>&1 || fail "whisper failed"
+char whisper Tester "Water is life" >/dev/null 2>&1 || fail "whisper failed"
 grep -q 'chat.whispers' "$work/argv" && grep -q '<<"fls-1_queue">>' "$work/argv" && grep -q '<<"fls-1">>' "$work/argv" || fail "whisper not routed to chat.whispers / fls-1_queue: $(cat "$work/argv")"
 [ "$(jq -r .Type "$work/published.json" 2>/dev/null)" = TextChat ] || fail "whisper wrapper: $(cat "$work/published.json" 2>/dev/null)"
 [ "$(jq -c '.content | fromjson | [.m_ChannelType, .m_UserNameTo, .m_Message.m_UnlocalizedMessage, .m_SpoofedUserNameFrom.m_UnlocalizedName, .m_bUseSpoofedUserName]' "$work/published.json" 2>/dev/null)" = '["Whispers","Tester","Water is life","Admin",true]' ] || fail "whisper payload: $(jq -c '.content | fromjson' "$work/published.json" 2>/dev/null)"
 [[ "$(jq -r '.content | fromjson | .m_TimeStamp' "$work/published.json" 2>/dev/null)" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]{2}\.[0-9]{2}\.[0-9]{2}$ ]] || fail "whisper timestamp format"
-admin whisper Tester hello there --from Paul >/dev/null 2>&1 && [ "$(jq -r '.content | fromjson | [.m_SpoofedUserNameFrom.m_UnlocalizedName, .m_Message.m_UnlocalizedMessage] | join("|")' "$work/published.json")" = "Paul|hello there" ] || fail "whisper --from / multi-word message"
+char whisper Tester hello there --from Paul >/dev/null 2>&1 && [ "$(jq -r '.content | fromjson | [.m_SpoofedUserNameFrom.m_UnlocalizedName, .m_Message.m_UnlocalizedMessage] | join("|")' "$work/published.json")" = "Paul|hello there" ] || fail "whisper --from / multi-word message"
 touch "$work/no-queue"
-out=$(admin whisper "O'Brien" hi 2>&1); [ $? -eq 1 ] && [[ "$out" == *online* ]] || fail "whisper to a player without a chat queue: $out"
+out=$(char whisper "O'Brien" hi 2>&1); [ $? -eq 1 ] && [[ "$out" == *online* ]] || fail "whisper to a player without a chat queue: $out"
 unlink "$work/no-queue"
-admin whisper Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "whisper without a message not a usage error"
+char whisper Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "whisper without a message not a usage error"
+
+# move to a player: both online -> the game's own TeleportToPlayer in the mover's context; mover offline -> move to the target's
+# last saved spot (backup first); mover online but target offline -> refused.
+: > "$work/backup-argv"
+out=$(char move "O'Brien" to Tester 2>&1) || fail "offline move to a player failed: $out"
+[ "$(where_xyz "O'Brien")" = "$(where_xyz Tester)" ] || fail "offline move to a player did not land on the target: $(where_xyz "O'Brien") vs $(where_xyz Tester)"
+[ "$(cat "$work/backup-argv")" = "create --label pre-move" ] || fail "offline move to a player did not back up first"
+out=$(char move Tester to "O'Brien" 2>&1); [ $? -eq 1 ] && [[ "$out" == *"O'Brien"*offline* ]] || fail "online mover to an offline target not refused: $out"
+q "update dune.player_state set online_status = 'Online' where character_name = 'O''Brien'"
+char move Tester "O'Brien" >/dev/null 2>&1 || fail "online move to a player failed"
+[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Exec]')" = '["ServerExec","funcom-tester","TeleportToPlayer O'"'"'Brien"]' ] || fail "online move to a player payload: $(inner)"
+q "update dune.player_state set online_status = 'Offline' where character_name = 'O''Brien'"
+char move Tester to Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "move to a player to oneself not a usage error"
+char move Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "move to a player without a target not a usage error"
+out=$(char move Tester to Nobody 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nobody* ]] || fail "move to a player to an unknown player: $out"
 
 touch "$work/broker-down"
-out=$(admin kick Tester 2>&1); [ $? -eq 1 ] && [[ "$out" == *publish* ]] || fail "broker failure not reported: $out"
+out=$(char kick Tester 2>&1); [ $? -eq 1 ] && [[ "$out" == *publish* ]] || fail "broker failure not reported: $out"
 [ -z "$(find "$DUNE_SECRETS_DIR" -name '*.cmd.json')" ] || fail "command body file left behind after a failed publish"
 exit "$failures"

@@ -114,12 +114,14 @@ done
 out=$(env -u DUNE_COMPONENTS_DIR bin/dune-world backup --about 2>&1) && [[ "$out" == dune-backup* ]] || fail "backup not found in libexec: $out"
 [ -z "$(find bin -type f ! -name dune-world)" ] || fail "bin/ holds more than dune-world: $(find bin -type f ! -name dune-world | paste -sd' ' -)"
 
-# admin passes everything after it to the dune-admin component (options included), with the world environment set.
-printf '#!%s\nprintf "admin %%s|%%s\\n" "$*" "${DUNE_SECRETS_DIR:-}" >> "%s"\nexit 3\n' "$BASH" "$work/calls" > "$fake/dune-admin"; chmod +x "$fake/dune-admin"
+# `world` passes everything after it to the dune-live component's world group (options included), with the world
+# environment set. Character commands, live ones included, go through `character`; there is no `admin` any more.
+printf '#!%s\nprintf "live %%s|%%s\\n" "$*" "${DUNE_SECRETS_DIR:-}" >> "%s"\nexit 3\n' "$BASH" "$work/calls" > "$fake/dune-live"; chmod +x "$fake/dune-live"
 : > "$work/calls"
-world admin kick "Some One" --json >/dev/null 2>&1; rc=$?
-[ "$(grep '^admin' "$work/calls")" = "admin kick Some One --json|$DUNE_STATE_DIR/secrets" ] || fail "admin passthrough: $(grep '^admin' "$work/calls")"
-[ "$rc" -eq 3 ] || fail "admin exit status not passed through: $rc"
+world world say "Some One" --json >/dev/null 2>&1; rc=$?
+[ "$(grep '^live' "$work/calls")" = "live world say Some One --json|$DUNE_STATE_DIR/secrets" ] || fail "world passthrough: $(grep '^live' "$work/calls")"
+[ "$rc" -eq 3 ] || fail "world exit status not passed through: $rc"
+out=$(world admin say hi 2>&1); [ $? -eq 2 ] && [[ "$out" == *"unknown command admin"* ]] || fail "admin is still a dune-world command, or the error names the wrong word: $out"
 
 : > "$work/calls"
 world stop >/dev/null 2>&1 || fail "stop failed"
