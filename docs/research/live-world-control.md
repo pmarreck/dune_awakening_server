@@ -1,6 +1,6 @@
 # Live-world control surfaces (research, 2026-09-25)
 
-Question: what could a `dune-world admin` CLI do against the running 1.5 server (broadcast, kick, teleport, give items, "spawn a sandworm near a player")? Read-only research: binary strings of `DuneSandboxServer-Linux-Shipping` (build 2124138), shipped configs, the Director binary, read-only Director GETs, `pg_proc` metadata, the vendored DASH docs and web sources. Nothing was sent or changed. **V** = verified, **I** = inferred.
+Question: what could a `dune-awakening admin` CLI do against the running 1.5 server (broadcast, kick, teleport, give items, "spawn a sandworm near a player")? Read-only research: binary strings of `DuneSandboxServer-Linux-Shipping` (build 2124138), shipped configs, the Director binary, read-only Director GETs, `pg_proc` metadata, the vendored DASH docs and web sources. Nothing was sent or changed. **V** = verified, **I** = inferred.
 
 ## Unreal console, RCON, stdin
 
@@ -41,7 +41,7 @@ Question: what could a `dune-world admin` CLI do against the running 1.5 server 
 - **V** Read-only: `admin_get_character_ids(search)`, `admin_get_character_details`, `admin_get_inventory_details`, `admin_get_journey_details`, `admin_get_mnemonic_recall_details`, `admin_get_partitions`, `admin_read_player_tags`.
 - **V** Maintenance: `move_vehicles_in_lost_state_to_recovery()`, `disband_guild`, `disband_party`, `remove_party_member`, `update_respawn_locations`.
 
-## What a `dune-world admin` CLI could support, safest first
+## What a `dune-awakening admin` CLI could support, safest first
 
 1. Read-only `players` (Director `v0/players/*`, `admin_get_character_*`) and `partitions`.
 2. Offline `move-offline <player> <partition> x y z` via `admin_move_offline_player`, after a backup.

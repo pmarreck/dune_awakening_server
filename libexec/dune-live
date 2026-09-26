@@ -18,8 +18,8 @@ usage() {
 Usage: $NAME [options] world <command> [args]
        $NAME [options] character <command> [args]
 
-Live-world commands, grouped by what they act on. dune-world runs them as \`dune-world world ...\` and
-\`dune-world character ...\` (the character tool hands these subcommands over). A <player> is a character name.
+Live-world commands, grouped by what they act on. dune-awakening runs them as \`dune-awakening world ...\` and
+\`dune-awakening character ...\` (the character tool hands these subcommands over). A <player> is a character name.
 
 World:
   say <message> [--duration S]    On-screen broadcast to everyone (default 20 s)
@@ -130,7 +130,7 @@ move_offline() {
 		[ -n "$pid" ] || die "$player has no body in the world yet; give --partition"
 	else
 		pid=$(sql -v p="$partition" -f - <<<"select partition_id from dune.world_partition where label = :'p' or partition_id::text = :'p' order by (label = :'p') desc limit 1;") || die "database lookup failed"
-		[ -n "$pid" ] || die "no partition $partition (see: dune-world world partitions)"
+		[ -n "$pid" ] || die "no partition $partition (see: dune-awakening world partitions)"
 	fi
 	label=$(sql -c "select coalesce(label, partition_id::text) from dune.world_partition where partition_id = $pid") || die "database lookup failed"
 	[ "$(is_offline "$player")" = t ] ||
@@ -238,7 +238,7 @@ timeout_on() {
 	fi
 	for c in "${TIMEOUT_CVARS[@]}"; do cvar_set_verified "$c" 0; done
 	broadcast "Timeout: no damage, no sandworms, no storms. Take your break."
-	echo "timeout on: damage, sandworms, sandstorms and Coriolis storms are off (dune-world world timeout off to resume)"
+	echo "timeout on: damage, sandworms, sandstorms and Coriolis storms are off (dune-awakening world timeout off to resume)"
 }
 
 timeout_off() {

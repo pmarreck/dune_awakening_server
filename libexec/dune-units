@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Render the systemd user units that run the Dune world unattended: the world itself (start at boot, stop at
-# shutdown), a self-heal timer (the idempotent `dune-world start` every 5 minutes while the world is meant to be up),
+# shutdown), a self-heal timer (the idempotent `dune-awakening start` every 5 minutes while the world is meant to be up),
 # a daily backup with pruning, a weekly restore drill and a daily Steam update check. Paths are filled in from this
 # checkout and the host's nix/luajit, so nothing is hardcoded. Installing them is a host change for the host administrator.
 set -u
@@ -13,8 +13,8 @@ Usage: $NAME render DEST [--nix PATH] [--luajit PATH] [--systemctl PATH]
 
 Write systemd user units for this checkout ($root) into DEST:
   dune-world.service              start at boot (default.target), stop at shutdown
-  dune-world-heal.timer/.service  every 5 min: \`dune-world start\` (starts only missing components) while
-                                  dune-world.service is active, so \`systemctl --user stop dune-world\` stays stopped
+  dune-world-heal.timer/.service  every 5 min: \`dune-awakening start\` (starts only missing components) while
+                                  dune-world.service is active, so \`systemctl --user stop dune-awakening\` stays stopped
   dune-backup.timer/.service      daily 04:30 backup, then prune (7 days, then weekly for 3 months)
   dune-backup-verify.timer/...    weekly restore drill of the newest backup
   dune-update-check.timer/...     daily Steam build check; JSON result in the journal (exit 1 = update available)
@@ -45,7 +45,7 @@ mkdir -p "$dest" || die "cannot create $dest"
 sq() { local v=${1//\\/\\\\}; v=${v//\"/\\\"}; v=${v//%/%%}; printf '"%s"' "$v"; }
 path=$(printf '%s\n' "$(dirname -- "$luajit")" "$(dirname -- "$nix")" /run/current-system/sw/bin /usr/bin /bin | awk '!seen[$0]++' | paste -sd: -)
 env_path=$(sq "PATH=$path")
-world=$(sq "$root/bin/dune-world")
+world=$(sq "$root/bin/dune-awakening")
 
 unit() { printf '%s\n' "$2" > "$dest/$1" || die "cannot write $dest/$1"; }
 

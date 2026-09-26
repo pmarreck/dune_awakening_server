@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Realize everything the operator shell needs (pinned tools, Funcom runtime shims), so the first
-# `dune-world` run does not wait on downloads. There is nothing to compile: the world runs Funcom's binaries.
+# `dune-awakening` run does not wait on downloads. There is nothing to compile: the world runs Funcom's binaries.
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
 exec nix develop . --quiet "$@" --command true

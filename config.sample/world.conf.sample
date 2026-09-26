@@ -1,4 +1,4 @@
-# Normally written by `dune-world init --display-name "..." --region "..."`, which derives the unique name from
+# Normally written by `dune-awakening init --display-name "..." --region "..."`, which derives the unique name from
 # your token's HostId. Values use Bash quoting (the file is sourced by Bash).
 # WORLD_UNIQUE_NAME is registered with Funcom on first start: never change it afterwards.
 WORLD_UNIQUE_NAME=sh-yourhostid-abcdef

@@ -86,7 +86,7 @@ cmd_check() {
 # Components live beside this script (libexec/); the world front end lives in the checkout's bin/.
 component() {
 	local c="$DUNE_COMPONENTS_DIR/dune-$1"
-	[ "$1" = world ] && [ ! -x "$c" ] && c="$(dirname -- "${BASH_SOURCE[0]}")/../bin/dune-world"
+	[ "$1" = world ] && [ ! -x "$c" ] && c="$(dirname -- "${BASH_SOURCE[0]}")/../bin/dune-awakening"
 	"$c" "${@:2}"
 }
 
@@ -104,7 +104,7 @@ cmd_apply() {
 	step "stop world"; component world stop || die "world did not stop cleanly; nothing downloaded"
 	step "download build $latest (validated)"
 	run_steamcmd +@sSteamCmdForcePlatformType linux +force_install_dir "$DUNE_STEAM_SERVER_DIR" +login anonymous +app_update "$APP" validate +quit >&2 ||
-		die "download failed; the world is stopped (dune-world start runs the previous build)"
+		die "download failed; the world is stopped (dune-awakening start runs the previous build)"
 	for img in "${IMAGES[@]}"; do
 		tar="$DUNE_STEAM_SERVER_DIR/images/battlegroup/$img.tar"
 		step "unpack $img"

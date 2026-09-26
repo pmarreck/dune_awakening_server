@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# .envrc puts dune-awakening on PATH inside the checkout, and the short name `dune` only when no `dune` executable is
+# already on PATH (OCaml's build tool has that name). Aliases and shell functions outrank PATH, so they need no check.
+# Classified over both cases with direnv's PATH_add/has stood in for, since direnv itself is not in the sandbox.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-envrc-test.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+mkdir -p "$work/other"; printf '#!%s\necho other-dune\n' "$BASH" > "$work/other/dune"; chmod +x "$work/other/dune"
+mkdir -p "$work/empty"
+# Resolve `dune` and `dune-awakening` after loading .envrc with the given starting PATH.
+resolve() {
+	PATH="$1:$(dirname -- "$(command -v bash)"):$(dirname -- "$(command -v realpath)")" bash -c '
+		PATH_add() { PATH="$PWD/$1:$PATH"; }
+		has() { command -v "$1" >/dev/null 2>&1; }
+		. ./.envrc
+		printf "%s|%s\n" "$(command -v dune-awakening)" "$(command -v dune)"'
+}
+[ "$(resolve "$work/empty")" = "$PWD/bin/dune-awakening|$PWD/bin/short/dune" ] || fail "no dune on PATH: $(resolve "$work/empty")"
+[ "$(resolve "$work/other")" = "$PWD/bin/dune-awakening|$work/other/dune" ] || fail "an existing dune executable was shadowed: $(resolve "$work/other")"
+[ "$(realpath bin/short/dune 2>/dev/null)" = "$PWD/bin/dune-awakening" ] || fail "bin/short/dune does not lead to dune-awakening"
+exit "$failures"

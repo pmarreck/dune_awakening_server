@@ -21,11 +21,11 @@ grep -rq '@[A-Z_]*@' "$out" && fail "unrendered placeholders: $(grep -rho '@[A-Z
 while IFS= read -r prog; do
 	[ -x "$prog" ] || fail "Exec program missing: $prog"
 done < <(sed -n -e 's/^Exec[A-Za-z]*=[-!@+:]*"\([^"]*\)".*/\1/p' -e 't' -e 's/^Exec[A-Za-z]*=[-!@+:]*\([^ ]*\).*/\1/p' "$out"/*.service | collate | uniq)
-grep -qF "ExecStart=\"$PWD/bin/dune-world\" start" "$out/dune-world.service" || fail "world unit does not run this checkout's dune-world"
+grep -qF "ExecStart=\"$PWD/bin/dune-awakening\" start" "$out/dune-world.service" || fail "world unit does not run this checkout's dune-awakening"
 grep -q '^KillMode=process$' "$out/dune-world-heal.service" || fail "heal unit would kill the components it starts"
 grep -q 'is-active --quiet dune-world.service' "$out/dune-world-heal.service" || fail "heal unit not conditioned on the world being wanted up"
 grep -q '^Persistent=true$' "$out/dune-backup.timer" || fail "backup timer misses runs across downtime"
-grep -q '^ExecStartPost=.*dune-world" backup prune$' "$out/dune-backup.service" || fail "backup unit does not prune with the default retention policy: $(grep ExecStartPost "$out/dune-backup.service")"
+grep -q '^ExecStartPost=.*dune-awakening" backup prune$' "$out/dune-backup.service" || fail "backup unit does not prune with the default retention policy: $(grep ExecStartPost "$out/dune-backup.service")"
 grep -q '^SuccessExitStatus=1$' "$out/dune-update-check.service" || fail "update available should not mark the check failed"
 p=$(sed -n 's/^Environment="PATH=\(.*\)"$/\1/p' "$out/dune-world.service"); [ "$(tr : '\n' <<<"$p" | collate | uniq -d)" = "" ] || fail "duplicate PATH entries: $p"
 exit "$failures"

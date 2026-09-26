@@ -25,7 +25,7 @@ Funcom's stated requirements for a self-hosted battlegroup ([self-hosting requir
 - **Storage:** 100 GB on SSD. The Steam download is about 5.2 GB, and the unpacked images take a similar amount again.
 - **Ports:** Funcom lists 7777–7810 UDP for game servers and 31982 TCP for RabbitMQ (RMQ). One map uses UDP 7777 (players) and 7888 (server-to-server, internal); the game broker listens on TCP 31982 with TLS.
 - **Token:** a self-host token from Funcom's account page, https://account.duneawakening.com/. The token this project was developed with expires one year after it was issued.
-- **Client and server builds must match exactly.** When Steam updates the game, update the server the same day (`dune-world update apply`).
+- **Client and server builds must match exactly.** When Steam updates the game, update the server the same day (`dune-awakening update apply`).
 
 This project additionally needs x86_64 Linux with [Nix](https://nixos.org/download/) (flakes enabled) and systemd user sessions. It is developed on NixOS.
 
@@ -40,7 +40,7 @@ mkdir -p -m 700 ~/.config/dune_awakening_server
 cp -r config.sample/. ~/.config/dune_awakening_server/
 #    fls_secret.sample   -> fls_secret     (your Funcom token, one line)
 #    join_password.sample -> join_password (optional in-game password)
-#    world.conf.sample   -> generate it instead: dune-world init --display-name "My World" --region "North America"
+#    world.conf.sample   -> generate it instead: dune-awakening init --display-name "My World" --region "North America"
 chmod 600 ~/.config/dune_awakening_server/fls_secret
 
 # 2. Funcom's server payload from Steam (anonymous login works for app 4754530).
@@ -51,15 +51,15 @@ for i in server server-bg-director server-text-router server-gateway server-db-u
 done
 
 # 3. Run it.
-bin/dune-world start
-bin/dune-world status
+bin/dune-awakening start
+bin/dune-awakening status
 ```
 
-Leftover `*.sample` / `*.default` files in the config directory make `dune-world` print a yellow warning (silence it with `--no-warn` or `DUNE_NO_WARNINGS=1`). Open UDP 7777 and TCP 31982 in your firewall for the players' network. For friends outside your LAN, [Tailscale node sharing](https://tailscale.com/kb/1084/sharing) works well: share just the server machine with their own Tailscale account, and set `EXTERNAL_ADDRESS` in `world.conf` to the server's Tailscale address (`tailscale ip -4`). Tailscale Funnel cannot work, because it carries TCP only.
+Leftover `*.sample` / `*.default` files in the config directory make `dune-awakening` print a yellow warning (silence it with `--no-warn` or `DUNE_NO_WARNINGS=1`). Open UDP 7777 and TCP 31982 in your firewall for the players' network. For friends outside your LAN, [Tailscale node sharing](https://tailscale.com/kb/1084/sharing) works well: share just the server machine with their own Tailscale account, and set `EXTERNAL_ADDRESS` in `world.conf` to the server's Tailscale address (`tailscale ip -4`). Tailscale Funnel cannot work, because it carries TCP only.
 
-## The `dune-world` command
+## The `dune-awakening` command
 
-Everything runs through one command, `bin/dune-world`. It works from any directory (it finds its own checkout) and enters the project's `nix develop` environment by itself. Every script in this repository was written for this project; none of them is Funcom's. Funcom's own tooling (`battlegroup.sh`, the Kubernetes operators and the Alpine VM) ships in the Steam download and is not used; Funcom's server binaries run unmodified under the components below. With [direnv](https://direnv.net/), `direnv allow` once puts `bin/` on your PATH inside the checkout (see `.envrc`).
+Everything runs through one command, `bin/dune-awakening`. It works from any directory (it finds its own checkout) and enters the project's `nix develop` environment by itself. Every script in this repository was written for this project; none of them is Funcom's. Funcom's own tooling (`battlegroup.sh`, the Kubernetes operators and the Alpine VM) ships in the Steam download and is not used; Funcom's server binaries run unmodified under the components below. With [direnv](https://direnv.net/), `direnv allow` once puts it on your PATH inside the checkout, along with the short name `dune` unless another `dune` executable is already on PATH (OCaml's build tool has that name); see `.envrc`. So `dune world say "Restart in 5"` and `dune-awakening world say "Restart in 5"` are the same.
 
 | Subcommand | Purpose and options |
 |---|---|
@@ -72,9 +72,9 @@ Everything runs through one command, `bin/dune-world`. It works from any directo
 | `init …` | One-time setup: writes `world.conf` from your Funcom token |
 | `units render DEST` | systemd user units for unattended running (world at boot, self-heal, backups, update check) |
 
-`dune-world <subcommand> --help` lists each subcommand's options.
+`dune-awakening <subcommand> --help` lists each subcommand's options.
 
-**Components** live in `libexec/`. `dune-world` calls them; you rarely run them directly. Each manages one piece of Funcom's stack: `dune-server` (the map server, Funcom's Unreal binary), `dune-postgres` (database cluster), `dune-db-setup` (Funcom's schema installer), `dune-world-partitions`, `dune-rabbitmq` (admin and game message brokers), `dune-textrouter`, `dune-director` and `dune-gateway` (Funcom's broker authentication, director and gateway services), plus setup helpers `dune-dotnet-prepare`, `dune-unpack` and `dune-usersettings`. The subcommand tools (`dune-live` for live `world` and `character` commands, `dune-update`, `dune-backup`, `dune-character`, `dune-world-init`, `dune-units`) live there too.
+**Components** live in `libexec/`. `dune-awakening` calls them; you rarely run them directly. Each manages one piece of Funcom's stack: `dune-server` (the map server, Funcom's Unreal binary), `dune-postgres` (database cluster), `dune-db-setup` (Funcom's schema installer), `dune-world-partitions`, `dune-rabbitmq` (admin and game message brokers), `dune-textrouter`, `dune-director` and `dune-gateway` (Funcom's broker authentication, director and gateway services), plus setup helpers `dune-dotnet-prepare`, `dune-unpack` and `dune-usersettings`. The subcommand tools (`dune-live` for live `world` and `character` commands, `dune-update`, `dune-backup`, `dune-character`, `dune-world-init`, `dune-units`) live there too.
 
 Gameplay settings (XP, harvest yield, crafting time, death penalties, sandstorm damage and more) go in override files under `~/.config/dune_awakening_server/UserSettings/`; see [docs/operations.md](docs/operations.md#gameplay-settings). Funcom's guide describes the same `UserSettings` files for its VM.
 
@@ -100,7 +100,7 @@ nix flake check
 - Read [INTENT.md](INTENT.md) first. Behavior changes go test-first: write a failing test under `tests/`, then make it pass. `./test` must stay green.
 - Secrets never enter Git, the Nix store, command lines or logs. They live in `~/.config/dune_awakening_server/` (0600). Only `*.sample` / `*.default` templates are committed, and `tests/unit/public-hygiene` enforces that.
 - Funcom's payload (binaries, images, default ini files) is proprietary and is never committed. Scripts read it from `~/.local/share/dune_awakening_server/`.
-- The live database belongs to the running server. Edit characters only through `dune-world character`, which refuses while the account is online and backs up first.
+- The live database belongs to the running server. Edit characters only through `dune-awakening character`, which refuses while the account is online and backs up first.
 
 ## Legal
 

@@ -130,7 +130,7 @@ cmd_verify() {
 cmd_restore() {
 	need_backup
 	$yes || usage_error "restore replaces the world databases; pass --yes to confirm"
-	server_running && die "the map server is running; stop the world first (dune-world stop)"
+	server_running && die "the map server is running; stop the world first (dune-awakening stop)"
 	check_sums "$target"
 	label="before restore" cmd_create >/dev/null || die "safety backup failed; nothing restored"
 	local name owner file

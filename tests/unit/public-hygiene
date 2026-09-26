@@ -15,7 +15,7 @@ for f in config.sample/fls_secret config.sample/join_password config.sample/worl
 	config.sample/UserSettings/UserGame.ini backups/x/db.dump char-backups/x.json erl_crash.dump; do
 	git check-ignore -q --no-index "$f" || fail "$f would not be ignored"
 done
-for f in config.sample/fls_secret.sample config.sample/world.conf.sample config.sample/backup.conf.sample bin/dune-world README.md tests/unit/public-hygiene; do
+for f in config.sample/fls_secret.sample config.sample/world.conf.sample config.sample/backup.conf.sample bin/dune-awakening README.md tests/unit/public-hygiene; do
 	git check-ignore -q --no-index "$f" && fail "$f is wrongly ignored"
 done
 hits=$(git grep -l -I -E 'eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}' -- . 2>/dev/null)

@@ -55,7 +55,7 @@ Supervision, backups with a restore drill, and the update procedure were added a
 
 ## Idle stability (7 hours)
 
-One `dune-world status --json` sample every 5 minutes (`runtime/stability.ndjson`), idle with no players:
+One `dune-awakening status --json` sample every 5 minutes (`runtime/stability.ndjson`), idle with no players:
 
 | Measure | Result |
 |---|---|

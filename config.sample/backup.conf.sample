@@ -1,4 +1,4 @@
-# Backup retention for `dune-world backup prune` (the daily backup timer runs it after each backup).
+# Backup retention for `dune-awakening backup prune` (the daily backup timer runs it after each backup).
 # Optional: without this file the defaults below apply. Rename to backup.conf to change them.
 # Plain KEY=value lines; values are whole days. Unknown keys are errors.
 

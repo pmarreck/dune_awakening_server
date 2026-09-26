@@ -1,12 +1,12 @@
 #!/usr/bin/env luajit
--- dune-world: start, stop and report the native Dune: Awakening world in dependency order:
+-- dune-awakening: start, stop and report the native Dune: Awakening world in dependency order:
 -- postgres -> schema -> partition -> RabbitMQ admin/game -> TextRouter (broker auth) -> Director -> Gateway -> map server.
 -- Location-independent: it resolves its own real path (through symlinks) to find this project's flake and component
 -- scripts, and re-executes itself inside `nix develop` on that flake when the toolchain environment is absent, so it
 -- runs from any cwd via PATH. Operator inputs live in DUNE_CONFIG_DIR, generated state in DUNE_STATE_DIR.
 local ffi = require("ffi")
 
-local NAME, VERSION = "dune-world", "0.2.0"
+local NAME, VERSION = "dune-awakening", "0.2.0"
 local EXIT_OK, EXIT_ERR, EXIT_USAGE = 0, 1, 2
 
 ffi.cdef [[
@@ -21,7 +21,7 @@ extern char **environ;
 ]]
 
 local USAGE = [[
-Usage: dune-world [options] <command>
+Usage: dune-awakening [options] <command>
 
 Run the native Dune: Awakening world (no Docker, Kubernetes or Windows).
 
@@ -40,7 +40,7 @@ Commands:
   init ...        One-time setup: write world.conf from your Funcom token
   units ...       render DEST: systemd user units for unattended running
 
-  `dune-world <subcommand> --help` shows each subcommand's options.
+  `dune-awakening <subcommand> --help` shows each subcommand's options.
 
 Options:
   --json          status as JSON (world identity, components, map-server uptime and memory; for admin pages)
