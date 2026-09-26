@@ -1,0 +1,9 @@
+#!/usr/bin/env -S bash --norc --noprofile
+# Refuse a push while tracked files contain denylisted personal strings (tests/unit/public-hygiene). A leak into the
+# public history is the one failure a later commit cannot undo. Enable once per clone: git config core.hooksPath .githooks
+set -u
+cd -- "$(git rev-parse --show-toplevel)" || exit 1
+if ! command -v jq >/dev/null 2>&1 || ! command -v rg >/dev/null 2>&1; then
+	exec nix develop --quiet --command bash --norc --noprofile tests/unit/public-hygiene </dev/null
+fi
+exec bash --norc --noprofile tests/unit/public-hygiene </dev/null

@@ -2,6 +2,7 @@
 ver=1.2
 annotate=[
 	.envrc = direnv: PATH_add bin
+	.githooks/pre-push = Refuses a push while tracked files contain denylisted personal strings (runs tests/unit/public-hygiene)
 	.luacheckrc = luacheck config: LuaJIT std, 200-column lines
 	.mechatron-prime/targets = Mechatron Prime CI target: the hermetic check
 	INTENT.md = Private two-player Linux hosting purpose and constraints

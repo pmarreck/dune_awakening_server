@@ -88,6 +88,8 @@ Gameplay settings (XP, harvest yield, crafting time, death penalties, sandstorm 
 nix flake check
 ```
 
+In a clone you push from, run `git config core.hooksPath .githooks` once: the pre-push hook refuses a push while tracked files contain strings from your private denylist (`$XDG_CONFIG_HOME/dune_awakening_server/public-scrub`), since a leak into public history cannot be undone by a later commit.
+
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md): how Funcom's components connect, and what replaces Kubernetes here
