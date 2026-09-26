@@ -66,6 +66,7 @@ Everything runs through one command, `bin/dune-awakening`. It works from any dir
 | Subcommand | Purpose and options |
 |---|---|
 | `start`, `stop`, `restart` | Bring the whole world up in dependency order (database, schema, brokers, Funcom services, map server), or down in reverse |
+| `doctor [--json]` | Health check of the setup: permissions, secrets, leftover templates, default passwords, token expiry, components, database logins, backups |
 | `status [--json] [--watch SECS]` | One line per component; `--json` adds world identity, characters online, map-server memory and CPU (for admin pages) |
 | `world …` | Whole-world live commands: `say`, `timeout on/off` (a break for everyone: no damage, sandworms or storms), `kick-all`, `exec`, `partitions`, `raw` |
 | `update …` | Steam build: `check` (exit 0 current, 1 update available, 3 unknown), `apply` (backup, stop, download, unpack, start, re-check) |

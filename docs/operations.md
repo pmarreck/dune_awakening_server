@@ -25,9 +25,28 @@ The client and server must be on the **same build**. When Steam updates the Dune
 dune-awakening start          # postgres → schema → partition → RabbitMQ admin/game → TextRouter → Director → Gateway → Survival_1
 dune-awakening status         # one line per component, ● up / ○ down; exit 0 only if all are up
 dune-awakening status --json  # plus world identity, external address, flake path, map-server uptime and memory vs cap (admin page)
-dune-awakening stop           # reverse order
-dune-awakening restart
+dune-awakening stop           # reverse order; refuses while characters are online (--force overrides)
+dune-awakening restart        # same guard
+dune-awakening doctor         # health check of the setup (read-only; exit 1 on a failure; --json)
 ```
+
+`dune-awakening doctor` checks, and names a fix for each problem:
+
+| Check | ✗ fail / ⚠ warn when |
+|---|---|
+| `config-dir` | the config directory is missing, not yours, or open to group/others (✗) |
+| `config-files` | `fls_secret`, `join_password`, `world.conf`, `backup.conf` or `public-scrub` is readable by others (✗) |
+| `secrets` | the generated secrets directory or a file in it is readable by others (✗); it does not exist yet (⚠) |
+| `data-dirs` | the state, unpacked payload or Steam download directory is missing or unreadable (✗) |
+| `templates` | `*.sample` / `*.default` files are left in the config directory (⚠) |
+| `default-passwords` | the join, admin, GM or database password is empty or a known default (`sardaukar`, `seabass`, `postgres`, `change-me`), or the map server's `Game.ini` carries `sardaukar` (✗) |
+| `world-config` | `world.conf` is missing or names no world (✗) |
+| `fls-token` | the Funcom token has expired (✗), expires within 30 days or cannot be read (⚠) |
+| `components` | a component is not running (⚠: fine when the world is meant to be stopped) |
+| `database` | postgres rejects the admin, listens beyond loopback, lacks the game database, or rejects the game's role (✗) |
+| `backups` | there is no backup, or the newest is more than 2 days old (⚠) |
+
+It prints no secret. `DUNE_NOW` (ISO time) replaces the clock, for tests.
 
 The address clients use comes from `DUNE_EXTERNAL_ADDRESS`, else `EXTERNAL_ADDRESS=` in `world.conf`, else the source address of the default route.
 

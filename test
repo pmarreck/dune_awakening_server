@@ -4,7 +4,7 @@
 # (RabbitMQ's Erlang HTTP auth client cannot reach loopback inside the sandbox; see PLAN.md).
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
-suites=(tests/unit/unpack tests/unit/envrc tests/unit/xdg-dirs tests/unit/ports tests/unit/port-guards tests/unit/usersettings tests/integration/toolchain tests/integration/postgres tests/integration/world-init tests/integration/world-status tests/integration/world-cli tests/integration/character-tool tests/integration/backup tests/integration/update tests/integration/units tests/integration/server-config tests/integration/live)
+suites=(tests/unit/unpack tests/unit/envrc tests/unit/xdg-dirs tests/unit/ports tests/unit/port-guards tests/unit/usersettings tests/integration/toolchain tests/integration/postgres tests/integration/world-init tests/integration/world-status tests/integration/world-cli tests/integration/character-tool tests/integration/backup tests/integration/update tests/integration/units tests/integration/server-config tests/integration/live tests/integration/doctor)
 host_suites=(tests/integration/rabbitmq tests/payload/db-setup tests/payload/world-partitions tests/payload/dotnet-apps tests/payload/textrouter-auth tests/payload/character-transfer tests/payload/gm-allowlist tests/integration/world-cli-nix tests/unit/public-hygiene tests/integration/units-verify)
 case "${1:-}" in
 	--hermetic) ;;

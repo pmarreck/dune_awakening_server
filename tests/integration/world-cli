@@ -102,7 +102,7 @@ out=$(world status --json --watch 0.05 --count 3 2>/dev/null); rc=$?
 world status --json --watch 0 >/dev/null 2>&1; [ $? -eq 2 ] || fail "watch interval 0 not a usage error"
 
 # Tool subcommands pass everything after them to their libexec tool (options included), exit status preserved.
-for pair in update:dune-update backup:dune-backup character:dune-character init:dune-world-init units:dune-units; do
+for pair in update:dune-update backup:dune-backup character:dune-character init:dune-world-init units:dune-units doctor:dune-doctor; do
 	sub=${pair%%:*} tool=${pair#*:}
 	printf '#!%s\nprintf "%s %%s\\n" "$*" >> "%s"\nexit 4\n' "$BASH" "$tool" "$work/calls" > "$fake/$tool"; chmod +x "$fake/$tool"
 	: > "$work/calls"
@@ -143,6 +143,11 @@ world stop >/dev/null 2>&1 || fail "stop failed"
 # (the players-online guard first asks dune-character; only component stops count for the order)
 got=$(grep -v '^dune-character ' "$work/calls" | cut -d'|' -f1 | paste -sd, -)
 [ "$got" = "server stop,gateway stop,director stop,textrouter stop,rabbitmq stop game,rabbitmq stop admin,postgres stop" ] || fail "stop order wrong: $got"
+
+# Subcommand tools get the world identity too (doctor probes components that need it), when world.conf exists.
+printf '#!%s\nprintf "%%s %%s\\n" "${DUNE_WORLD_NAME:-unset}" "${DUNE_PARTITION_INDEX:-unset}" > "%s"\n' "$BASH" "$work/wname" > "$fake/dune-doctor"; chmod +x "$fake/dune-doctor"
+bin/dune-awakening --no-warn doctor >/dev/null 2>&1
+[ "$(cat "$work/wname" 2>/dev/null)" = "sh-abc-qwerty 0" ] || fail "tools do not get DUNE_WORLD_NAME and a DUNE_PARTITION_INDEX: $(cat "$work/wname" 2>/dev/null)"
 
 # Components start at SHLVL >= 2, so a Bash tool with a socket stdin (SSH, an agent terminal) never takes the
 # "started by sshd" path that reads ~/.bashrc (which would pull personal shell settings into the world's tools).

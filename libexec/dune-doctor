@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# Health check of the operator setup: private directories and files, generated secrets, leftover templates, default
+# passwords, world config, Funcom token expiry, components, database logins and backups. Read-only; prints no secret.
+# Each check reports ok, warn (worth a look, exit 0) or fail (exit 1).
+set -u
+NAME=dune-doctor VERSION=0.1.0
+: "${HOME:=$(cd ~ 2>/dev/null && pwd)}"
+. "$(dirname -- "${BASH_SOURCE[0]}")/dune-dirs.bash"
+DUNE_CONFIG_DIR=${DUNE_CONFIG_DIR:-$DUNE_CONFIG_ROOT}
+DUNE_STATE_DIR=${DUNE_STATE_DIR:-$DUNE_DATA_ROOT/runtime}
+DUNE_SECRETS_DIR=${DUNE_SECRETS_DIR:-$DUNE_STATE_DIR/secrets}
+DUNE_UNPACKED_DIR=${DUNE_UNPACKED_DIR:-$DUNE_DATA_ROOT/unpacked}
+DUNE_STEAM_SERVER_DIR=${DUNE_STEAM_SERVER_DIR:-$DUNE_DATA_ROOT/steam-server}
+DUNE_BACKUP_DIR=${DUNE_BACKUP_DIR:-$DUNE_DATA_ROOT/backups}
+DUNE_PG_PORT=${DUNE_PG_PORT:-15431}
+DUNE_COMPONENTS_DIR=${DUNE_COMPONENTS_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}
+TOKEN_WARN_DAYS=30 BACKUP_WARN_DAYS=2
+# Passwords that must never be in use: Funcom's public defaults and this project's sample value.
+DEFAULT_PASSWORDS=(sardaukar seabass postgres change-me)
+
+usage() {
+	cat <<EOF
+Usage: $NAME [--json] [--about] [-h|--help]
+
+Check the Dune world's setup without changing anything. Each check reports ✓ ok, ⚠ warn or ✗ fail; the exit code is 1
+when any check fails. Checks: config-dir, config-files, secrets, data-dirs, templates, default-passwords,
+world-config, fls-token, components, database, backups.
+EOF
+}
+
+json=false
+for a in "$@"; do
+	case "$a" in
+		--json) json=true ;;
+		-h|--help) usage; exit 0 ;;
+		--about) printf '%s %s: Dune world setup health check (%s %s)\n' "$NAME" "$VERSION" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)"; exit 0 ;;
+		*) printf '%s: unknown option %s (see --help)\n' "$NAME" "$a" >&2; exit 2 ;;
+	esac
+done
+
+ids=() statuses=() messages=()
+report() { ids+=("$1"); statuses+=("$2"); messages+=("$3"); }
+
+now_epoch() { if [ -n "${DUNE_NOW:-}" ]; then date -d "$DUNE_NOW" +%s; else date +%s; fi; }
+mode_of() { stat -c %a "$1" 2>/dev/null; }
+# True when the path grants any group or other permission.
+too_open() { local m; m=$(mode_of "$1") || return 1; [ $(( 8#$m & 8#077 )) -ne 0 ]; }
+
+check_config_dir() {
+	local d=$DUNE_CONFIG_DIR
+	if [ ! -d "$d" ]; then report config-dir fail "config dir $d is missing (see README: Setup)"; return; fi
+	if [ "$(stat -c %u "$d")" != "$(id -u)" ]; then report config-dir fail "config dir $d is not owned by $(id -un)"; return; fi
+	if too_open "$d"; then report config-dir fail "config dir $d is mode $(mode_of "$d"); run: chmod 700 '$d'"; return; fi
+	report config-dir ok "config dir $d is private"
+}
+
+check_config_files() {
+	local f open=()
+	for f in fls_secret join_password world.conf backup.conf public-scrub; do
+		[ -e "$DUNE_CONFIG_DIR/$f" ] && too_open "$DUNE_CONFIG_DIR/$f" && open+=("$f ($(mode_of "$DUNE_CONFIG_DIR/$f"))")
+	done
+	if [ ${#open[@]} -gt 0 ]; then report config-files fail "readable by others: ${open[*]}; run: chmod 600 on each in $DUNE_CONFIG_DIR"
+	else report config-files ok "operator files are private"; fi
+}
+
+check_secrets() {
+	local d=$DUNE_SECRETS_DIR f open=()
+	if [ ! -d "$d" ]; then report secrets warn "secrets dir $d does not exist yet (created by the first start)"; return; fi
+	too_open "$d" && open+=("$d ($(mode_of "$d"))")
+	while IFS= read -r f; do too_open "$f" && open+=("${f##*/} ($(mode_of "$f"))"); done < <(find "$d" -maxdepth 1 -type f 2>/dev/null)
+	if [ ${#open[@]} -gt 0 ]; then report secrets fail "readable by others: ${open[*]}; run: chmod 700 '$d' and chmod 600 its files"
+	else report secrets ok "generated secrets are private"; fi
+}
+
+check_data_dirs() {
+	local missing=() v d
+	for v in DUNE_STATE_DIR DUNE_UNPACKED_DIR DUNE_STEAM_SERVER_DIR; do
+		d=${!v}
+		{ [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ]; } || missing+=("$v=$d")
+	done
+	if [ ${#missing[@]} -gt 0 ]; then report data-dirs fail "missing or unreadable: ${missing[*]}"
+	else report data-dirs ok "state, unpacked payload and Steam download directories are readable"; fi
+}
+
+check_templates() {
+	local left
+	left=$(find "$DUNE_CONFIG_DIR" -maxdepth 2 \( -name '*.sample' -o -name '*.default' \) -printf '%P\n' 2>/dev/null | paste -sd' ' -)
+	if [ -n "$left" ]; then report templates warn "leftover templates in $DUNE_CONFIG_DIR: $left (fill in and drop the suffix, or remove)"
+	else report templates ok "no leftover *.sample / *.default templates"; fi
+}
+
+# A secret file whose whole content is a known default (case-insensitive), or empty.
+is_default() {
+	local v p
+	v=$(tr -d '\r\n' < "$1" 2>/dev/null)
+	[ -z "$v" ] && return 0
+	for p in "${DEFAULT_PASSWORDS[@]}"; do [ "${v,,}" = "$p" ] && return 0; done
+	return 1
+}
+
+check_default_passwords() {
+	local bad=() f game
+	[ -e "$DUNE_CONFIG_DIR/join_password" ] && is_default "$DUNE_CONFIG_DIR/join_password" && bad+=(join_password)
+	for f in admin_password gm_password postgres_admin_password postgres_dune_password; do
+		[ -e "$DUNE_SECRETS_DIR/$f" ] && is_default "$DUNE_SECRETS_DIR/$f" && bad+=("$f")
+	done
+	game="$DUNE_STATE_DIR/server/Saved/Config/LinuxServer/Game.ini"
+	[ -e "$game" ] && grep -qi '^Password_[A-Za-z]*=sardaukar' "$game" && bad+=("the map server's Game.ini")
+	if [ ${#bad[@]} -gt 0 ]; then report default-passwords fail "default or empty password in use: ${bad[*]}"
+	else report default-passwords ok "no default passwords in use"; fi
+}
+
+check_world_config() {
+	local f="$DUNE_CONFIG_DIR/world.conf"
+	if [ ! -r "$f" ]; then report world-config fail "$f is missing; run: dune-awakening init"; return; fi
+	grep -q '^WORLD_UNIQUE_NAME=..*' "$f" || { report world-config fail "$f has no WORLD_UNIQUE_NAME; run: dune-awakening init"; return; }
+	report world-config ok "world.conf names the world"
+}
+
+# The Funcom token is a JWT; its exp claim says when the world stops being able to register.
+check_fls_token() {
+	local f="$DUNE_CONFIG_DIR/fls_secret" payload exp days left
+	if [ ! -s "$f" ]; then report fls-token fail "$f is missing or empty (token from https://account.duneawakening.com/)"; return; fi
+	payload=$(tr -d '\r\n' < "$f" | cut -d. -f2 | tr '_-' '/+')
+	while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="$payload="; done
+	exp=$(base64 -d <<<"$payload" 2>/dev/null | jq -r '.exp // empty' 2>/dev/null)
+	if ! [[ "$exp" =~ ^[0-9]+$ ]]; then report fls-token warn "cannot read the token's expiry (not a JWT?)"; return; fi
+	left=$(( exp - $(now_epoch) ))
+	days=$(( left / 86400 ))
+	if [ "$left" -le 0 ]; then report fls-token fail "the Funcom token expired on $(date -u -d "@$exp" +%F); get a new one"
+	elif [ "$days" -lt "$TOKEN_WARN_DAYS" ]; then report fls-token warn "the Funcom token expires in $days days ($(date -u -d "@$exp" +%F))"
+	else report fls-token ok "the Funcom token is valid until $(date -u -d "@$exp" +%F)"; fi
+}
+
+check_components() {
+	local down=() c
+	for c in postgres "rabbitmq status admin --quick" "rabbitmq status game --quick" textrouter director gateway server; do
+		set -- $c
+		if [ $# -eq 1 ]; then "$DUNE_COMPONENTS_DIR/dune-$1" status >/dev/null 2>&1 || down+=("$1")
+		else "$DUNE_COMPONENTS_DIR/dune-$1" "${@:2}" >/dev/null 2>&1 || down+=("$1 $3"); fi
+	done
+	if [ ${#down[@]} -gt 0 ]; then report components warn "not running: ${down[*]} (fine if the world is meant to be stopped; start: dune-awakening start)"
+	else report components ok "every component is running"; fi
+}
+
+check_database() {
+	local admin dune db listen
+	admin=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password" 2>/dev/null) || { report database warn "no postgres admin password yet (created by the first start)"; return; }
+	listen=$(PGPASSWORD=$admin psql -X -A -t -q -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d postgres -c 'show listen_addresses' 2>/dev/null) ||
+		{ report database fail "cannot log in to postgres as the admin on 127.0.0.1:$DUNE_PG_PORT (is it running?)"; return; }
+	[ "$listen" = 127.0.0.1 ] || { report database fail "postgres listens on '$listen', not loopback only"; return; }
+	db=${DUNE_DB_NAME:-$(PGPASSWORD=$admin psql -X -A -t -q -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d postgres \
+		-c "select datname from pg_database where datname like 'dune\_sb\_%' order by 1 desc limit 1" 2>/dev/null)}
+	[ -n "$db" ] && PGPASSWORD=$admin psql -X -A -t -q -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "$db" -c 'select 1' >/dev/null 2>&1 ||
+		{ report database fail "the game database ${db:-dune_sb_*} does not exist (run: dune-awakening start, which installs it)"; return; }
+	dune=$(cat "$DUNE_SECRETS_DIR/postgres_dune_password" 2>/dev/null) || { report database fail "no password for the game's database role"; return; }
+	PGPASSWORD=$dune psql -X -A -t -q -h 127.0.0.1 -p "$DUNE_PG_PORT" -U dune -d "$db" -c 'select 1' >/dev/null 2>&1 ||
+		{ report database fail "the game's role 'dune' cannot log in to $db with its stored password"; return; }
+	report database ok "postgres is loopback-only; admin and game role log in to $db"
+}
+
+check_backups() {
+	local newest stamp age
+	newest=$(find "$DUNE_BACKUP_DIR" -mindepth 2 -maxdepth 2 -name manifest.json -printf '%h\n' 2>/dev/null | grep -v '\.partial$' | sort | tail -1)
+	if [ -z "$newest" ]; then report backups warn "no backups in $DUNE_BACKUP_DIR (run: dune-awakening backup create)"; return; fi
+	stamp=${newest##*/}; stamp=${stamp%%.*}
+	age=$(( ($(now_epoch) - $(date -u -d "${stamp:0:4}-${stamp:4:2}-${stamp:6:2}T${stamp:9:2}:${stamp:11:2}:${stamp:13:2}Z" +%s)) / 86400 ))
+	if [ "$age" -gt "$BACKUP_WARN_DAYS" ]; then report backups warn "newest backup is $age days old (${newest##*/}); is the backup timer installed?"
+	else report backups ok "newest backup: ${newest##*/}"; fi
+}
+
+check_config_dir; check_config_files; check_secrets; check_data_dirs; check_templates; check_default_passwords
+check_world_config; check_fls_token; check_components; check_database; check_backups
+
+rc=0
+for s in "${statuses[@]}"; do [ "$s" = fail ] && rc=1; done
+if $json; then
+	for i in "${!ids[@]}"; do jq -cn --arg id "${ids[$i]}" --arg s "${statuses[$i]}" --arg m "${messages[$i]}" '{id: $id, status: $s, message: $m}'; done |
+		jq -cs --argjson ok "$([ $rc -eq 0 ] && echo true || echo false)" '{ok: $ok, checks: .}'
+else
+	if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then g=$'\e[32m' y=$'\e[33m' r=$'\e[31m' z=$'\e[0m'; else g="" y="" r="" z=""; fi
+	for i in "${!ids[@]}"; do
+		case "${statuses[$i]}" in ok) m="${g}✓$z" ;; warn) m="${y}⚠$z" ;; *) m="${r}✗$z" ;; esac
+		printf '%s %-18s %s\n' "$m" "${ids[$i]}" "${messages[$i]}"
+	done
+fi
+exit "$rc"

@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# libexec/dune-doctor: a health check of the operator setup. Classified over a healthy fixture and one deliberate
+# breakage per check (each undone before the next): every breakage must flip exactly its own check and the exit code.
+# Real PostgreSQL cluster (login checks), fake components (status), fake clock for the token expiry.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. tests/lib/ports.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-doctor-test.XXXXXX") || exit 1
+export DUNE_CONFIG_DIR="$work/config" DUNE_STATE_DIR="$work/state" DUNE_UNPACKED_DIR="$work/unpacked" DUNE_STEAM_SERVER_DIR="$work/steam"
+export DUNE_SECRETS_DIR="$work/state/secrets" DUNE_PG_DATA="$work/state/postgres" DUNE_PG_PORT=$(pick_port_base 1)
+export DUNE_BACKUP_DIR="$work/backups" DUNE_COMPONENTS_DIR="$work/fake" DUNE_NOW=2026-09-26T00:00:00Z DUNE_DB_NAME=dune_sb_9_9_9_9
+cleanup() { libexec/dune-postgres stop >/dev/null 2>&1; rm -r -- "$work"; }
+trap cleanup EXIT
+mkdir -p -m 700 "$DUNE_CONFIG_DIR" "$DUNE_STATE_DIR" "$DUNE_UNPACKED_DIR" "$DUNE_STEAM_SERVER_DIR" "$DUNE_BACKUP_DIR"
+libexec/dune-postgres init >/dev/null 2>&1 && libexec/dune-postgres start >/dev/null 2>&1 || { fail "cluster"; exit 1; }
+admin_pw=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password")
+q() { PGPASSWORD="$admin_pw" psql -X -A -t -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d postgres -c "$1"; }
+q "create role dune login password 'dune-pw-for-test'" && q "create database dune_sb_9_9_9_9 owner dune" || { fail "database"; exit 1; }
+
+# Healthy fixture: private files, generated secrets, a token valid for a year, every component up, a fresh backup.
+b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
+token() { printf '%s.%s.sig' "$(printf '{"alg":"none"}' | b64url)" "$(printf '{"exp":%s}' "$1" | b64url)"; }
+(umask 077
+	token $(( $(date -d 2026-09-26 +%s) + 365 * 86400 )) > "$DUNE_CONFIG_DIR/fls_secret"
+	printf 'WORLD_UNIQUE_NAME=sh-test\nWORLD_DISPLAY_NAME=Test\nWORLD_REGION=Europe\n' > "$DUNE_CONFIG_DIR/world.conf"
+	printf 'sietch-dew-kynes-12\n' > "$DUNE_CONFIG_DIR/join_password"
+	printf 'dune-pw-for-test\n' > "$DUNE_SECRETS_DIR/postgres_dune_password"
+	printf 'abcdef0123456789abcdef0123456789\n' > "$DUNE_SECRETS_DIR/server_commands_token"
+	printf 'arrakis-thumper-chani-42\n' > "$DUNE_SECRETS_DIR/admin_password"
+	printf 'caladan-spice-leto-17\n' > "$DUNE_SECRETS_DIR/gm_password"
+	mkdir -p "$DUNE_BACKUP_DIR/20260925T040000.000Z-scheduled" && printf '{}' > "$DUNE_BACKUP_DIR/20260925T040000.000Z-scheduled/manifest.json")
+mkdir -p "$DUNE_COMPONENTS_DIR"
+for c in postgres rabbitmq textrouter director gateway server; do
+	printf '#!%s\n[ -e "%s/down-%s" ] && exit 1\nexit 0\n' "$BASH" "$work" "$c" > "$DUNE_COMPONENTS_DIR/dune-$c"
+	chmod +x "$DUNE_COMPONENTS_DIR/dune-$c"
+done
+
+doctor() { libexec/dune-doctor "$@" 2>&1; }
+# Status of one check (by id) from the JSON report.
+check() { libexec/dune-doctor --json 2>/dev/null | jq -r --arg id "$1" '.checks[] | select(.id == $id) | .status'; }
+bad() { libexec/dune-doctor --json 2>/dev/null | jq -r '[.checks[] | select(.status != "ok") | .id] | join(",")'; }
+
+out=$(doctor); rc=$?
+[ "$rc" -eq 0 ] || fail "healthy setup did not pass (rc $rc): $out"
+[ -z "$(bad)" ] || fail "healthy setup reported problems: $(bad)"
+[[ "$out" == *✓* ]] || fail "text report has no ✓ lines: $out"
+libexec/dune-doctor --help >/dev/null 2>&1 || fail "--help"
+libexec/dune-doctor --bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown option not a usage error"
+
+# expect ID STATUS: after a breakage, check ID has STATUS and it is the only non-ok check; exit 1 for fail, 0 for warn.
+expect() {
+	local id=$1 want=$2 got rc others
+	got=$(check "$id"); libexec/dune-doctor >/dev/null 2>&1; rc=$?
+	others=$(bad | tr ',' '\n' | grep -vx "$id" | paste -sd, -)
+	[ "$got" = "$want" ] || fail "$id: want $want, got '${got:-none}' ($3)"
+	[ -z "$others" ] || fail "$3 also flagged: $others"
+	if [ "$want" = fail ]; then [ "$rc" -eq 1 ] || fail "$3: exit $rc, want 1"; else [ "$rc" -eq 0 ] || fail "$3: exit $rc, want 0"; fi
+}
+
+chmod 755 "$DUNE_CONFIG_DIR"; expect config-dir fail "config dir readable by others"; chmod 700 "$DUNE_CONFIG_DIR"
+chmod 644 "$DUNE_CONFIG_DIR/fls_secret"; expect config-files fail "fls_secret readable by others"; chmod 600 "$DUNE_CONFIG_DIR/fls_secret"
+chmod 644 "$DUNE_SECRETS_DIR/gm_password"; expect secrets fail "a secret readable by others"; chmod 600 "$DUNE_SECRETS_DIR/gm_password"
+mv "$DUNE_UNPACKED_DIR" "$work/unpacked.away"; expect data-dirs fail "unpacked dir missing"; mv "$work/unpacked.away" "$DUNE_UNPACKED_DIR"
+touch "$DUNE_CONFIG_DIR/world.conf.sample"; expect templates warn "leftover template"; unlink "$DUNE_CONFIG_DIR/world.conf.sample"
+printf 'change-me\n' > "$DUNE_CONFIG_DIR/join_password"; expect default-passwords fail "sample join password"
+printf 'sietch-dew-kynes-12\n' > "$DUNE_CONFIG_DIR/join_password"
+printf 'sardaukar\n' > "$DUNE_SECRETS_DIR/admin_password"; expect default-passwords fail "Funcom's public admin password"
+printf 'arrakis-thumper-chani-42\n' > "$DUNE_SECRETS_DIR/admin_password"
+mv "$DUNE_CONFIG_DIR/world.conf" "$work/world.conf.away"; expect world-config fail "world.conf missing"; mv "$work/world.conf.away" "$DUNE_CONFIG_DIR/world.conf"
+cp "$DUNE_CONFIG_DIR/fls_secret" "$work/token.keep"
+(umask 077; token $(( $(date -d 2026-09-26 +%s) + 10 * 86400 )) > "$DUNE_CONFIG_DIR/fls_secret"); expect fls-token warn "token expiring in 10 days"
+(umask 077; token $(( $(date -d 2026-09-26 +%s) - 86400 )) > "$DUNE_CONFIG_DIR/fls_secret"); expect fls-token fail "expired token"
+cat "$work/token.keep" > "$DUNE_CONFIG_DIR/fls_secret"
+touch "$work/down-gateway"; expect components warn "a component down"; unlink "$work/down-gateway"
+(umask 077; printf 'wrong\n' > "$DUNE_SECRETS_DIR/postgres_dune_password"); expect database fail "game role cannot log in"
+(umask 077; printf 'dune-pw-for-test\n' > "$DUNE_SECRETS_DIR/postgres_dune_password")
+DUNE_DB_NAME=dune_sb_0_0_0_0 expect database fail "game database missing"
+mv "$DUNE_BACKUP_DIR/20260925T040000.000Z-scheduled" "$work/old-backup"; expect backups warn "no backups"
+mv "$work/old-backup" "$DUNE_BACKUP_DIR/20260925T040000.000Z-scheduled"
+DUNE_NOW=2026-10-05T00:00:00Z expect backups warn "newest backup ten days old"
+
+[ -z "$(bad)" ] || fail "fixture not restored: $(bad)"
+json=$(libexec/dune-doctor --json 2>/dev/null)
+[ "$(jq -r '[.checks[] | select(.message == null or .message == "")] | length' <<<"$json")" = 0 ] || fail "a check without a message"
+grep -q 'dune-pw-for-test\|arrakis-thumper\|caladan-spice' <<<"$json$(doctor)" && fail "doctor printed a secret"
+exit "$failures"

@@ -37,6 +37,8 @@ Commands:
   character ...   One character: list, show, set-intel, add-intel, set-skill-points, add-skill-points, export,
                   validate, import; live or offline: move (to a player or X Y Z), where, kick, water, xp,
                   whisper, worm, give
+  doctor          Check the setup: permissions, secrets, templates, default passwords, token expiry,
+                  components, database logins, backups (read-only; exit 1 on a failure)
   init ...        One-time setup: write world.conf from your Funcom token
   units ...       render DEST: systemd user units for unattended running
 
@@ -122,7 +124,7 @@ end
 
 -- Subcommands that hand their arguments to a tool in libexec/.
 local TOOLS = { world = "dune-live", update = "dune-update", backup = "dune-backup", character = "dune-character",
-	init = "dune-world-init", units = "dune-units" }
+	init = "dune-world-init", units = "dune-units", doctor = "dune-doctor" }
 -- Arguments put before the user's for a tool that serves several subcommands.
 local TOOL_ARGS = { world = { "world" } }
 
@@ -426,6 +428,10 @@ local function main()
 	local env = setup_env()
 	warn_templates(opts, env.DUNE_CONFIG_DIR)
 	if TOOLS[opts.cmd] then
+		-- Tools see the world identity too (doctor probes components that need it), once world.conf exists; init runs before.
+		local wc = io.open(env.DUNE_CONFIG_DIR .. "/world.conf", "r")
+		if wc then wc:close(); world_env(env) end
+		if not os.getenv("DUNE_PARTITION_INDEX") then setenv("DUNE_PARTITION_INDEX", "0") end
 		local argv = { dir .. "/" .. TOOLS[opts.cmd] }
 		for _, a in ipairs(TOOL_ARGS[opts.cmd] or {}) do argv[#argv + 1] = a end
 		for _, a in ipairs(opts.rest) do argv[#argv + 1] = a end
