@@ -106,7 +106,9 @@ local function arch_name()
 end
 
 local function parse_args(argv)
-	local state = os.getenv("DUNE_STATE_DIR") or ((os.getenv("HOME") or "") .. "/.local/share/dune_awakening_server/runtime")
+	local data_home = os.getenv("XDG_DATA_HOME")
+	if not (data_home and data_home:sub(1, 1) == "/") then data_home = (os.getenv("HOME") or "") .. "/" .. ".local/share" end
+	local state = os.getenv("DUNE_STATE_DIR") or ((os.getenv("DUNE_DATA_DIR") or (data_home .. "/dune_awakening_server")) .. "/runtime")
 	local opts = { json = false, color = true, server_root = state .. "/server/tree", state_dir = state, positional = {} }
 	local i, only_positional = 1, false
 	while i <= #argv do

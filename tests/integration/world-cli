@@ -123,6 +123,21 @@ world world say "Some One" --json >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 3 ] || fail "world exit status not passed through: $rc"
 out=$(world admin say hi 2>&1); [ $? -eq 2 ] && [[ "$out" == *"unknown command admin"* ]] || fail "admin is still a dune-awakening command, or the error names the wrong word: $out"
 
+# XDG base directories: with no DUNE_* directory overrides, data lives in $XDG_DATA_HOME/dune_awakening_server and
+# operator config in $XDG_CONFIG_HOME/dune_awakening_server; unset or relative (invalid per the spec) values fall back
+# to ~/.local/share and ~/.config.
+printf '#!%s\nprintf "%%s|%%s|%%s|%%s\\n" "$DUNE_CONFIG_DIR" "$DUNE_STATE_DIR" "$DUNE_UNPACKED_DIR" "$DUNE_STEAM_SERVER_DIR" > "%s"\n' "$BASH" "$work/dirs" > "$fake/dune-live"
+xdg() { : > "$work/dirs"; env -u DUNE_DATA_DIR -u DUNE_CONFIG_DIR -u DUNE_STATE_DIR -u DUNE_UNPACKED_DIR -u DUNE_STEAM_SERVER_DIR -u XDG_DATA_HOME -u XDG_CONFIG_HOME \
+	HOME="$work/home" "$@" bin/dune-awakening --no-warn world say hi >/dev/null 2>&1; cat "$work/dirs"; }
+dirs() { printf '%s|%s|%s|%s' "$2/dune_awakening_server" "$1/dune_awakening_server/runtime" "$1/dune_awakening_server/unpacked" "$1/dune_awakening_server/steam-server"; }
+[ "$(xdg XDG_DATA_HOME="$work/data" XDG_CONFIG_HOME="$work/conf")" = "$(dirs "$work/data" "$work/conf")" ] || fail "XDG homes not used: $(cat "$work/dirs")"
+[ "$(xdg)" = "$(dirs "$work/home/.local/share" "$work/home/.config")" ] || fail "unset XDG homes do not fall back: $(cat "$work/dirs")"
+[ "$(xdg XDG_DATA_HOME=relative XDG_CONFIG_HOME=relative)" = "$(dirs "$work/home/.local/share" "$work/home/.config")" ] || fail "relative XDG homes not ignored: $(cat "$work/dirs")"
+[ "$(xdg XDG_DATA_HOME="$work/data" DUNE_STATE_DIR="$work/explicit")" = "$(dirs x "$work/home/.config" | cut -d"|" -f1)|$work/explicit|$work/data/dune_awakening_server/unpacked|$work/data/dune_awakening_server/steam-server" ] ||
+	fail "an explicit DUNE_STATE_DIR does not win over XDG: $(cat "$work/dirs")"
+# DUNE_DATA_DIR moves all game data at once and wins over XDG_DATA_HOME.
+[ "$(xdg XDG_DATA_HOME="$work/data" DUNE_DATA_DIR="$work/game")" = "$(dirs x "$work/home/.config" | cut -d"|" -f1)|$work/game/runtime|$work/game/unpacked|$work/game/steam-server" ] ||
+	fail "DUNE_DATA_DIR not used as the data root: $(cat "$work/dirs")"
 : > "$work/calls"
 world stop >/dev/null 2>&1 || fail "stop failed"
 got=$(cut -d'|' -f1 "$work/calls" | paste -sd, -)

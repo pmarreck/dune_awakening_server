@@ -4,15 +4,16 @@
 # checksums. Backups are written to a .partial dir and renamed into place, so a listed backup is always complete.
 # `verify` is the restore drill: it restores each dump into a scratch database and drops it again.
 set -u
+. "$(dirname -- "${BASH_SOURCE[0]}")/dune-dirs.bash"
 NAME=dune-backup VERSION=0.1.0
 : "${HOME:=$(cd ~ 2>/dev/null && pwd)}"
-DUNE_STATE_DIR=${DUNE_STATE_DIR:-$HOME/.local/share/dune_awakening_server/runtime}
-DUNE_CONFIG_DIR=${DUNE_CONFIG_DIR:-$HOME/.config/dune_awakening_server}
+DUNE_STATE_DIR=${DUNE_STATE_DIR:-$DUNE_DATA_ROOT/runtime}
+DUNE_CONFIG_DIR=${DUNE_CONFIG_DIR:-$DUNE_CONFIG_ROOT}
 DUNE_SECRETS_DIR=${DUNE_SECRETS_DIR:-$DUNE_STATE_DIR/secrets}
-DUNE_BACKUP_DIR=${DUNE_BACKUP_DIR:-$HOME/.local/share/dune_awakening_server/backups}
+DUNE_BACKUP_DIR=${DUNE_BACKUP_DIR:-$DUNE_DATA_ROOT/backups}
 DUNE_TRASH_DIR=${DUNE_TRASH_DIR:-$HOME/.Trash}
 DUNE_PG_PORT=${DUNE_PG_PORT:-15431}
-DUNE_STEAM_SERVER_DIR=${DUNE_STEAM_SERVER_DIR:-$HOME/.local/share/dune_awakening_server/steam-server}
+DUNE_STEAM_SERVER_DIR=${DUNE_STEAM_SERVER_DIR:-$DUNE_DATA_ROOT/steam-server}
 
 usage() {
 	cat <<EOF
@@ -32,7 +33,7 @@ Commands:
 
 Options: --json, --label TEXT, --keep N, --yes, --about, -h/--help
 
-Environment: DUNE_BACKUP_DIR (default ~/.local/share/dune_awakening_server/backups), DUNE_STATE_DIR,
+Environment: DUNE_BACKUP_DIR (default $XDG_DATA_HOME/dune_awakening_server/backups), DUNE_STATE_DIR,
 DUNE_CONFIG_DIR, DUNE_SECRETS_DIR, DUNE_PG_PORT, DUNE_TRASH_DIR.
 EOF
 }

@@ -3,6 +3,7 @@
 # their filled-in names are gitignored anywhere in the tree, and no tracked file holds a JWT-shaped credential.
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. libexec/dune-dirs.bash
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 [ -d config.sample ] || { fail "no config.sample/ templates"; exit 1; }
@@ -23,7 +24,7 @@ hits=$(git grep -l -I -E 'eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}' -- . 2>/dev
 # Personal details never enter tracked files. The denylist is private (it names them), kept outside the repo:
 # one string per line (a "find<TAB>replacement" line uses its first field), "keep<TAB>string" lines allow an exact
 # string (the CI badge URL), "#" comments. The scanner first proves it can fail on a string known to be present.
-denylist=${DUNE_PUBLIC_DENYLIST:-$HOME/.config/dune_awakening_server/public-scrub}
+denylist=${DUNE_PUBLIC_DENYLIST:-$DUNE_CONFIG_ROOT/public-scrub}
 scan() { # scan DENYLIST -> prints offending "file: string" lines
 	local keeps=() line find f
 	while IFS= read -r line; do case "$line" in keep$'\t'*) keeps+=("${line#keep$'\t'}") ;; esac; done < "$1"

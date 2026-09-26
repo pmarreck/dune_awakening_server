@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy the map server's gameplay settings, like Funcom's `battlegroup.sh apply-default-usersettings`: copy every
 # User*.ini default (UserEngine, UserGame, UserServerCustomSettings, ...) into Saved/UserSettings, letting an operator
-# override file of the same name (kept outside Git, e.g. ~/.config/dune_awakening_server/UserSettings/) win.
+# override file of the same name (kept outside Git, e.g. $XDG_CONFIG_HOME/dune_awakening_server/UserSettings/) win.
 # Usage: dune-usersettings DEFAULTS_DIR OVERRIDES_DIR DEST_DIR
 set -u
 die() { printf 'dune-usersettings: %s\n' "$*" >&2; exit 1; }

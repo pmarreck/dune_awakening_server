@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/usr/bin/env -S bash --norc --noprofile
 # Run every suite. --hermetic runs only suites that work inside the Nix build sandbox (used by the Nix check):
 # payload suites need the local proprietary payload; host suites need a real host network stack
 # (RabbitMQ's Erlang HTTP auth client cannot reach loopback inside the sandbox; see PLAN.md).
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
-suites=(tests/unit/unpack tests/unit/envrc tests/unit/ports tests/unit/port-guards tests/unit/usersettings tests/integration/toolchain tests/integration/postgres tests/integration/world-init tests/integration/world-status tests/integration/world-cli tests/integration/character-tool tests/integration/backup tests/integration/update tests/integration/units tests/integration/server-config tests/integration/live)
+suites=(tests/unit/unpack tests/unit/envrc tests/unit/xdg-dirs tests/unit/ports tests/unit/port-guards tests/unit/usersettings tests/integration/toolchain tests/integration/postgres tests/integration/world-init tests/integration/world-status tests/integration/world-cli tests/integration/character-tool tests/integration/backup tests/integration/update tests/integration/units tests/integration/server-config tests/integration/live)
 host_suites=(tests/integration/rabbitmq tests/payload/db-setup tests/payload/world-partitions tests/payload/dotnet-apps tests/payload/textrouter-auth tests/payload/character-transfer tests/payload/gm-allowlist tests/integration/world-cli-nix tests/unit/public-hygiene tests/integration/units-verify)
 case "${1:-}" in
 	--hermetic) ;;
@@ -12,8 +12,10 @@ case "${1:-}" in
 	*) printf 'usage: ./test [--hermetic]\n' >&2; exit 2 ;;
 esac
 failures=0
+# Suites get stdin from /dev/null and no rc files: a bash whose stdin is a socket (SSH, an agent terminal) and whose
+# SHLVL is below 2 reads ~/.bashrc (the rshd rule), which would let personal shell settings leak into tests.
 for suite in "${suites[@]}"; do
-	output=$(bash "$suite" 2>&1)
+	output=$(bash --norc --noprofile "$suite" 2>&1 </dev/null)
 	status=$?
 	if [ "$status" -eq 0 ]; then
 		printf 'PASS %s\n' "$suite"

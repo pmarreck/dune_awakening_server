@@ -31,6 +31,8 @@ This project additionally needs x86_64 Linux with [Nix](https://nixos.org/downlo
 
 ## Setup
 
+Paths follow the XDG base directory conventions: operator config in `$XDG_CONFIG_HOME/dune_awakening_server` and everything else (payload, runtime state, backups) in `$XDG_DATA_HOME/dune_awakening_server`, falling back to `~/.config` and `~/.local/share` when those variables are unset. `DUNE_CONFIG_DIR` and `DUNE_DATA_DIR` override them for this game only. The commands below use the default locations.
+
 ```bash
 git clone <this repo> && cd dune_awakening_server
 nix develop            # enters the toolchain; the scripts below also do this themselves

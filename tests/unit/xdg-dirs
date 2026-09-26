@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Where data and config live: libexec/dune-dirs.bash resolves the XDG base directories (absolute values only, per the
+# spec) with ~/.local/share and ~/.config as fallbacks. Classifier over every script: no other file may hardcode the
+# home-relative project paths, so each tool honors XDG_DATA_HOME / XDG_CONFIG_HOME the same way.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+resolve() { env -i HOME=/h PATH="$PATH" "$@" bash --norc --noprofile -c '. libexec/dune-dirs.bash; printf "%s|%s" "$DUNE_DATA_ROOT" "$DUNE_CONFIG_ROOT"'; }
+[ "$(resolve)" = "/h/.local/share/dune_awakening_server|/h/.config/dune_awakening_server" ] || fail "defaults: $(resolve)"
+[ "$(resolve XDG_DATA_HOME=/d XDG_CONFIG_HOME=/c)" = "/d/dune_awakening_server|/c/dune_awakening_server" ] || fail "XDG: $(resolve XDG_DATA_HOME=/d XDG_CONFIG_HOME=/c)"
+[ "$(resolve XDG_DATA_HOME=rel XDG_CONFIG_HOME=rel)" = "/h/.local/share/dune_awakening_server|/h/.config/dune_awakening_server" ] || fail "relative XDG not ignored"
+[ "$(resolve XDG_DATA_HOME= XDG_CONFIG_HOME=)" = "/h/.local/share/dune_awakening_server|/h/.config/dune_awakening_server" ] || fail "empty XDG not ignored"
+# Game-specific override: DUNE_DATA_DIR / DUNE_CONFIG_DIR win over the XDG homes.
+[ "$(resolve XDG_DATA_HOME=/d XDG_CONFIG_HOME=/c DUNE_DATA_DIR=/g DUNE_CONFIG_DIR=/k)" = "/g|/k" ] || fail "DUNE_DATA_DIR/DUNE_CONFIG_DIR do not win: $(resolve XDG_DATA_HOME=/d XDG_CONFIG_HOME=/c DUNE_DATA_DIR=/g DUNE_CONFIG_DIR=/k)"
+offenders=$(rg -l --no-messages '\.local/share/dune_awakening_server|\.config/dune_awakening_server' bin libexec tests test | rg -v '^(libexec/dune-dirs\.bash|tests/unit/xdg-dirs)$')
+[ -z "$offenders" ] || fail "hardcoded data/config paths instead of XDG resolution: $(paste -sd' ' <<<"$offenders")"
+exit "$failures"

@@ -5,11 +5,12 @@
 # Funcom's own character_transfer_import run inside a transaction that is always rolled back.
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. libexec/dune-dirs.bash
 . tests/lib/ports.bash
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
-: "${DUNE_DB_UTILS_SRC:=$HOME/.local/share/dune_awakening_server/unpacked/server-db-utils/rootfs/root}"
+: "${DUNE_DB_UTILS_SRC:=$DUNE_DATA_ROOT/unpacked/server-db-utils/rootfs/root}"
 export DUNE_DB_UTILS_SRC
 [ -d "$DUNE_DB_UTILS_SRC/PSQL" ] || { printf 'FAIL payload missing: %s/PSQL\n' "$DUNE_DB_UTILS_SRC" >&2; exit 1; }
 

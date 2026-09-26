@@ -3,9 +3,10 @@
 # entry for a name Funcom renamed or dropped would silently remove nothing and leave the real command allowed.
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. libexec/dune-dirs.bash
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
-: "${DUNE_SERVER_SRC:=$HOME/.local/share/dune_awakening_server/unpacked/server/rootfs/home/dune/server}"
+: "${DUNE_SERVER_SRC:=$DUNE_DATA_ROOT/unpacked/server/rootfs/home/dune/server}"
 ini="$DUNE_SERVER_SRC/DuneSandbox/Config/DedicatedServerGame.ini"
 [ -f "$ini" ] || { printf 'FAIL payload missing: %s\n' "$ini" >&2; exit 1; }
 denied=$(sed -n 's/^GM_DENIED=(\(.*\))$/\1/p' libexec/dune-server)

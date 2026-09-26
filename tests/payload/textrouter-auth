@@ -3,11 +3,12 @@
 # (authenticating through itself), denies unknown users, derives the DB name from the payload, keeps logs private.
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. libexec/dune-dirs.bash
 . tests/lib/ports.bash
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
-unpacked="${DUNE_UNPACKED_DIR:-$HOME/.local/share/dune_awakening_server/unpacked}"
+unpacked="${DUNE_UNPACKED_DIR:-$DUNE_DATA_ROOT/unpacked}"
 work=$(mktemp -d "${TMPDIR:-/tmp}/dune-tr-test.XXXXXX") || exit 1
 base=$(pick_port_base 7) || { printf "FAIL no free port block\n" >&2; exit 1; }
 export DUNE_STATE_DIR="$work/state" DUNE_SECRETS_DIR="$work/secrets" DUNE_PG_DATA="$work/pg" DUNE_PG_PORT=$base

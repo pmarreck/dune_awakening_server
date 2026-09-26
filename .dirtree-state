@@ -28,6 +28,7 @@ annotate=[
 	libexec/dune-character = LuaJIT character viewer/editor: list/show/set-intel/add-intel/set-skill-points/add-skill-points, export/validate/import via Funcom transfer procs
 	libexec/dune-db-setup = Run Funcom updatedb.py against our cluster with private UserGame.ini credentials
 	libexec/dune-director = Run Director natively: FLS registration, conf.d override, private log
+	libexec/dune-dirs.bash = Sourced by Bash tools: data/config roots from DUNE_DATA_DIR/DUNE_CONFIG_DIR, else XDG homes, else ~/.local/share, ~/.config
 	libexec/dune-dotnet-prepare = Native copy of Funcom musl .NET apps: patchelf interpreter + flake netcoredeps
 	libexec/dune-gateway = Run Gateway (py3.12 bytecode) natively with world conf.d/gateway.ini
 	libexec/dune-live = Live-world commands grouped by target: world (say, timeout, kick-all, exec, partitions, raw) and character (move, where, kick, water, xp, whisper, worm)
@@ -69,4 +70,5 @@ annotate=[
 	tests/unit/public-hygiene = host tier: templates only in config.sample, filled-in names gitignored, no JWT-shaped tokens tracked
 	tests/unit/unpack = Synthetic image: plain+gzip layers, whiteouts, opaque dirs
 	tests/unit/usersettings = Defaults deployed, overrides win, idempotent
+	tests/unit/xdg-dirs = XDG resolution cases and a classifier: no script hardcodes home-relative data/config paths
 ]

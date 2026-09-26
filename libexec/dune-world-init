@@ -4,7 +4,8 @@
 # FLS ties the registered battlegroup to it. The display name and region may be updated on later runs.
 # Usage: dune-world-init --display-name NAME --region REGION
 set -u
-DUNE_CONFIG_DIR=${DUNE_CONFIG_DIR:-$HOME/.config/dune_awakening_server}
+. "$(dirname -- "${BASH_SOURCE[0]}")/dune-dirs.bash"
+DUNE_CONFIG_DIR=${DUNE_CONFIG_DIR:-$DUNE_CONFIG_ROOT}
 conf="$DUNE_CONFIG_DIR/world.conf"
 token="$DUNE_CONFIG_DIR/fls_secret"
 pw="$DUNE_CONFIG_DIR/join_password"

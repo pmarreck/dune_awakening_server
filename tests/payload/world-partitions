@@ -3,11 +3,12 @@
 # prints its partition_id (the game server's -PartitionIndex), and is idempotent.
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. libexec/dune-dirs.bash
 . tests/lib/ports.bash
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
-: "${DUNE_DB_UTILS_SRC:=$HOME/.local/share/dune_awakening_server/unpacked/server-db-utils/rootfs/root}"
+: "${DUNE_DB_UTILS_SRC:=$DUNE_DATA_ROOT/unpacked/server-db-utils/rootfs/root}"
 export DUNE_DB_UTILS_SRC
 work=$(mktemp -d "${TMPDIR:-/tmp}/dune-part-test.XXXXXX") || exit 1
 export DUNE_PG_DATA="$work/pgdata" DUNE_SECRETS_DIR="$work/secrets" DUNE_STATE_DIR="$work/state" DUNE_PG_PORT=$(pick_port_base 1)

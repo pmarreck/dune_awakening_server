@@ -52,9 +52,12 @@ Options:
   -h, --help      This help
 
 Environment (defaults in parentheses):
-  DUNE_CONFIG_DIR        operator inputs: fls_secret, world.conf, join_password, UserSettings/ (~/.config/dune_awakening_server)
-  DUNE_STATE_DIR         runtime state and logs (~/.local/share/dune_awakening_server/runtime)
-  DUNE_UNPACKED_DIR      unpacked Funcom images (~/.local/share/dune_awakening_server/unpacked)
+  DUNE_DATA_DIR          root for all game data below (default $XDG_DATA_HOME/dune_awakening_server)
+  DUNE_CONFIG_DIR        operator inputs: fls_secret, world.conf, join_password, UserSettings/
+                         (default $XDG_CONFIG_HOME/dune_awakening_server, XDG_CONFIG_HOME defaulting to ~/.config)
+  DUNE_STATE_DIR         runtime state and logs (default $XDG_DATA_HOME/dune_awakening_server/runtime,
+                         XDG_DATA_HOME defaulting to ~/.local/share)
+  DUNE_UNPACKED_DIR      unpacked Funcom images (default $XDG_DATA_HOME/dune_awakening_server/unpacked)
   DUNE_EXTERNAL_ADDRESS  address clients use (world.conf EXTERNAL_ADDRESS, else the default route's source address)
   DUNE_COMPONENTS_DIR    component scripts (this tool's own directory)
 
@@ -99,7 +102,8 @@ local function dirname(p) return (p:match("^(.*)/[^/]*$")) or "." end
 -- Replace this process with `nix develop <flake> -c luajit <self> args`, keeping only what the world needs.
 local function reexec_in_nix(flake, self)
 	local argv = { "nix", "develop", flake, "--ignore-environment", "--quiet", "--log-format", "raw", "--no-warn-dirty" }
-	local keep = { HOME = true, USER = true, LOGNAME = true, TERM = true, NO_COLOR = true, XDG_RUNTIME_DIR = true, DBUS_SESSION_BUS_ADDRESS = true }
+	local keep = { HOME = true, USER = true, LOGNAME = true, TERM = true, NO_COLOR = true, XDG_RUNTIME_DIR = true, DBUS_SESSION_BUS_ADDRESS = true,
+		XDG_DATA_HOME = true, XDG_CONFIG_HOME = true }
 	local i = 0
 	while ffi.C.environ[i] ~= nil do
 		local k = ffi.string(ffi.C.environ[i]):match("^([^=]+)=")
@@ -186,13 +190,21 @@ local function default_route_source()
 	return out:match(" src (%d+%.%d+%.%d+%.%d+)") or "127.0.0.1"
 end
 
+-- An XDG base directory: the variable's value when absolute (a relative one is invalid per the XDG spec), else the
+-- conventional fallback under HOME.
+local function xdg_home(var, fallback)
+	local v = os.getenv(var)
+	if v and v:sub(1, 1) == "/" then return v end
+	return getenv("HOME", "") .. "/" .. fallback
+end
+
 -- Export the environment every component script reads.
 local function setup_env()
-	local home = getenv("HOME", "")
-	local config = getenv("DUNE_CONFIG_DIR", home .. "/.config/dune_awakening_server")
-	local state = getenv("DUNE_STATE_DIR", home .. "/.local/share/dune_awakening_server/runtime")
-	local unpacked = getenv("DUNE_UNPACKED_DIR", home .. "/.local/share/dune_awakening_server/unpacked")
-	local steam = getenv("DUNE_STEAM_SERVER_DIR", home .. "/.local/share/dune_awakening_server/steam-server")
+	local data = getenv("DUNE_DATA_DIR", xdg_home("XDG_DATA_HOME", ".local/share") .. "/dune_awakening_server")
+	local config = getenv("DUNE_CONFIG_DIR", xdg_home("XDG_CONFIG_HOME", ".config") .. "/dune_awakening_server")
+	local state = getenv("DUNE_STATE_DIR", data .. "/runtime")
+	local unpacked = getenv("DUNE_UNPACKED_DIR", data .. "/unpacked")
+	local steam = getenv("DUNE_STEAM_SERVER_DIR", data .. "/steam-server")
 	local tr_port = getenv("DUNE_TEXTROUTER_PORT", "18081")
 	local env = {
 		DUNE_CONFIG_DIR = config, DUNE_STATE_DIR = state, DUNE_UNPACKED_DIR = unpacked, DUNE_STEAM_SERVER_DIR = steam,

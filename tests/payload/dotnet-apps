@@ -4,10 +4,11 @@
 # netcoredeps from the flake. The payload originals must stay untouched.
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. libexec/dune-dirs.bash
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
-unpacked="${DUNE_UNPACKED_DIR:-$HOME/.local/share/dune_awakening_server/unpacked}"
+unpacked="${DUNE_UNPACKED_DIR:-$DUNE_DATA_ROOT/unpacked}"
 work=$(mktemp -d "${TMPDIR:-/tmp}/dune-dotnet-test.XXXXXX") || exit 1
 trap 'rm -r -- "$work"' EXIT
 

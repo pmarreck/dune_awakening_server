@@ -5,13 +5,14 @@
 # stop the world, download with validation, unpack the images (previous copy kept as <image>.prev), start the world
 # (which runs Funcom's DB migrations through dune-db-setup) and re-check.
 set -u
+. "$(dirname -- "${BASH_SOURCE[0]}")/dune-dirs.bash"
 NAME=dune-update VERSION=0.1.0 APP=4754530
 EXIT_CURRENT=0 EXIT_STALE=1 EXIT_USAGE=2 EXIT_UNKNOWN=3
 : "${HOME:=$(cd ~ 2>/dev/null && pwd)}"
-DUNE_STEAM_SERVER_DIR=${DUNE_STEAM_SERVER_DIR:-$HOME/.local/share/dune_awakening_server/steam-server}
-DUNE_UNPACKED_DIR=${DUNE_UNPACKED_DIR:-$HOME/.local/share/dune_awakening_server/unpacked}
+DUNE_STEAM_SERVER_DIR=${DUNE_STEAM_SERVER_DIR:-$DUNE_DATA_ROOT/steam-server}
+DUNE_UNPACKED_DIR=${DUNE_UNPACKED_DIR:-$DUNE_DATA_ROOT/unpacked}
 DUNE_STEAMCMD=${DUNE_STEAMCMD:-steamcmd}
-DUNE_STEAMCMD_HOME=${DUNE_STEAMCMD_HOME:-$HOME/.local/share/dune_awakening_server/steamcmd}
+DUNE_STEAMCMD_HOME=${DUNE_STEAMCMD_HOME:-$DUNE_DATA_ROOT/steamcmd}
 DUNE_TRASH_DIR=${DUNE_TRASH_DIR:-$HOME/.Trash}
 DUNE_COMPONENTS_DIR=${DUNE_COMPONENTS_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}
 IMAGES=(server server-bg-director server-text-router server-gateway server-db-utils)
