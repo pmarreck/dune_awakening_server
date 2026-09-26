@@ -59,7 +59,7 @@ Type=oneshot
 RemainAfterExit=yes
 Environment=$env_path
 ExecStart=$world start
-ExecStop=$world stop
+ExecStop=$world stop --force
 TimeoutStartSec=20min
 TimeoutStopSec=6min
 

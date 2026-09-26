@@ -27,8 +27,8 @@ Run the native Dune: Awakening world (no Docker, Kubernetes or Windows).
 
 Commands:
   start           Bring every component up in dependency order (already-running components are left alone)
-  stop            Stop every component in reverse order
-  restart         stop, then start
+  stop            Stop every component in reverse order; refuses while characters are online (--force overrides)
+  restart         stop, then start (same guard)
   status          One line per component, ● up / ○ down; exit 0 only if all are up
   world ...       Whole-world live commands: say, timeout on/off/status (aliases bio-break, call-timeout,
                   safety-first), kick-all, exec, partitions, raw
@@ -47,6 +47,7 @@ Options:
   --no-color      Disable ANSI color (also: NO_COLOR env, non-tty stdout)
   --watch SECS    status --json: keep running, one JSON line every SECS (for a live admin panel; stop it when done)
   --count N       with --watch: stop after N lines
+  --force         stop/restart even while characters are online (they will be disconnected)
   --no-warn       Do not warn about leftover *.sample / *.default templates in DUNE_CONFIG_DIR (also: DUNE_NO_WARNINGS)
   --about         One-line description, version and platform
   -h, --help      This help
@@ -154,6 +155,7 @@ local function parse_args(argv)
 		elseif a == "--text" then opts.json = false
 		elseif a == "--no-color" then opts.color = false
 		elseif a == "--no-warn" then opts.no_warn = true
+		elseif a == "--force" then opts.force = true
 		elseif a == "--watch" then
 			opts.watch = tonumber(value())
 			if not opts.watch or opts.watch <= 0 then die(EXIT_USAGE, "--watch needs a positive number of seconds") end
@@ -328,6 +330,27 @@ local function probe(dir)
 	return comps, all_up
 end
 
+-- Names of characters online now, or nil when the database cannot say (then no one can be in the world).
+local function online_characters(dir)
+	local cjson = require("cjson")
+	local out, ok = capture(comp(dir, "character", "list", "--json") .. " 2>/dev/null")
+	local okd, list = pcall(cjson.decode, out)
+	if not (ok and okd and type(list) == "table") then return nil end
+	local names = {}
+	for _, c in ipairs(list) do if c.online == true then names[#names + 1] = c.name end end
+	return names
+end
+
+-- stop and restart would disconnect everyone in the world; refuse unless --force.
+local function refuse_if_online(opts, dir)
+	if opts.force then return end
+	local names = online_characters(dir)
+	if names and #names > 0 then
+		die(EXIT_ERR, "%d character(s) online (%s): %s would disconnect them; wait for them to log off, or use --force",
+			#names, table.concat(names, ", "), opts.cmd)
+	end
+end
+
 -- One status document for admin pages: world identity, components, characters, map-server resources.
 local function status_json(dir, env, world, flake)
 	local cjson = require("cjson")
@@ -408,8 +431,8 @@ local function main()
 		ffi.C.execvp(argv[1], cargv)
 		die(EXIT_ERR, "cannot run %s", argv[1])
 	elseif opts.cmd == "start" then cmd_start(dir, env)
-	elseif opts.cmd == "stop" then cmd_stop(dir, env)
-	elseif opts.cmd == "restart" then cmd_stop(dir, env); cmd_start(dir, env)
+	elseif opts.cmd == "stop" then refuse_if_online(opts, dir); cmd_stop(dir, env)
+	elseif opts.cmd == "restart" then refuse_if_online(opts, dir); cmd_stop(dir, env); cmd_start(dir, env)
 	else cmd_status(opts, dir, env, flake) end
 end
 

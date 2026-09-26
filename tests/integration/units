@@ -16,6 +16,8 @@ libexec/dune-units bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown command 
 msg=$(libexec/dune-units render "$out" --nix "$fake_nix" 2>&1) || fail "render failed: $msg"
 want="dune-backup-verify.service dune-backup-verify.timer dune-backup.service dune-backup.timer dune-update-check.service dune-update-check.timer dune-world-heal.service dune-world-heal.timer dune-world.service"
 [ "$(ls "$out" 2>/dev/null | collate | paste -sd' ' -)" = "$want" ] || fail "unit set: $(ls "$out" 2>/dev/null | paste -sd' ' -)"
+# The unit's stop must not be blocked by the players-online guard (shutdown and reboot have to work).
+grep -q '^ExecStop=.*dune-awakening" stop --force$' "$out/dune-world.service" || fail "world unit does not stop with --force: $(grep ExecStop "$out/dune-world.service")"
 grep -rq '@[A-Z_]*@' "$out" && fail "unrendered placeholders: $(grep -rho '@[A-Z_]*@' "$out" | collate | uniq | paste -sd' ' -)"
 # Every Exec* program must be an existing absolute path (the checkout's scripts, the given nix, systemctl).
 while IFS= read -r prog; do

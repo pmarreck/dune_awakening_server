@@ -102,7 +102,7 @@ cmd_apply() {
 		die "players are online ($(jq -r '[.[] | select(.online) | .name] | join(", ")' <<<"$online")); update when they log out, or --force"
 	fi
 	step "backup"; component backup create --label "before update ${installed:-none} to $latest" >/dev/null || die "backup failed; nothing changed"
-	step "stop world"; component world stop || die "world did not stop cleanly; nothing downloaded"
+	step "stop world"; component world stop $($force && echo --force) || die "world did not stop cleanly; nothing downloaded"
 	step "download build $latest (validated)"
 	run_steamcmd +@sSteamCmdForcePlatformType linux +force_install_dir "$DUNE_STEAM_SERVER_DIR" +login anonymous +app_update "$APP" validate +quit >&2 ||
 		die "download failed; the world is stopped (dune-awakening start runs the previous build)"

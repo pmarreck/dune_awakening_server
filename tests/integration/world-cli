@@ -140,6 +140,23 @@ dirs() { printf '%s|%s|%s|%s' "$2/dune_awakening_server" "$1/dune_awakening_serv
 	fail "DUNE_DATA_DIR not used as the data root: $(cat "$work/dirs")"
 : > "$work/calls"
 world stop >/dev/null 2>&1 || fail "stop failed"
-got=$(cut -d'|' -f1 "$work/calls" | paste -sd, -)
+# (the players-online guard first asks dune-character; only component stops count for the order)
+got=$(grep -v '^dune-character ' "$work/calls" | cut -d'|' -f1 | paste -sd, -)
 [ "$got" = "server stop,gateway stop,director stop,textrouter stop,rabbitmq stop game,rabbitmq stop admin,postgres stop" ] || fail "stop order wrong: $got"
+
+# stop and restart refuse while anyone is online (they would be disconnected), naming them; --force overrides.
+# Unknown (database unreachable, as above) does not block: then no one can be in the world.
+printf '#!%s\necho '"'"'[{"name":"Alice","online":true},{"name":"Bob","online":false},{"name":"Carol","online":true}]'"'"'\n' "$BASH" > "$fake/dune-character"
+for cmd in stop restart; do
+	: > "$work/calls"
+	out=$(world "$cmd" 2>&1); rc=$?
+	[ "$rc" -eq 1 ] && [[ "$out" == *Alice* && "$out" == *Carol* && "$out" != *Bob* && "$out" == *--force* ]] || fail "$cmd with players online not refused: rc=$rc $out"
+	[ -z "$(grep ' stop' "$work/calls")" ] || fail "$cmd stopped components although players were online: $(paste -sd, "$work/calls")"
+done
+: > "$work/calls"
+world stop --force >/dev/null 2>&1 || fail "stop --force failed"
+grep -q '^server stop' "$work/calls" || fail "stop --force did not stop the server"
+printf '#!%s\necho '"'"'[{"name":"Alice","online":false}]'"'"'\n' "$BASH" > "$fake/dune-character"
+: > "$work/calls"
+world stop >/dev/null 2>&1 && grep -q '^server stop' "$work/calls" || fail "stop with everyone offline refused"
 exit "$failures"
