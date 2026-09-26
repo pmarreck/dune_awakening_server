@@ -60,6 +60,7 @@ annotate=[
 	tests/payload/character-transfer = dune-character export/validate/import against the real Funcom schema (login_account fixture, dry-run validation, backup round trip)
 	tests/payload/db-setup = Payload-tier test: Funcom 1.5 schema install is complete and idempotent
 	tests/payload/dotnet-apps = Payload-tier test: TextRouter and Director run natively; originals untouched
+	tests/payload/gm-allowlist = Guard: every GM command dune-server denies exists in Funcom's GM allow-list; all Destroy* are denied
 	tests/payload/textrouter-auth = Payload test: TextRouter denies unknown users and authenticates itself to game broker
 	tests/payload/world-partitions = Single Survival_1 partition, idempotent
 	tests/unit/envrc = .envrc classifier: dune short name offered only when PATH has no dune

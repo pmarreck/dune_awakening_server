@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# The GM commands dune-server removes for the trusted-player GM password must exist in Funcom's GM allow-list: a "-"
+# entry for a name Funcom renamed or dropped would silently remove nothing and leave the real command allowed.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+: "${DUNE_SERVER_SRC:=$HOME/.local/share/dune_awakening_server/unpacked/server/rootfs/home/dune/server}"
+ini="$DUNE_SERVER_SRC/DuneSandbox/Config/DedicatedServerGame.ini"
+[ -f "$ini" ] || { printf 'FAIL payload missing: %s\n' "$ini" >&2; exit 1; }
+denied=$(sed -n 's/^GM_DENIED=(\(.*\))$/\1/p' libexec/dune-server)
+[ -n "$denied" ] || fail "GM_DENIED not found in libexec/dune-server"
+allowed=$(awk '/^\[AdminSetting.Global\]/ { on = 1; next } /^\[/ { on = 0 } on' "$ini" | sed -n 's/^+Allowed_GM_Commands=//p' | tr -d '\r')
+for c in $denied; do grep -qxF "$c" <<<"$allowed" || fail "$c is not in Funcom's GM allow-list ($ini)"; done
+# Classifier over the whole list: every Destroy* command Funcom allows is denied.
+for c in $(grep '^Destroy' <<<"$allowed"); do [[ " $denied " == *" $c "* ]] || fail "Funcom GM command $c is not denied"; done
+exit "$failures"

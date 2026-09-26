@@ -65,19 +65,23 @@ ensure_command_token() {
 	(umask 077; openssl rand -hex 32 > "$t") || die "cannot write $t"
 }
 
-# In-game admin password. Funcom's DefaultGame.ini ships [AdminSetting.Global] Password_Admin=sardaukar, a public
-# default that `AdminLogin` would accept from any player; generate a private one once and override it.
-ensure_admin_password() {
-	local t="$DUNE_SECRETS_DIR/admin_password"
+# In-game privilege passwords (AdminLogin). Funcom's DefaultGame.ini ships [AdminSetting.Global] Password_Admin=sardaukar,
+# a public default; admin_password replaces it. gm_password is for a trusted player: GM privilege with Funcom's GM
+# allow-list minus GM_DENIED. Each is generated once and kept private.
+GM_DENIED=(AddItemToInventory DestroyTargetVehicle DestroyTotem DestroyPlaceable DestroyEntireBuilding DestroyBuildingPiece)
+ensure_password() {
+	local t="$DUNE_SECRETS_DIR/$1"
 	[ -s "$t" ] && return 0
 	(umask 077; openssl rand -hex 12 > "$t") || die "cannot write $t"
 }
 
 write_secret_ini() {
-	local fls_token="" dune_pw join_pw="" cmd_token admin_pw
+	local fls_token="" dune_pw join_pw="" cmd_token admin_pw gm_pw c
 	ensure_command_token
-	ensure_admin_password
+	ensure_password admin_password
+	ensure_password gm_password
 	admin_pw=$(tr -d '\r\n' < "$DUNE_SECRETS_DIR/admin_password")
+	gm_pw=$(tr -d '\r\n' < "$DUNE_SECRETS_DIR/gm_password")
 	cmd_token=$(tr -d '\r\n' < "$DUNE_SECRETS_DIR/server_commands_token")
 	dune_pw=$(cat "$DUNE_SECRETS_DIR/postgres_dune_password") || die "missing postgres_dune_password"
 	[ -s "$DUNE_SECRETS_DIR/fls_token" ] && fls_token=$(tr -d '\r\n' < "$DUNE_SECRETS_DIR/fls_token")
@@ -87,8 +91,11 @@ write_secret_ini() {
 		printf '[FuncomLiveServices]\nServiceAuthToken=%s\nDefaultFlsEnvironment=%s\nServerCommandsAuthToken=%s\n\n[OnlineSubsystem]\nServerName=%s\nDatacenterId=%s\n\n[ConsoleVariables]\nBgd.ServerLoginPassword=%s\nBgd.ServerDisplayName=%s\nserver.NotificationSystem.Enabled=true\n' \
 			"$fls_token" "$DUNE_FLS_ENV" "$cmd_token" "$DUNE_WORLD_NAME" "$DUNE_WORLD_REGION" "$join_pw" "$DUNE_WORLD_DISPLAY_NAME" \
 			> "$saved/Config/LinuxServer/Engine.ini" &&
-		printf '[DuneDatabaseInterfacePSQL]\nDatabaseHost=127.0.0.1:%s\nDatabaseUser=dune\nDatabasePassword=%s\n\n[AdminSetting.Global]\nPassword_Admin=%s\n' \
-			"$DUNE_PG_PORT" "$dune_pw" "$admin_pw" > "$saved/Config/LinuxServer/Game.ini"
+		{
+			printf '[DuneDatabaseInterfacePSQL]\nDatabaseHost=127.0.0.1:%s\nDatabaseUser=dune\nDatabasePassword=%s\n\n' "$DUNE_PG_PORT" "$dune_pw"
+			printf '[AdminSetting.Global]\nPassword_Admin=%s\nPassword_GM=%s\n' "$admin_pw" "$gm_pw"
+			for c in "${GM_DENIED[@]}"; do printf -- '-Allowed_GM_Commands=%s\n' "$c"; done
+		} > "$saved/Config/LinuxServer/Game.ini"
 	) || die "cannot write secret ini overrides"
 }
 
