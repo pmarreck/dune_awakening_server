@@ -57,7 +57,12 @@ Why not a real pause: the engine drops a connection after 60 s without traffic (
 
 ### What this project changes
 
-`dune-server` replaces the public default with a private generated password: `runtime/secrets/admin_password` (0600), written as `[AdminSetting.Global] Password_Admin=…` into the map server's private `Saved/Config/LinuxServer/Game.ini`. The server reads its database password from that same file, so the file is loaded. That the override takes effect in game is **inferred**, because nothing can type `AdminLogin` yet (below). To see the password: `cat ~/.local/share/dune_awakening_server/runtime/secrets/admin_password`.
+`dune-server` writes two generated passwords into the map server's private `Saved/Config/LinuxServer/Game.ini` (the file it already reads its database password from):
+
+- `Password_Admin`, replacing Funcom's public default. For the host operator.
+- `Password_GM`, for a trusted player who should have GM powers without host access. Their allow-list is Funcom's `Allowed_GM_Commands` minus the Destroy* commands and `AddItemToInventory`, removed with `-Allowed_GM_Commands=…` entries. A payload-tier test (`tests/payload/gm-allowlist`) fails if Funcom renames any of those, because a removal of a missing name would silently leave the real command allowed.
+
+Both are typeable Dune passphrases (`word-word-word-NN`, e.g. `sietch-thumper-kynes-42`): three distinct words from a 65-word list shuffled by `random --true-random`, plus a number from 10 to 99, about 25 bits. That suits a world reachable only over Tailscale; on the open internet, use long random passwords instead. They live in `runtime/secrets/admin_password` and `runtime/secrets/gm_password` (0600). To read one: `cat ~/.local/share/dune_awakening_server/runtime/secrets/gm_password`. To change one, move the file to the trash and restart the world; a new one is generated. That the game accepts them is **inferred** until someone logs in with the Admin Panel.
 
 ### Getting to it from the client
 

@@ -5,8 +5,10 @@
 		nixpkgs.url = "github:NixOS/nixpkgs/c0a89c379b4ac67c7b13b051ddbd4e0dbc9b0eaf";
 		# Locale-free, reproducible line sorting (`collate`) for scripts and tests.
 		romantic_collation.url = "github:pmarreck/romantic_collation";
+		# Cryptographically secure random picks (`random`), used for generated passphrases.
+		random.url = "github:pmarreck/random";
 	};
-	outputs = { self, nixpkgs, romantic_collation }:
+	outputs = { self, nixpkgs, romantic_collation, random }:
 		let
 			system = "x86_64-linux";
 			# Only steamcmd and its steam-unwrapped bootstrap are admitted as unfree; review any addition.
@@ -19,7 +21,7 @@
 				(pkgs.python312.withPackages (ps: [ ps.psycopg2 ps.python-dateutil ps.debugpy ])) pkgs.rsync pkgs.gnumake pkgs.ripgrep
 				pkgs.gnugrep pkgs.gnused pkgs.gawk pkgs.findutils
 				pkgs.gnutar pkgs.gzip pkgs.util-linux pkgs.procps pkgs.cacert
-				romantic_collation.packages.${system}.default
+				romantic_collation.packages.${system}.default random.packages.${system}.random-luajit
 				pkgs.steamcmd pkgs.postgresql_17 pkgs.rabbitmq-server pkgs.socat pkgs.patchelf pkgs.iproute2 pkgs.systemd
 				# Mirrors the host's global luajit.withPackages set so scripts behave the same inside and outside the dev shell.
 				(pkgs.luajit.withPackages (ps: with ps; [

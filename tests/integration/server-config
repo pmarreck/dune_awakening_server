@@ -38,6 +38,16 @@ for w in $(secret admin_password | tr -- '-' ' ' | awk '{print $1, $2, $3}'); do
 	grep -q "^PASSPHRASE_WORDS=.*\b$w\b" libexec/dune-server || fail "word $w not from the Dune word list"
 done
 [ "$(secret gm_password)" != "$(secret admin_password)" ] || fail "GM and admin passwords are the same"
+# Randomness comes from the `random` tool (OS CSPRNG): a fake one on PATH that shuffles to a fixed order and rolls 42
+# must yield exactly that passphrase; words are three distinct entries of the list, in the shuffled order.
+fake="$work/fakebin"; mkdir -p "$fake"
+printf '#!%s\nprintf "%%s\\n" "$*" >> "%s"\ncase " $* " in *" --shuffle "*) sort -r ;; *" 10-99 "*) echo 42 ;; *) exit 9 ;; esac\n' "$BASH" "$work/random-argv" > "$fake/random"
+chmod +x "$fake/random"
+mv "$DUNE_SECRETS_DIR/gm_password" "$work/gm-before-fake"
+PATH="$fake:$PATH" libexec/dune-server configure >/dev/null 2>&1 || fail "configure with a fake random failed"
+top3=$(sed -n 's/^PASSPHRASE_WORDS=(\(.*\))$/\1/p' libexec/dune-server | tr ' ' '\n' | sort -r | head -3 | paste -sd- -)
+[ "$(secret gm_password)" = "$top3-42" ] || fail "passphrase not built from random's picks: $(secret gm_password | sed 's/[a-z]/x/g')"
+grep -qs -- '--true-random' "$work/random-argv" || fail "random not called with --true-random (a DRANDOM_SEED in the environment would make passwords predictable)"
 game="$DUNE_STATE_DIR/server/Saved/Config/LinuxServer/Game.ini"
 [ "$(stat -c %a "$game" 2>/dev/null)" = 600 ] || fail "Game.ini not 0600"
 gsection() { awk -v s="[$1]" '$0 == s { on = 1; next } /^\[/ { on = 0 } on' "$game"; }
