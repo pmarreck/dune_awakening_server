@@ -66,7 +66,7 @@ world players >/dev/null 2>&1; [ $? -eq 2 ] || fail "players still exists (chara
 
 out=$(char kick Tester 2>&1) || fail "kick failed: $out"
 [ "$(jq -r '[.Version, .AuthToken] | join(",")' "$work/published.json" 2>/dev/null)" = "2,sekrit-token-value" ] || fail "envelope wrong: $(cat "$work/published.json" 2>/dev/null)"
-[ "$(inner)" = '{"ServerCommand":"KickPlayer","PlayerId":"funcom-tester"}' ] || fail "kick payload: $(inner)"
+[ "$(inner)" = '{"ServerCommand":"KickPlayer","PlayerId":"fls-1"}' ] || fail "kick payload: $(inner)"
 [ "$(cat "$work/published.mode")" = 600 ] || fail "published body file not 0600"
 grep -q 'heartbeats' "$work/argv" && grep -q 'notifications' "$work/argv" && grep -q 'fls_backend' "$work/argv" || fail "eval does not target heartbeats/notifications as fls_backend"
 grep -q sekrit "$work/argv" && fail "auth token appeared on the broker command line"
@@ -75,12 +75,12 @@ grep -q sekrit "$work/argv" && fail "auth token appeared on the broker command l
 world kick-all >/dev/null 2>&1 || fail "kick-all failed"
 [ "$(inner | jq -r .PlayerId)" = '*' ] || fail "kick-all not PlayerId *"
 char kick "O'Brien" >/dev/null 2>&1 || fail "kick of a quoted name failed"
-[ "$(inner | jq -r .PlayerId)" = "funcom-o'brien" ] || fail "name with a quote resolved wrongly: $(inner)"
+[ "$(inner | jq -r .PlayerId)" = "fls-2" ] || fail "name with a quote resolved wrongly: $(inner)"
 out=$(char kick Nobody 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nobody* ]] || fail "unknown player: $out"
 
 # character move with coordinates, player online: the server's TeleportTo (no database write, no backup).
 char move Tester 1.5 -2 300 >/dev/null 2>&1 || fail "online character move failed"
-[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .X, .Y, .Z]')" = '["TeleportTo","funcom-tester",1.5,-2,300]' ] || fail "online move payload: $(inner)"
+[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .X, .Y, .Z]')" = '["TeleportTo","fls-1",1.5,-2,300]' ] || fail "online move payload: $(inner)"
 char move Tester 1 x 3 >/dev/null 2>&1; [ $? -eq 2 ] || fail "non-numeric coordinate not a usage error"
 char >/dev/null 2>&1; [ $? -eq 2 ] || fail "char without a subcommand not a usage error"
 char dance Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown char subcommand not a usage error"
@@ -90,21 +90,31 @@ world say "Spice must flow" --duration 12 >/dev/null 2>&1 || fail "say failed"
 [ "$(inner | jq -c '[.ServerCommand, .BroadcastType, .BroadcastPayload.BroadcastDuration, .BroadcastPayload.LocalizedText[0].Body]')" = '["ServiceBroadcast","Generic",12,"Spice must flow"]' ] || fail "say payload: $(inner)"
 
 char worm Tester >/dev/null 2>&1 || fail "worm failed"
-[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Exec]')" = '["ServerExec","funcom-tester","SandwormTargetPlayer Tester"]' ] || fail "worm payload: $(inner)"
+[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Exec]')" = '["ServerExec","fls-1","SandwormTargetPlayer Tester"]' ] || fail "worm payload: $(inner)"
+
+# Player-targeted server commands address players by FLS id (accounts.user), as the server logs them; the Funcom id
+# (name#number) is silently ignored (verified in game 2026-09-26: AddItemToInventory worked only with the FLS id).
+# give: an item into the player's inventory (AddItemToInventory: ItemName, Quantity), e.g. HarkAr2 is the Karpov 38.
+char give Tester HarkAr2 >/dev/null 2>&1 || fail "give failed"
+[ "$(inner)" = '{"ServerCommand":"AddItemToInventory","PlayerId":"fls-1","ItemName":"HarkAr2","Quantity":1}' ] || fail "give payload: $(inner)"
+char give Tester Ammo 200 >/dev/null 2>&1 && [ "$(inner | jq -r .Quantity)" = 200 ] || fail "give count: $(inner)"
+char give Tester Ammo 0 >/dev/null 2>&1; [ $? -eq 2 ] || fail "give count 0 not a usage error"
+char give Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "give without an item not a usage error"
+char give Tester 'Bad Item' >/dev/null 2>&1; [ $? -eq 2 ] || fail "give with a malformed item id not a usage error"
 
 # exec: a world-level console command or variable through ServerExec (arguments joined).
 world exec t.MaxFPS 5 >/dev/null 2>&1 || fail "exec failed"
 [ "$(inner)" = '{"ServerCommand":"ServerExec","Exec":"t.MaxFPS 5"}' ] || fail "exec payload: $(inner)"
 world exec >/dev/null 2>&1; [ $? -eq 2 ] || fail "exec without a command not a usage error"
 char water Tester 5000 >/dev/null 2>&1 || fail "water failed"
-[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .WaterAmount]')" = '["UpdateAllWaterFillables","funcom-tester",5000]' ] || fail "water payload: $(inner)"
+[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .WaterAmount]')" = '["UpdateAllWaterFillables","fls-1",5000]' ] || fail "water payload: $(inner)"
 char xp Tester 1000 >/dev/null 2>&1 || fail "xp failed"
 [ "$(inner | jq -c '[.ServerCommand, .Experience, .Category]')" = '["AwardXP",1000,"Combat"]' ] || fail "xp payload: $(inner)"
 char xp Tester 10 Gathering >/dev/null 2>&1 && [ "$(inner | jq -r .Category)" = Gathering ] || fail "xp category"
 char xp Tester 10 Dancing >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown xp category not a usage error"
 
 world raw PrintNumPlayers --player Tester Count=3:int Rate=0.5:float Label=hi >/dev/null 2>&1 || fail "raw failed"
-[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Count, .Rate, .Label]')" = '["PrintNumPlayers","funcom-tester",3,0.5,"hi"]' ] || fail "raw payload: $(inner)"
+[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Count, .Rate, .Label]')" = '["PrintNumPlayers","fls-1",3,0.5,"hi"]' ] || fail "raw payload: $(inner)"
 
 
 # timeout: a fake server that applies ServerExec cvar commands and echoes values into its log like the real one.
@@ -199,7 +209,7 @@ out=$(char move "O'Brien" to Tester 2>&1) || fail "offline move to a player fail
 out=$(char move Tester to "O'Brien" 2>&1); [ $? -eq 1 ] && [[ "$out" == *"O'Brien"*offline* ]] || fail "online mover to an offline target not refused: $out"
 q "update dune.player_state set online_status = 'Online' where character_name = 'O''Brien'"
 char move Tester "O'Brien" >/dev/null 2>&1 || fail "online move to a player failed"
-[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Exec]')" = '["ServerExec","funcom-tester","TeleportToPlayer O'"'"'Brien"]' ] || fail "online move to a player payload: $(inner)"
+[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Exec]')" = '["ServerExec","fls-1","TeleportToPlayer O'"'"'Brien"]' ] || fail "online move to a player payload: $(inner)"
 q "update dune.player_state set online_status = 'Offline' where character_name = 'O''Brien'"
 char move Tester to Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "move to a player to oneself not a usage error"
 char move Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "move to a player without a target not a usage error"

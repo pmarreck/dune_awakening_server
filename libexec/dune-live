@@ -44,6 +44,8 @@ Character (online or offline is detected; offline changes take a backup first):
   where <player>                  Partition, map and X Y Z (read-only)
   kick <player>                   Disconnect a player
   water <player> AMOUNT           Fill the player's water containers (UpdateAllWaterFillables)
+  give <player> ITEM [COUNT]      Put COUNT (default 1) of ITEM into the player's inventory (AddItemToInventory); ITEM is an
+                                  item template id, e.g. HarkAr2 (Karpov 38 rifle), Ammo (light darts); see docs/admin.md
   xp <player> AMOUNT [CATEGORY]   Award XP; CATEGORY is Combat (default), Crafting, Gathering, Exploration or Sabotage
   whisper <player> <message> [--from NAME]
                                   Private chat line to an online player (chat.whispers to their own queue; the
@@ -71,16 +73,9 @@ sql() {
 	PGOPTIONS="-c search_path=dune,public" psql -X -A -t -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "$db" "$@"
 }
 
-# Character name -> Funcom id (the PlayerId server commands expect). Name passed as a psql variable, never spliced.
-funcom_id() {
-	local id
-	id=$(sql -v name="$1" -f - <<<"select a.funcom_id from dune.player_state ps join dune.accounts a on a.id = ps.account_id where ps.character_name = :'name' limit 1;") ||
-		die "database lookup failed"
-	[ -n "$id" ] || die "no character named $1"
-	printf '%s' "$id"
-}
 
-# Character name -> FLS id (accounts.user): what Funcom's procedures and the per-player chat queues use.
+# Character name -> FLS id (accounts.user): what Funcom's procedures, the per-player chat queues and the server-command
+# channel's PlayerId use. (The Funcom id, name#number, is silently ignored as a PlayerId: verified in game.)
 fls_id() {
 	local id
 	id=$(sql -v name="$1" -f - <<<"select a.\"user\" from dune.player_state ps join dune.accounts a on a.id = ps.account_id where ps.character_name = :'name' limit 1;") ||
@@ -164,7 +159,7 @@ move_to_player() {
 	elif [ "$(is_offline "$target")" = t ]; then
 		die "$target is offline, so $player (online) cannot be sent there; try again when both are online"
 	else
-		id=$(funcom_id "$player") || exit 1
+		id=$(fls_id "$player") || exit 1
 		publish "$(jq -cn --arg p "$id" --arg e "TeleportToPlayer $target" '{ServerCommand: "ServerExec", PlayerId: $p, Exec: $e}')"
 	fi
 }
@@ -174,7 +169,7 @@ move_to_coords() {
 	local player=$1 x=$2 y=$3 z=$4 partition=$5 id
 	if [ "$(is_offline "$player")" = t ]; then move_offline "$@"; return; fi
 	[ -z "$partition" ] || die "$player is online; a partition change works only while they are offline"
-	id=$(funcom_id "$player") || exit 1
+	id=$(fls_id "$player") || exit 1
 	publish "$(jq -cn --arg p "$id" --argjson x "$x" --argjson y "$y" --argjson z "$z" '{ServerCommand: "TeleportTo", PlayerId: $p, X: $x, Y: $y, Z: $z}')"
 }
 
@@ -272,7 +267,7 @@ cmd=${1:-}; [ $# -gt 0 ] && shift
 case "$group" in
 	world) case "$cmd" in say|timeout|bio-break|call-timeout|safety-first|kick-all|exec|partitions|raw) ;; "") usage_error "world needs a command" ;;
 		*) usage_error "unknown world command $cmd" ;; esac ;;
-	character) case "$cmd" in move|where|kick|water|xp|whisper|worm) ;; "") usage_error "character needs a command" ;;
+	character) case "$cmd" in move|where|kick|water|xp|whisper|worm|give) ;; "") usage_error "character needs a command" ;;
 		*) usage_error "unknown character command $cmd" ;; esac ;;
 	"") usage >&2; exit 2 ;;
 	*) usage_error "commands are grouped by what they act on: world or character, not $group" ;;
@@ -316,7 +311,7 @@ case "$cmd" in
 		whisper "$player" "$from" "$msg" ;;
 	kick)
 		[ $# -eq 1 ] || usage_error "kick needs a player (kick-all is a world command)"
-		id=$(funcom_id "$1") || exit 1
+		id=$(fls_id "$1") || exit 1
 		publish "$(jq -cn --arg p "$id" '{ServerCommand: "KickPlayer", PlayerId: $p}')" ;;
 	kick-all)
 		[ $# -eq 0 ] || usage_error "kick-all takes no arguments"
@@ -333,19 +328,26 @@ case "$cmd" in
 			BroadcastPayload: {BroadcastDuration: $d, LocalizedText: [{Key: "en", Title: "", Body: $m}, {Key: "en-US", Title: "", Body: $m}]}}')" ;;
 	worm)
 		[ $# -eq 1 ] || usage_error "worm needs a player"
-		id=$(funcom_id "$1") || exit 1
+		id=$(fls_id "$1") || exit 1
 		publish "$(jq -cn --arg p "$id" --arg e "SandwormTargetPlayer $1" '{ServerCommand: "ServerExec", PlayerId: $p, Exec: $e}')" ;;
 	exec)
 		[ $# -ge 1 ] || usage_error "exec needs a console command"
 		publish "$(jq -cn --arg e "$*" '{ServerCommand: "ServerExec", Exec: $e}')" ;;
+	give)
+		{ [ $# -eq 2 ] || [ $# -eq 3 ]; } || usage_error "give needs <player> ITEM [COUNT]"
+		[[ "$2" =~ ^[A-Za-z0-9_]+$ ]] || usage_error "not an item template id: $2"
+		count=${3:-1}
+		[[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt 0 ] || usage_error "COUNT must be a positive whole number"
+		id=$(fls_id "$1") || exit 1
+		publish "$(jq -cn --arg p "$id" --arg i "$2" --argjson n "$count" '{ServerCommand: "AddItemToInventory", PlayerId: $p, ItemName: $i, Quantity: $n}')" ;;
 	water)
 		[ $# -eq 2 ] && [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || usage_error "water needs <player> and a positive whole AMOUNT"
-		id=$(funcom_id "$1") || exit 1
+		id=$(fls_id "$1") || exit 1
 		publish "$(jq -cn --arg p "$id" --argjson w "$2" '{ServerCommand: "UpdateAllWaterFillables", PlayerId: $p, WaterAmount: $w}')" ;;
 	xp)
 		{ [ $# -eq 2 ] || [ $# -eq 3 ]; } && [[ "$2" =~ ^[0-9]+$ ]] || usage_error "xp needs <player> AMOUNT [CATEGORY]"
 		case "${3:-Combat}" in Combat|Crafting|Gathering|Exploration|Sabotage) ;; *) usage_error "unknown XP category ${3}" ;; esac
-		id=$(funcom_id "$1") || exit 1
+		id=$(fls_id "$1") || exit 1
 		publish "$(jq -cn --arg p "$id" --argjson x "$2" --arg c "${3:-Combat}" '{ServerCommand: "AwardXP", PlayerId: $p, Experience: $x, Category: $c}')" ;;
 	timeout)
 		case "${1:-}" in on) timeout_on ;; off) timeout_off ;; status|"") timeout_status ;; *) usage_error "timeout takes on, off or status" ;; esac ;;
@@ -355,7 +357,7 @@ case "$cmd" in
 		obj=$(jq -cn --arg c "$1" '{ServerCommand: $c}'); shift
 		while [ $# -gt 0 ]; do
 			case "$1" in
-				--player) [ $# -ge 2 ] || usage_error "--player needs a name"; id=$(funcom_id "$2") || exit 1; obj=$(jq -c --arg p "$id" '. + {PlayerId: $p}' <<<"$obj"); shift ;;
+				--player) [ $# -ge 2 ] || usage_error "--player needs a name"; id=$(fls_id "$2") || exit 1; obj=$(jq -c --arg p "$id" '. + {PlayerId: $p}' <<<"$obj"); shift ;;
 				*=*:int|*=*:float) k=${1%%=*} v=${1#*=}; v=${v%:*}; number "$v"; obj=$(jq -c --arg k "$k" --argjson v "$v" '. + {($k): $v}' <<<"$obj") ;;
 				*=*) k=${1%%=*} v=${1#*=}; obj=$(jq -c --arg k "$k" --arg v "$v" '. + {($k): $v}' <<<"$obj") ;;
 				*) usage_error "raw arguments are Key=value[:int|:float], got $1" ;;

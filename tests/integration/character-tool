@@ -107,13 +107,13 @@ done
 # user's arguments in order; this tool's own options (--server-root, -o, --text, --no-color) stay here; exit status passes.
 fake="$work/components"; mkdir -p "$fake"
 printf '#!%s\nprintf "%%s\\n" "$*" > "%s"\nexit 4\n' "$BASH" "$work/live-argv" > "$fake/dune-live"; chmod +x "$fake/dune-live"
-for sub in move where kick water xp whisper worm; do
+for sub in move where kick water xp whisper worm give; do
 	DUNE_COMPONENTS_DIR="$fake" char "$sub" "Some One" --json --no-color x >/dev/null 2>&1; rc=$?
 	[ "$(cat "$work/live-argv" 2>/dev/null)" = "character $sub Some One --json x" ] || fail "$sub not handed to dune-live: $(cat "$work/live-argv" 2>/dev/null)"
 	[ "$rc" -eq 4 ] || fail "$sub exit status not passed through: $rc"
 	unlink "$work/live-argv" 2>/dev/null
 done
-out=$(char --help 2>&1); for sub in move where kick water xp whisper worm; do [[ "$out" == *"  $sub "* ]] || fail "--help does not list $sub"; done
+out=$(char --help 2>&1); for sub in move where kick water xp whisper worm give; do [[ "$out" == *"  $sub "* ]] || fail "--help does not list $sub"; done
 
 admin "alter table dune.encrypted_player_state rename column online_status to connection_state"
 out=$(char set-intel Alice 7 2>&1) && fail "ran against a schema missing online_status"

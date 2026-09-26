@@ -83,6 +83,7 @@ Live (online or offline is detected; handled by dune-live, see `dune-live --help
   where <player>              Partition, map and X Y Z
   kick <player>               Disconnect a player
   water <player> AMOUNT       Fill the player's water containers
+  give <player> ITEM [COUNT]  Put an item into the player's inventory, e.g. HarkAr2 (Karpov 38), Ammo (light darts)
   xp <player> AMOUNT [CATEGORY]  Award XP (Combat, Crafting, Gathering, Exploration, Sabotage)
   whisper <player> <message> [--from NAME]  Private chat line to an online player
   worm <player>               Send a nearby sandworm at the player (experimental)
@@ -592,7 +593,7 @@ end
 
 -- Live commands belong to dune-live's character group. They are handed over with the user's arguments in order,
 -- minus this tool's own options, before any database work here.
-local LIVE = { move = true, where = true, kick = true, water = true, xp = true, whisper = true, worm = true }
+local LIVE = { move = true, where = true, kick = true, water = true, xp = true, whisper = true, worm = true, give = true }
 local OWN_WITH_VALUE = { ["--server-root"] = true, ["-o"] = true, ["--output"] = true }
 local OWN_FLAGS = { ["--text"] = true, ["--no-color"] = true, ["--"] = true }
 

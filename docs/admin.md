@@ -6,7 +6,7 @@ Evidence labels: **verified** means observed on this world; **inferred** means r
 
 ## Commands from the host (`dune world`, `dune character`)
 
-The map server starts with Funcom's server-command channel on: `dune-server` writes a generated `ServerCommandsAuthToken` (kept in `runtime/secrets/server_commands_token`, 0600) and `server.NotificationSystem.Enabled=true` into its private `Engine.ini`. `dune-live` wraps a command in Funcom's Version 2 envelope and has the game RabbitMQ node publish it (exchange `heartbeats`, routing key `notifications`, user `fls`, app `fls_backend`); the envelope travels through a 0600 file, never a command line. Commands are grouped by what they act on: `world` for the whole world, `character` for one character (the character tool hands its live subcommands to `dune-live`). Players are named by character; the tool resolves their Funcom id.
+The map server starts with Funcom's server-command channel on: `dune-server` writes a generated `ServerCommandsAuthToken` (kept in `runtime/secrets/server_commands_token`, 0600) and `server.NotificationSystem.Enabled=true` into its private `Engine.ini`. `dune-live` wraps a command in Funcom's Version 2 envelope and has the game RabbitMQ node publish it (exchange `heartbeats`, routing key `notifications`, user `fls`, app `fls_backend`); the envelope travels through a 0600 file, never a command line. Commands are grouped by what they act on: `world` for the whole world, `character` for one character (the character tool hands its live subcommands to `dune-live`). Players are named by character; the tool resolves their FLS id (`accounts.user`, 16 hex digits), which is what the server-command channel's `PlayerId` takes. The Funcom id (name#number) is accepted and logged but silently does nothing (verified in game, 2026-09-26).
 
 ```bash
 dune-awakening world say "Restart in 5 minutes" --duration 30
@@ -22,10 +22,27 @@ dune-awakening character kick <player>
 dune-awakening character water <player> 5000
 dune-awakening character xp <player> 1000 [Combat|Crafting|Gathering|Exploration|Sabotage]
 dune-awakening character whisper <player> "message" [--from NAME]
+dune-awakening character give <player> ITEM [COUNT]   # e.g. give Alice HarkAr2
 dune-awakening character worm <player>          # experimental: SandwormTargetPlayer in the player's context
 ```
 
 The server logs each command: `LogDuneServerCommands: Now running ServerCommand '…'`, or `unknown Server Command '…'` for names it does not implement. Verified live on build 2124138: `ServiceBroadcast` and `ServerExec` run; `ServerExec` changes engine variables at runtime (`t.MaxFPS 5` cut the map server from 32% to 11% of a core, `t.MaxFPS 0` restored it), but console output is not returned. Cheat-manager names (`SandwormTargetPlayer`, `PrintNumPlayers`, ...) are not server commands in their own right.
+
+### Giving items
+
+`dune-awakening character give <player> ITEM [COUNT]` sends Funcom's `AddItemToInventory` server command (fields `PlayerId`, `ItemName`, `Quantity`); the player must be online, and the item appears in their inventory at once (verified in game with `HarkAr2`, 2026-09-26). The server logs `Now running ServerCommand 'AddItemToInventory'` and nothing else, even for an unknown item id, so check the inventory.
+
+Item ids are the row names of the game's item tables (`DT_BaseItems_*` in the cooked content). Some verified or read from those tables:
+
+| Item id | What it is |
+|---|---|
+| `HarkAr2` | Karpov 38 rifle, light darts (**verified** in game) |
+| `HarkAr1` … `HarkAr7` | the same rifle line by tier (read from the tables; icons `Wpn2HHarkRifle01_T1…T6`) |
+| `SmugDmr1` … `SmugDmr6` | marksman rifles |
+| `Ammo` | light darts (icon `LightDartAmmo`) |
+| `HeavyAmmo` | heavy darts |
+
+`ServerExec "AddItemToInventory …"` does not work: `ServerExec` runs at world level, with no player to receive the item.
 
 ### Moving and messaging players
 
