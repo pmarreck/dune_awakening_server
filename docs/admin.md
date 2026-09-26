@@ -83,8 +83,8 @@ Both are typeable Dune passphrases (`word-word-word-NN`, e.g. `sietch-thumper-ky
 
 ### Getting to it from the client
 
-- **Console:** the configs bind the Unreal console to `~` and `Insert`, but community reports say the console is compiled out of the shipping client, so neither key does anything. Not verified here, because the client is not on this host.
-- **Admin Panel:** the game has one. `UAdminPanelWidget` (`W_AdminPanel`) has a password box (`m_AdminLoginEditableTextBox`, `OnClickAdminLogin`), a teleport-to-player box, a teleport map (`W_Admin_TeleportMap`) and cheat buttons. Two ways it may open:
+- **Console:** the configs bind the Unreal console to `~` and `Insert`, but the console is compiled out of the shipping client, so neither key does anything (**verified**: `OpenConsoleCommand` has an empty body, see below, and no key opened it in game).
+- **Admin Panel:** the game has one. `UAdminPanelWidget` (`W_AdminPanel`) has a password box (`m_AdminLoginEditableTextBox`, `OnClickAdminLogin`), a teleport-to-player box, a teleport map (`W_Admin_TeleportMap`) and cheat buttons. Two entry points exist in the code, and both are empty in the shipping client (see below):
   - `OpenAdminPanel` sits among menu and HUD handlers in the binary's names, so an Escape-menu button is possible.
   - `ToggleAdminPanel` sits among cheat-manager console commands, so it is probably console-only.
 - **The key: Home.** The game's general input mapping context (`/Game/Dune/Input/General/IMC_General`) binds the input action **`IA_AdminPanel` to the Home key** (**verified** in the server's copy of the cooked assets; to be confirmed against the client's copy and in game). The same asset confirms the ordinary bindings (I inventory, M map, J journey, Tab player menu, E interact, Enter chat, B crafting, K skills, Y tech tree, L Landsraad, O guild, P social, U customization, N Communinet) and shows the developer ones: End toggles the UI, Delete is `IA_KillNPC`, F6 frame capture, F8 QA bug report, F9 cinematic camera. The panel may still check privileges before it opens; its login box suggests it opens first and asks for the password.
@@ -93,7 +93,7 @@ To try in game: press **Home**. Compact keyboards without a Home key usually hav
 
 How the key was found (repeatable after game updates): build [retoc](https://github.com/trumank/retoc) in a scratch directory with `nix-shell -p cargo rustc pkg-config openssl --run 'cargo build --release'` (not part of the flake). Its Oodle loader fetches `liboo2corelinux64.so.9` and checks a pinned SHA-256; on NixOS run retoc with `LD_LIBRARY_PATH` pointing at nixpkgs `stdenv.cc.cc.lib` for `libstdc++`. `retoc to-legacy --no-shaders -f IMC_General -f IA_AdminPanel Content/Paks OUT` converts the two assets. In the legacy `IMC_General.uexp`, each mapping stores its `Action` as an import index; `IA_AdminPanel` is import -12, and the `Key` struct after it holds a `KeyName` `NameProperty` whose value is the key's name (`Home`).
 
-### Why Home did nothing, and the fix being tried (2026-09-26)
+### Why Home did nothing (2026-09-26)
 
 Pressing Home (Fn+PgUp) on the first test did not open anything, and the configured console keys do nothing in the shipping client. What the game files show (client build fetched through Steam, server build 2124138):
 
@@ -102,12 +102,19 @@ Pressing Home (Fn+PgUp) on the first test did not open anything, and the configu
 - **Privileges are server-granted and replicated.** The client carries `m_AuthenticatedPrivileges` with `OnRep_AuthenticatedPrivileges`, `GetAuthenticatedPrivileges` and `HasAdminPrivileges_FromController`; the server side has `UPlayerPrivilegeComponent`, `SetAuthenticatedPrivileges`, and `FDuneAdministrationSettings` (`m_AdminPasswords`, `m_bRequiresAdminPassword`), which sits next to the replicated server custom settings.
 - **A hidden switch.** Disassembling the server's config reader (x86-64, around `0xdd3cd20` in `DuneSandboxServer-Linux-Shipping`) shows it read `[AdminSetting.Global]` in this order: a boolean **`RequiresAdminPassword`** into the administration settings, then `Password_<Privilege>` for each `EDunePrivileges` value into `m_AdminPasswords`. Funcom's configs never set `RequiresAdminPassword`, so it takes its compiled-in default. The call targets are inferred from the shape of Unreal's config API, not from symbols.
 
-**Hypothesis:** with `RequiresAdminPassword` at its default, the admin login flow (the Escape-menu button, the Home key) is disabled, so the panel never opens. `dune-server` now writes `RequiresAdminPassword=True`. That direction is safe regardless: both privilege levels already have private passwords, so it can only require one. **To test:** press Home, or open the Escape menu and look for an Admin entry; if the panel opens, choose the privilege level in "Login As" and enter the matching password.
+`dune-server` writes `RequiresAdminPassword=True` because of that switch. It is harmless (both privilege levels already have private passwords), but it did not help: after it, no key opened anything on a Windows client, and the server log showed no admin login attempt.
 
-If this is wrong, the next step is disassembling the client's handler for `IA_AdminPanel` to see which check it makes before opening.
+**Conclusion: the shipping client cannot open the Admin Panel (verified statically, 2026-09-26).** Unreal's generated reflection tables pair each native `UFUNCTION` name with its exec thunk. In `DuneSandbox-Win64-Shipping.exe`:
+
+- the Escape menu's `OpenAdminPanel` and `OpenConsoleCommand` both point at the same thunk (`0x1412cf520`), which only advances the script bytecode pointer (`P_FINISH`) and calls nothing. Their neighbours (`OpenLeaveGameDialog`, `OpenRespawnDialog`, …) each have their own thunk.
+- the cheat manager's `ToggleAdminPanel` points at the same empty thunk, as does `ToggleAlignmentDebugUI`.
+
+So both entry points were compiled out of the shipping build, the same way as the console. The widget's own code (`UAdminPanelWidget`) is still in the binary, but nothing reachable opens it. The client's chat has no slash-command handling either. The GM passwords stay configured, since they cost nothing and would work if Funcom ever enables the panel.
+
+How to repeat the check after a client update: find the file offsets of the ASCII names (`strings -t x`), convert them to virtual addresses with the section table (`objdump -h`), search the binary for 8-byte pointers to those addresses, and read the qword after each hit. Two tables hold the names: one pairs a name with its `Z_Construct_UFunction_*` builder, the other with its exec thunk. A thunk shared by several unrelated functions that only touches `[rdx+0x20]` is an empty body.
 
 ### Other routes considered
 
 - `-ExecCmds="AdminLogin …"` as a Steam launch option is suggested in community notes but unverified; it would run before any server connection exists.
-- A whisper chat-command listener (DASH does this): a player whispers `&goto Alice` and a host process runs the matching `dune` command. It would need no client changes, at the cost of a long-running service.
+- A whisper chat-command listener (DASH does this): a player whispers `&goto Alice` and a host process runs the matching `dune` command. It would need no client changes, at the cost of a long-running service. With the Admin Panel unreachable, this is the remaining in-game route for a trusted player.
 - Sources: [Funcom's self-host FAQ](https://funcom.helpshift.com/hc/en/4-dune-awakening/faq/85-how-to-self-host-a-world-1778514422/), [DASH admin-gm-console.md](https://github.com/snapetech/DuneAwakeningSelfHost/blob/main/docs/admin-gm-console.md), [dune-awakening-truenas ADMIN-COMMANDS.md](https://github.com/Icehunter/dune-awakening-truenas/blob/main/ADMIN-COMMANDS.md), and [research/live-world-control.md](research/live-world-control.md).
