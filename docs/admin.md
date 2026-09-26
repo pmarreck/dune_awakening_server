@@ -59,15 +59,17 @@ Why not a real pause: the engine drops a connection after 60 s without traffic (
 
 `dune-server` replaces the public default with a private generated password: `runtime/secrets/admin_password` (0600), written as `[AdminSetting.Global] Password_Admin=…` into the map server's private `Saved/Config/LinuxServer/Game.ini`. The server reads its database password from that same file, so the file is loaded. That the override takes effect in game is **inferred**, because nothing can type `AdminLogin` yet (below). To see the password: `cat ~/.local/share/dune_awakening_server/runtime/secrets/admin_password`.
 
-### Getting to it from the client (open question)
+### Getting to it from the client
 
 - **Console:** the configs bind the Unreal console to `~` and `Insert`, but community reports say the console is compiled out of the shipping client, so neither key does anything. Not verified here, because the client is not on this host.
 - **Admin Panel:** the game has one. `UAdminPanelWidget` (`W_AdminPanel`) has a password box (`m_AdminLoginEditableTextBox`, `OnClickAdminLogin`), a teleport-to-player box, a teleport map (`W_Admin_TeleportMap`) and cheat buttons. Two ways it may open:
   - `OpenAdminPanel` sits among menu and HUD handlers in the binary's names, so an Escape-menu button is possible.
   - `ToggleAdminPanel` sits among cheat-manager console commands, so it is probably console-only.
-- **A key binding:** the game's general input mapping context (`IMC_GeneralInput` in the server's content pack) includes an input action **`IA_AdminPanel`** next to Chat, Inventory, Journey, Landsraad, Map, Skills, TechTree and ToggleUI. The keys that asset uses are BackSpace, Delete, End, Enter, Escape, F6, F8, F9, Home, Tab, I, J, K, L, M, N, O, P, U and Y. Which key goes with which action is in compressed data that needs an IoStore extractor (retoc, FModel) to read. Most letters and Enter/Escape/Tab have obvious owners, so the likely Admin Panel key is one of **Home, End, Delete, BackSpace, F6 or F8** (**inferred**). The panel may still check privileges before opening.
+- **The key: Home.** The game's general input mapping context (`/Game/Dune/Input/General/IMC_General`) binds the input action **`IA_AdminPanel` to the Home key** (**verified** in the server's copy of the cooked assets; to be confirmed against the client's copy and in game). The same asset confirms the ordinary bindings (I inventory, M map, J journey, Tab player menu, E interact, Enter chat, B crafting, K skills, Y tech tree, L Landsraad, O guild, P social, U customization, N Communinet) and shows the developer ones: End toggles the UI, Delete is `IA_KillNPC`, F6 frame capture, F8 QA bug report, F9 cinematic camera. The panel may still check privileges before it opens; its login box suggests it opens first and asks for the password.
 
-To try in game: press each of those keys, look for an Admin entry in the Escape menu and in Settings → key bindings (the action may be player-mappable), and if a password box appears, enter the value from `admin_password`. Record what happens here.
+To try in game: press **Home**. If the Admin Panel opens, enter the password from `runtime/secrets/admin_password` in its login box, then try its teleport-to-player box. Record what happens here.
+
+How the key was found (repeatable after game updates): build [retoc](https://github.com/trumank/retoc) in a scratch directory with `nix-shell -p cargo rustc pkg-config openssl --run 'cargo build --release'` (not part of the flake). Its Oodle loader fetches `liboo2corelinux64.so.9` and checks a pinned SHA-256; on NixOS run retoc with `LD_LIBRARY_PATH` pointing at nixpkgs `stdenv.cc.cc.lib` for `libstdc++`. `retoc to-legacy --no-shaders -f IMC_General -f IA_AdminPanel Content/Paks OUT` converts the two assets. In the legacy `IMC_General.uexp`, each mapping stores its `Action` as an import index; `IA_AdminPanel` is import -12, and the `Key` struct after it holds a `KeyName` `NameProperty` whose value is the key's name (`Home`).
 
 ### Other routes considered
 
