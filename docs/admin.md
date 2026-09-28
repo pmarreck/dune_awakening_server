@@ -52,6 +52,7 @@ Item ids are the row names of the game's item tables (`DT_BaseItems_*` in the co
 | `FuelCanister_Large`, `FuelCanister_Medium`, `FuelCanister` | vehicle fuel (**verified**: a large canister refuelled a sandbike) |
 | `FremenComponent1` | EMF Generator, the one crafting recipes accept (**verified**: the Survey Probe Launcher recipe took it) |
 | `D_FremenComponent3` | also shown as "EMF Generator", but recipes reject it; do not use |
+| `SolarisCoin` | Solari, the currency (**verified**: 5000 in one give arrived at once) |
 
 `SandbikeBoost_1` does not exist.
 
