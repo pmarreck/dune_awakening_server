@@ -66,7 +66,20 @@ Item ids are the row names of the game's item tables (`DT_BaseItems_*` in the co
 
 An online character cannot be moved in the database: the map server holds it in memory, is authoritative for it and writes it back on its own schedule, so Funcom's procedure refuses with "Player must be Offline" (its Director depends on that text).
 
-`dune-awakening character whisper <player> <message> [--from NAME]` sends a private chat line, shown as coming from NAME (default `Admin`). It follows the route DASH confirmed in game: a `TextChat` courier with channel `Whispers` published to exchange `chat.whispers` with the player's FLS id as routing key, bound for the call to their own `<FLS id>_queue`. That queue exists only while they are online, so an offline player gets an error. A binding the game made itself is left in place.
+`dune-awakening character whisper <player> <message> [--from NAME]` sends a private chat line that the player sees in purple in their Private and All chat tabs as `To [NAME]: <message>` (NAME defaults to `Admin`; the GM bridge uses `GM`). **Verified in game on 2026-09-28** (build 1.5.3.4). It is a `TextChat` courier with channel `Whispers`, published to exchange `chat.whispers` with the player's FLS id as routing key, bound for the call to their own `<FLS id>_queue`. That queue exists only while they are online, so an offline player gets an error. A binding the game made itself is left in place.
+
+#### How chat lines render (found by trial, 2026-09-28)
+
+The format DASH documented (a spoofed sender name, `m_TimeStamp`) arrived but rendered as an empty `[]:` on this build. Sending labelled variants to a player and asking what appeared established:
+
+- **The sender's name comes from the AMQP `user_id` property,** which the client looks up among known players. The name fields inside the message (`m_SpoofedUserNameFrom`, `m_FuncomIdFrom`) are not what it shows: an exact copy of a player's own real message showed `[]:` until `user_id` was added, and then showed `[TheirName]:`.
+- **A line whose `user_id` is not a known player is dropped** (`GM`, `GM#00001`: nothing appeared). So a made-up sender such as "GM" cannot be shown as the sender.
+- **Without `user_id`,** Proximity lines show their text after an empty `[]:`, and Whispers lines show `[]:` with no text at all.
+- **With the recipient's own id as `user_id`,** a Whispers line renders as their own outgoing whisper, `To [<m_UserNameTo>]: <message>`, in purple. `m_UserNameTo` is shown as written, so it carries the label. That is the format `whisper` uses: private, clearly marked, and needing no second account.
+- The timestamp field's spelling (`m_Timestamp` or `m_TimeStamp`) made no difference once `user_id` was set. `whisper` uses `m_Timestamp`, the spelling the game itself sends.
+- Proximity chat does not travel to other players over RabbitMQ: the TextRouter republishes it to `chat.proximity`, and the map server distributes it in game. Only whispers go to players' `<FLS id>_queue` directly.
+
+How to repeat such an experiment: RabbitMQ's firehose (`dune-rabbitmq ctl game trace_on`, with a queue bound to `amq.rabbitmq.trace` with `publish.#`) copies every publish, including the TextRouter's, to show what the game itself sends; turn it off (`trace_off`) and delete the queue afterwards, because it copies all chat.
 
 ### Timeout (a break without logging off)
 

@@ -100,18 +100,21 @@ where_json() {
 # exchange chat.whispers with the player's FLS id as routing key, bound for the call to their own <FLS id>_queue. The
 # queue exists only while they are online. A binding the game already made is left alone; ours is removed afterwards.
 whisper() {
-	local player=$1 from=$2 msg=$3 fls inner body out
+	local player=$1 from=$2 msg=$3 fls funcom inner body out
 	fls=$(fls_id "$player") || exit 1
-	inner=$(jq -cn --arg id "$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')" --arg from "$from" --arg to "$player" --arg m "$msg" \
-		--arg ts "$(date -u +%Y.%m.%d-%H.%M.%S)" \
-		'{m_Id: $id, m_ChannelType: "Whispers", m_bUseSpoofedUserName: true,
-		  m_SpoofedUserNameFrom: {m_TableId: "", m_Key: "", m_UnlocalizedName: $from}, m_FuncomIdFrom: "ADMIN#00001",
-		  m_UserNameTo: $to, m_Message: {m_UnlocalizedMessage: $m, m_LocalizedMessage: {m_TableId: "", m_Key: "", m_FormatArgs: []}},
-		  m_TimeStamp: $ts, m_OriginLocation: {X: 0.0, Y: 0.0, Z: 0.0}, m_HasSeenMessage: false}')
+	funcom=$(sql -v fls="$fls" -f - <<<"select coalesce(funcom_id, '') from dune.accounts where \"user\" = :'fls' limit 1;") || die "database lookup failed"
+	# Verified in game (1.5.3.4): the client names a line's sender from the AMQP user_id and drops lines from unknown ids.
+	# With the recipient's own id it renders a private "To [<m_UserNameTo>]: <message>", so the label goes in m_UserNameTo.
+	inner=$(jq -cn --arg id "$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n' | tr 'a-f' 'A-F')" --arg from "$from" --arg funcom "$funcom" \
+		--arg to "$fls" --arg m "$msg" --arg ts "$(date -u +%Y.%m.%d-%H.%M.%S)" \
+		'{m_Id: $id, m_ChannelType: "Whispers", m_bUseSpoofedUserName: false,
+		  m_SpoofedUserNameFrom: {m_TableId: "", m_Key: "", m_UnlocalizedName: ""}, m_FuncomIdFrom: $funcom,
+		  m_UserNameTo: $from, m_Message: {m_UnlocalizedMessage: $m, m_LocalizedMessage: {m_TableId: "", m_Key: "", m_FormatArgs: []}},
+		  m_Timestamp: $ts, m_OriginLocation: {X: 0.0, Y: 0.0, Z: 0.0}, m_HasSeenMessage: false}')
 	body=$(mktemp "$DUNE_SECRETS_DIR/.XXXXXX.chat.json") || die "cannot create a private temp file"
 	jq -cn --arg c "$inner" '{content: $c, Type: "TextChat"}' > "$body" || { rm -f -- "$body"; die "cannot build whisper"; }
 	out=$("$DUNE_COMPONENTS_DIR/dune-rabbitmq" ctl game eval \
-		"XName = rabbit_misc:r(<<\"/\">>, exchange, <<\"chat.whispers\">>), QName = rabbit_misc:r(<<\"/\">>, queue, <<\"${fls}_queue\">>), case rabbit_amqqueue:lookup(QName) of {error, not_found} -> io:format(\"whisper=noqueue~n\"); {ok, _} -> B = {binding, XName, <<\"$fls\">>, QName, []}, Added = case rabbit_binding:exists(B) of true -> false; _ -> ok = rabbit_binding:add(B, <<\"dune-live\">>), true end, {ok, Body} = file:read_file(\"$body\"), X = rabbit_exchange:lookup_or_die(XName), MsgId = list_to_binary(\"dune-live-\" ++ integer_to_list(erlang:system_time(millisecond))), P = {list_to_atom(\"P_basic\"), <<\"Content\">>, undefined, [], 1, undefined, undefined, undefined, undefined, MsgId, undefined, <<\"text_chat\">>, undefined, undefined, undefined}, Content = rabbit_basic:build_content(P, Body), {ok, Msg} = rabbit_basic:message(XName, <<\"$fls\">>, Content), Result = rabbit_queue_type:publish_at_most_once(X, Msg), case Added of true -> rabbit_binding:remove(B, <<\"dune-live\">>); false -> ok end, io:format(\"whisper=ok~npublish=~p~n\", [Result]) end." 2>&1)
+		"XName = rabbit_misc:r(<<\"/\">>, exchange, <<\"chat.whispers\">>), QName = rabbit_misc:r(<<\"/\">>, queue, <<\"${fls}_queue\">>), case rabbit_amqqueue:lookup(QName) of {error, not_found} -> io:format(\"whisper=noqueue~n\"); {ok, _} -> B = {binding, XName, <<\"$fls\">>, QName, []}, Added = case rabbit_binding:exists(B) of true -> false; _ -> ok = rabbit_binding:add(B, <<\"dune-live\">>), true end, {ok, Body} = file:read_file(\"$body\"), X = rabbit_exchange:lookup_or_die(XName), MsgId = list_to_binary(\"dune-live-\" ++ integer_to_list(erlang:system_time(millisecond))), P = {list_to_atom(\"P_basic\"), <<\"Content\">>, undefined, [], 1, undefined, undefined, undefined, undefined, MsgId, undefined, <<\"text_chat\">>, <<\"$fls\">>, undefined, undefined}, Content = rabbit_basic:build_content(P, Body), {ok, Msg} = rabbit_basic:message(XName, <<\"$fls\">>, Content), Result = rabbit_queue_type:publish_at_most_once(X, Msg), case Added of true -> rabbit_binding:remove(B, <<\"dune-live\">>); false -> ok end, io:format(\"whisper=ok~npublish=~p~n\", [Result]) end." 2>&1)
 	rm -f -- "$body"
 	[[ "$out" == *whisper=noqueue* ]] && die "$player is not online (no chat queue ${fls}_queue)"
 	[[ "$out" == *whisper=ok* && "$out" == *publish=ok* ]] || die "whisper publish failed (is the world up?): $(printf '%s' "$out" | tail -2)"
