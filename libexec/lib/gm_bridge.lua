@@ -1,16 +1,18 @@
 -- Pure logic of the in-game chat command bridge (libexec/dune-gm-bridge): turn a chat delivery from the game broker's
 -- chat.intercept exchange into a sender and text, parse `&command args`, authorize it against the operator's policy
--- (gm_bridge.conf) and plan dune-live argv arrays plus a reply. No I/O here.
+-- (gm_bridge.conf) and plan dune-live argv arrays plus a reply. No I/O here; item names come in as a db from lib/items.lua.
 -- Trust model: the only sender identity is the AMQP user_id the broker stamps (RabbitMQ rejects a publish whose
 -- user_id differs from the connection's user, the player's FLS id); the Funcom id in the routing key and body is
 -- client-supplied and ignored. Unknown senders, missing policy and malformed input all deny (fail closed).
 local cjson = require("cjson.safe")
+local items = require("items")
 local M = {}
 M.NOT_ALLOWED = "not allowed"
-M.COMMANDS = { "bring", "give", "goto", "kick", "say", "timeout", "where" }
+-- Permissions a policy line can grant. give puts items into your own inventory; give-others into another player's.
+M.COMMANDS = { "bring", "give", "give-others", "goto", "kick", "say", "timeout", "where" }
 local KNOWN = { help = true }
 for _, c in ipairs(M.COMMANDS) do KNOWN[c] = true end
-local MAX_GIVE = 1000
+local MAX_GIVE = 1000 -- per give, unless the curated item list sets a max for the item
 local MAX_ARG = 200
 
 local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
@@ -98,15 +100,52 @@ function M.authorize(policy, fls, name, cmd)
 	return false
 end
 
+local GIVE_USAGE = "&give <item name or id> [count] [to <player>]"
+local FULL_INVENTORY = "; a full inventory can drop items"
+
+-- parse_give(cmd) -> {item, count (string or nil), target (nil = the sender)} or nil for a usage error. The target is
+-- everything after the last standalone `to` (any case); a trailing whole number before it is the count.
+function M.parse_give(cmd)
+	local s = " " .. (cmd.rest or "") .. " "
+	local cut, target
+	local from = 1
+	while true do
+		local i, j = s:lower():find("%sto%s", from)
+		if not i then break end
+		cut, target, from = i, s:sub(j + 1), j
+	end
+	local head = cut and s:sub(1, cut) or s
+	if target then
+		target = trim(target)
+		if target == "" then return nil end
+	end
+	local item, count = trim(head), nil
+	local before, n = item:match("^(.-)%s+(%d+)$")
+	if before then item, count = before, n end
+	if item == "" or item:match("^%d+$") then return nil end
+	return { item = item, count = count, target = target }
+end
+
+-- permission(cmd, me) -> the policy permission cmd needs when sent by character me: give-others for a give to
+-- anyone but me, else the command's own name.
+function M.permission(cmd, me)
+	if cmd.name == "give" then
+		local g = M.parse_give(cmd)
+		if g and g.target and g.target ~= me then return "give-others" end
+	end
+	return cmd.name
+end
+
 local function usage(r) return { actions = {}, reply = "usage: " .. r } end
 -- A value passed to dune-live: non-empty, bounded, no control characters, and not option-like (dune-live treats
 -- -h/--help/--json anywhere as its own options).
 local function ok_arg(s) return s and s ~= "" and #s <= MAX_ARG and not s:find("%c") and s:sub(1, 1) ~= "-" end
 
 
--- plan(cmd, sender = {fls, name, origin}, policy) -> {actions = {argv...}, reply}. argv arrays are dune-live
--- arguments; the caller runs them without a shell. Authorization is the caller's job (see authorize).
-function M.plan(cmd, sender, policy)
+-- plan(cmd, sender = {fls, name, origin}, policy, item_db) -> {actions = {argv...}, reply}. argv arrays are dune-live
+-- arguments; the caller runs them without a shell. Authorization is the caller's job (see authorize and permission).
+-- item_db (lib/items.lua build) is needed only for give.
+function M.plan(cmd, sender, policy, item_db)
 	local me = sender.name
 	local n = cmd.name
 	if n == "help" then
@@ -131,12 +170,31 @@ function M.plan(cmd, sender, policy)
 		if #cmd.args > 1 or not (a == "on" or a == "off" or a == "status") then return usage("&timeout on|off|status") end
 		return { actions = { { "world", "timeout", a } }, reply = "timeout " .. a }
 	elseif n == "give" then
-		local item, count = cmd.args[1], cmd.args[2] or "1"
-		if #cmd.args < 1 or #cmd.args > 2 or not item:match("^[%w_]+$") or not count:match("^%d+$")
-			or tonumber(count) < 1 or tonumber(count) > MAX_GIVE then
-			return usage("&give <item id> [count 1-" .. MAX_GIVE .. "]")
+		local g = M.parse_give(cmd)
+		if not g or (g.target and not ok_arg(g.target)) or (g.count and tonumber(g.count) < 1) then return usage(GIVE_USAGE) end
+		local r = items.resolve(item_db, g.item)
+		local function label(it) return string.format("%s (%s)", it.name, it.id) end
+		if not r.item then
+			local c = r.candidates or {}
+			local list = {}
+			for i, it in ipairs(c) do list[i] = label(it) end
+			local tail = (r.more or 0) > 0 and string.format(", and %d more", r.more) or ""
+			if r.ambiguous then
+				return { actions = {}, reply = string.format('several items are named "%s": %s%s; give one by id', g.item, table.concat(list, ", "), tail) }
+			elseif #c > 0 then
+				return { actions = {}, reply = string.format('no item "%s"; did you mean: %s%s?', g.item, table.concat(list, ", "), tail) }
+			end
+			return { actions = {}, reply = string.format('no item "%s"; try another name or an item id', g.item) }
 		end
-		return { actions = { { "character", "give", me, item, tostring(tonumber(count)) } }, reply = "gave you " .. count .. " " .. item }
+		local it = r.item
+		local count, max = tonumber(g.count or "1"), it.max or MAX_GIVE
+		if count > max then return { actions = {}, reply = string.format("at most %d %s per give", max, label(it)) } end
+		local who = g.target or me
+		local note = it.raw and " (not in the item list; nothing arrives if the game does not know it)"
+			or it.verified == false and string.format(" (%s, id not yet verified in game)", it.id)
+			or string.format(" (%s)", it.id)
+		return { actions = { { "character", "give", who, it.id, tostring(count) } },
+			reply = string.format("gave %s %d %s%s%s", who == me and "you" or who, count, it.name, note, FULL_INVENTORY) }
 	elseif n == "kick" then
 		if not ok_arg(cmd.rest) then return usage("&kick <player>") end
 		return { actions = { { "character", "kick", cmd.rest } }, reply = "kicked " .. cmd.rest }

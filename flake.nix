@@ -52,7 +52,7 @@
 					inherit (dotnetEnv) DUNE_MUSL_LOADER DUNE_NETCOREDEPS DUNE_GLIBC_LOADER DUNE_GCC_LIB DUNE_LIBPQ;
 					src = pkgs.lib.fileset.toSource {
 						root = ./.;
-						fileset = pkgs.lib.fileset.unions [ ./test ./tests ./bin ./libexec ./.envrc ];
+						fileset = pkgs.lib.fileset.unions [ ./test ./tests ./bin ./libexec ./data ./.envrc ];
 					};
 				} ''
 					cp -r "$src" work && chmod -R u+w work && cd work

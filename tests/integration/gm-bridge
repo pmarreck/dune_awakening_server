@@ -35,11 +35,15 @@ cat > "$DUNE_LIVE" <<FAKE
 case "\$1 \$2" in
 	"character whois") case "\$3" in $ALICE) echo Alice ;; $BOB) echo Bob ;; $CAROL) echo Carol ;; *) echo "dune-live: no character for account \$3" >&2; exit 1 ;; esac ;;
 	"character move") [ "\$5" = Nobody ] && { echo "dune-live: no character named Nobody with a body in the world" >&2; exit 1; } ;;
+	"character give") [ "\$3" = Nobody ] && { echo "dune-live: Nobody is not online; items can only be given to an online player" >&2; exit 1; } ;;
 esac
 exit 0
 FAKE
 chmod +x "$DUNE_LIVE"
-printf '# who: commands\nAlice: *\n%s: where\n' "$BOB" > "$DUNE_CONFIG_DIR/gm_bridge.conf"
+printf '# who: commands\nAlice: *\n%s: where give\n' "$BOB" > "$DUNE_CONFIG_DIR/gm_bridge.conf"
+# The generated item list (private in real use: derived from the game's tables); here a synthetic stand-in.
+export DUNE_ITEMS_GENERATED="$work/items generated.tsv"
+printf 'FremenComponent1\tEMF Generator\t0\nD_FremenComponent3\tEMF Generator\t1\nSolarisCoin\tSolari\t0\n' > "$DUNE_ITEMS_GENERATED"
 
 libexec/dune-gm-bridge --help >/dev/null 2>&1 || fail "--help"
 out=$(libexec/dune-gm-bridge --about 2>&1); [[ "$out" == dune-gm-bridge* && "$(wc -l <<<"$out")" -eq 1 ]] || fail "--about: $out"
@@ -48,7 +52,7 @@ libexec/dune-gm-bridge status && fail "status says running before start"
 
 out=$(libexec/dune-rabbitmq init game 2>&1 && libexec/dune-rabbitmq start game 2>&1) || { fail "game broker: $out"; exit 1; }
 log="$DUNE_STATE_DIR/gm-bridge/gm-bridge.log"
-libexec/dune-gm-bridge run --max-messages 7 > "$work/run.out" 2>&1 &
+libexec/dune-gm-bridge run --max-messages 10 > "$work/run.out" 2>&1 &
 bridge_pid=$!
 # Before chat.intercept exists the bridge retries; once it exists, it binds and logs that it is listening.
 for _ in $(seq 1 30); do grep -q 'retrying' "$log" 2>/dev/null && break; sleep 0.1; done
@@ -69,8 +73,11 @@ send '' 'Alice#1234' '&say no-user-id-marker' 1 2 3
 send "$BOB" 'Bob#5' '&where' 1.4 2.6 -3.4
 send "$ALICE" 'Alice#1234' '&goto Nobody' 1 2 3
 send "$DAVE" 'Alice#1234' '&say dave-marker' 1 2 3
+send "$ALICE" 'Alice#1234' '&give emf generator 2 to Bob' 1 2 3
+send "$BOB" 'Bob#5' '&give solari 5 to Alice' 1 2 3
+send "$ALICE" 'Alice#1234' '&give solari to Nobody' 1 2 3
 for _ in $(seq 1 300); do kill -0 "$bridge_pid" 2>/dev/null || break; sleep 0.1; done
-if kill -0 "$bridge_pid" 2>/dev/null; then fail "bridge did not exit after 7 messages"; kill "$bridge_pid"; fi
+if kill -0 "$bridge_pid" 2>/dev/null; then fail "bridge did not exit after 10 messages"; kill "$bridge_pid"; fi
 wait "$bridge_pid"; rc=$?; bridge_pid=
 [ "$rc" -eq 0 ] || fail "bridge run exited $rc: $(cat "$work/run.out")"
 [ -s "$work/run.out" ] && fail "bridge run wrote to stdout/stderr: $(cat "$work/run.out")"
@@ -87,7 +94,15 @@ expected=$(printf '%s\n' \
 	"character${us}whois${us}$ALICE${us}" \
 	"character${us}move${us}Alice${us}to${us}Nobody${us}" \
 	"character${us}whisper${us}Alice${us}failed: no character named Nobody with a body in the world${us}--from${us}GM${us}" \
-	"character${us}whois${us}$DAVE${us}")
+	"character${us}whois${us}$DAVE${us}" \
+	"character${us}whois${us}$ALICE${us}" \
+	"character${us}give${us}Bob${us}FremenComponent1${us}2${us}" \
+	"character${us}whisper${us}Alice${us}gave Bob 2 EMF Generator (FremenComponent1); a full inventory can drop items${us}--from${us}GM${us}" \
+	"character${us}whois${us}$BOB${us}" \
+	"character${us}whisper${us}Bob${us}not allowed${us}--from${us}GM${us}" \
+	"character${us}whois${us}$ALICE${us}" \
+	"character${us}give${us}Nobody${us}SolarisCoin${us}1${us}" \
+	"character${us}whisper${us}Alice${us}failed: Nobody is not online; items can only be given to an online player${us}--from${us}GM${us}")
 got=$(cat "$work/calls" 2>/dev/null)
 [ "$got" = "$expected" ] || fail "dune-live calls:
 $(tr "$us" '|' <<<"$got")

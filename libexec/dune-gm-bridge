@@ -28,6 +28,7 @@ local SELF = self_path()
 local DIR = SELF:match("^(.*)/[^/]*$") or "."
 package.path = DIR .. "/lib/?.lua;" .. package.path
 local gm = require("gm_bridge")
+local items = require("items")
 
 local USAGE = [[
 Usage: dune-gm-bridge start|stop|status
@@ -42,11 +43,14 @@ the bridge runs it through dune-live and whispers the result back (sender shown 
   &bring <player>        move a player to you
   &say <message>         on-screen broadcast to everyone
   &timeout on|off|status the world break (no damage, sandworms or storms)
-  &give <item id> [n]    put n (default 1, at most 1000) of an item into your inventory
+  &give <item> [n] [to <player>]
+                         put n (default 1, at most 1000 unless the item list says more) of an item, by name
+                         or id, into your inventory (permission give) or an online player's (give-others)
   &kick <player>         disconnect a player
 
 Who may use what: $DUNE_CONFIG_DIR/gm_bridge.conf, one line per player, `<character name or FLS id>: <command>...`
-or `<who>: *` for every command; `#` starts a comment. No file, or nobody listed, means nobody (fail closed). The
+or `<who>: *` for every command (permissions: help, where, goto, bring, say, timeout, give, give-others, kick);
+`#` starts a comment. No file, or nobody listed, means nobody (fail closed). The
 file is read for every command, so edits apply at once. Senders are identified only by the account id the broker
 stamps on each message; ordinary chat is never logged, only `&` commands (log: $DUNE_STATE_DIR/gm-bridge/).
 
@@ -54,7 +58,9 @@ stamps on each message; ordinary chat is never logged, only `&` commands (log: $
   run                    foreground; --max-messages N exits after N chat messages (for tests)
 
 Environment: DUNE_STATE_DIR, DUNE_SECRETS_DIR, DUNE_CONFIG_DIR, DUNE_RMQ_GAME_LOCAL_PORT (default 5674),
-DUNE_LIVE (default: dune-live next to this tool), DUNE_GM_BRIDGE_RETRY_MAX (seconds, default 30).
+DUNE_LIVE (default: dune-live next to this tool), DUNE_GM_BRIDGE_RETRY_MAX (seconds, default 30),
+DUNE_ITEMS_GENERATED (item names generated from the game, default $DUNE_STATE_DIR/items/generated.tsv; written by
+`dune-awakening items refresh`). Curated item names: data/items.tsv in this project. Both are read for every &give.
 ]]
 
 local function die(code, fmt, ...)
@@ -115,6 +121,16 @@ local function reason(out)
 	return (last:gsub("^dune%-live: ", "")):sub(1, 200)
 end
 
+-- Item names for &give, read for every give so a refreshed list or an edited data/items.tsv applies at once. The
+-- generated list is optional: without it, names come from the curated list and unlisted ids pass through.
+local CURATED_ITEMS = DIR .. "/../data/items.tsv"
+local function item_db()
+	local curated, errors = items.parse_curated(read_file(CURATED_ITEMS))
+	for _, e in ipairs(errors) do log("data/items.tsv %s", e) end
+	local gen_text = read_file(getenv("DUNE_ITEMS_GENERATED", state .. "/items/generated.tsv"))
+	return items.build(curated, gen_text and items.parse_generated(gen_text) or nil)
+end
+
 local function reply(name, text)
 	local ok, out = live({ "character", "whisper", name, text, "--from", REPLY_FROM })
 	if not ok then log("reply to %s failed: %s", name, reason(out)) end
@@ -132,13 +148,13 @@ local function handle(d)
 	local policy_text = read_file(getenv("DUNE_CONFIG_DIR", "") .. "/gm_bridge.conf")
 	local policy, errors = gm.parse_policy(policy_text)
 	for _, e in ipairs(errors) do log("gm_bridge.conf %s", e) end
-	if not gm.authorize(policy, m.sender_fls, name, cmd.name) then
+	if not gm.authorize(policy, m.sender_fls, name, gm.permission(cmd, name)) then
 		log("%s", gm.log_line(m.sender_fls, name, m.text, "denied"))
 		reply(name, gm.NOT_ALLOWED)
 		return
 	end
 	log("%s", gm.log_line(m.sender_fls, name, m.text, "allowed"))
-	local plan = gm.plan(cmd, { fls = m.sender_fls, name = name, origin = m.origin }, policy)
+	local plan = gm.plan(cmd, { fls = m.sender_fls, name = name, origin = m.origin }, policy, cmd.name == "give" and item_db() or nil)
 	local answer = plan.reply
 	for _, argv in ipairs(plan.actions) do
 		local aok, out = live(argv)
