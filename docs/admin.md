@@ -30,7 +30,7 @@ The server logs each command: `LogDuneServerCommands: Now running ServerCommand 
 
 ### Giving items
 
-`dune-awakening character give <player> ITEM [COUNT]` sends Funcom's `AddItemToInventory` server command (fields `PlayerId`, `ItemName`, `Quantity`); the player must be online, and the item appears in their inventory at once (verified in game with `HarkAr2`, 2026-09-26). The server logs `Now running ServerCommand 'AddItemToInventory'`; for an item id it does not know it adds `LogCheatManager: Warning: Cannot find item associated with spawn command <ID>` (**verified** on this world), so grep the server log after a give. The command itself reports success either way.
+`dune-awakening character give <player> ITEM [COUNT]` sends Funcom's `AddItemToInventory` server command (fields `PlayerId`, `ItemName`, `Quantity`); the item appears in their inventory at once (verified in game with `HarkAr2`, 2026-09-26). The player must be online: the tool refuses an offline player (Funcom's `is_player_offline`) before publishing anything. The server logs `Now running ServerCommand 'AddItemToInventory'`; for an item id it does not know it adds `LogCheatManager: Warning: Cannot find item associated with spawn command <ID>` (**verified** on this world), so grep the server log after a give. The command itself reports success either way.
 
 A full inventory appears to lose given items silently (not yet confirmed), so have the player free some space first.
 
@@ -56,7 +56,18 @@ Item ids are the row names of the game's item tables (`DT_BaseItems_*` in the co
 
 `SandbikeBoost_1` does not exist.
 
-A display name is not an item id, and two items can share one. The id a recipe wants is in the crafting table, `DT_ItemsCraftingRecipes`: convert it with `retoc to-legacy -f DT_ItemsCraftingRecipes`, then read the recipe's ingredient names from its name map. Display names live in `ST_Localization_Items`, keyed like `ITEMS/RESOURCE_FREMENCOMPONENT3_NAME`, but that key's number need not match the item id's.
+A display name is not an item id, and two items can share one. The id a recipe wants is in the crafting table, `DT_ItemsCraftingRecipes`: convert it with `retoc to-legacy -f DT_ItemsCraftingRecipes`, then read the recipe's ingredient names from its name map.
+
+#### Item names (for `&give`)
+
+The chat bridge's `&give` takes a name as well as an id. Names come from two lists, merged, the first winning where both name something:
+
+1. **`data/items.tsv`** in this repository: hand-written, safe to publish. One line per item, tab-separated: item id, `yes`/`no` (seen working in game on this world), the most one give may hand out (`-` for the default 1000; Solari allow 1000000), and `|`-separated aliases. To add a nickname, append it to an item's aliases (or add a line); the bridge reads the file for every `&give`, so no restart is needed. Case, spacing and punctuation never matter (`Karpov-38` = `karpov 38`).
+2. **The generated list**, `runtime/items/generated.tsv` (0600; `DUNE_ITEMS_GENERATED` overrides the path): every item id in the game with its English display name, read from the game's own tables by `dune-awakening items refresh`. It is derived from Funcom's content, so it is never committed (`generated.tsv` is gitignored). Run the refresh after each game update. It needs [retoc](https://github.com/trumank/retoc), which this project does not ship: point `DUNE_RETOC` at the binary (the dev shell's `DUNE_GCC_LIB` supplies its runtime library path). `--legacy DIR` reads an already converted tree instead.
+
+How the ids and names link (**verified** by parsing the tables, 2026-09-28): each row of the `DT_BaseItems_*` tables is one item, its row name the item id (an FName number suffix n shows as `_n-1`, so `SandbikeChassis` number 2 is `SandbikeChassis_1`). The row's `StaticData.Name` is a text whose string-table history names a table (`ST_Localization_Items`, `ST_Localization_Buildings`, …) and a key, whose English value is the display name. The key need not resemble the id (`FremenComponent1` → `ITEMS/RESOURCE_EMF_GENERATOR_NAME`). Checked pairs: `SolarisCoin` → Solari, `HarkAr2` → Karpov 38, `FremenComponent1` → EMF Generator. `D_FremenComponent3` is also named EMF Generator but has `bIsDeprecated` set, which fits the recipes rejecting it. The 1.5 server tables give 4189 named items out of 4217 rows; 25 rows name a key that no `ST_Localization_*` table holds, and 3 have no name.
+
+Resolution, in order: an exact item id (any case); an exact name or alias; otherwise nothing is given and the reply lists up to five closest names ("did you mean"), or, when several items share the name, lists them to pick one by id. A generated item that is deprecated is dropped from a name a live item also has, and any name in `data/items.tsv` belongs to its curated items only, so `emf generator` always means `FremenComponent1`. Without a generated list, a single id-shaped word that names nothing is passed through as a raw id, as before. `dune-awakening items find <name>` shows what a name resolves to, without giving anything.
 
 `ServerExec "AddItemToInventory …"` does not work: `ServerExec` runs at world level, with no player to receive the item.
 
@@ -104,16 +115,18 @@ A trusted player can run a few admin commands from game chat, without host acces
 | `&bring <player>` | moves the player to you |
 | `&say <message>` | on-screen broadcast to everyone (`world say`) |
 | `&timeout on\|off\|status` | the break for everyone (`world timeout`) |
-| `&give <item id> [count]` | puts up to 1000 of an item into your own inventory (`character give`; ids above) |
+| `&give <item> [count] [to <player>]` | puts items into your inventory, or with `to <player>` into another online player's (`character give`). The item is a name or an id ([Item names](#item-names-for-give)); count defaults to 1, at most 1000 unless `data/items.tsv` allows more. Examples: `&give solari 5000`, `&give emf generator 2 to Alice`, `&give HarkAr2` |
 | `&kick <player>` | disconnects a player |
 
-To enable it, write `gm_bridge.conf` in the config directory (template: `config.sample/gm_bridge.conf.sample`) and `chmod 600` it. One line per player, `<character name or FLS id>: <command>...`, or `<who>: *` for every command; `#` starts a comment. An entry of 16 hex digits is an FLS id and matches that account only; `dune-awakening character whois <FLS id>` names the character of an id. The file is read for every command, so edits apply at once; `dune-awakening doctor` fails if others can read or write it.
+To enable it, write `gm_bridge.conf` in the config directory (template: `config.sample/gm_bridge.conf.sample`) and `chmod 600` it. One line per player, `<character name or FLS id>: <command>...`, or `<who>: *` for every command; `#` starts a comment. The permissions are the command names, except that giving is split: `give` lets a player give to themselves, `give-others` to anyone else (`*` grants both). An entry of 16 hex digits is an FLS id and matches that account only; `dune-awakening character whois <FLS id>` names the character of an id. The file is read for every command, so edits apply at once; `dune-awakening doctor` fails if others can read or write it.
 
 ```
 # ~/.config/dune_awakening_server/gm_bridge.conf
 Alice: *
 0123456789ABCDEF: where goto bring
 ```
+
+How `&give` reads its words: everything after the last standalone `to` (any case) is the player; a whole number just before it (or at the end) is the count, unless the whole text is itself an item name (`&give karpov 38` is one Karpov 38 rifle; `&give karpov 38 2` is two). An item name containing a standalone `to` therefore needs its id. A give to another player needs them online; otherwise the reply says so and nothing is sent. The reply names what was given, to whom, with the item's name and id, notes ids not yet verified in game, and reminds that a full inventory can drop items.
 
 The bridge runs as a world component (`dune-awakening start` starts it last, `stop` stops it first, `status` lists it); its log is `runtime/gm-bridge/gm-bridge.log` (0600).
 
