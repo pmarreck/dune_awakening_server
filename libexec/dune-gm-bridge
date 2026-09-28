@@ -146,6 +146,9 @@ local function handle(d)
 	reply(name, answer)
 end
 
+-- Set once a session is consuming, so the retry loop resets its backoff and logs the next failure.
+local connected = false
+
 -- Connect, bind and consume until the connection ends or max deliveries are seen. Returns seen count, error.
 local function session(max, seen)
 	local amqp, tcp = require("amqp"), require("amqp_tcp")
@@ -162,6 +165,7 @@ local function session(max, seen)
 	if not ok then t:close(); return seen, err end
 	t:settimeout(nil)
 	log("listening on %s", EXCHANGE)
+	connected = true
 	while not max or seen < max do
 		local d; d, err = conn:next_delivery()
 		if not d then t:close(); return seen, err end
@@ -173,19 +177,23 @@ local function session(max, seen)
 	return seen
 end
 
--- Foreground loop with capped exponential backoff between sessions.
+-- Foreground loop with capped exponential backoff between sessions. A failure is logged when it differs from the
+-- previous one, so a broker without the bridge's listener (started before this version) does not fill the log.
 local function cmd_run(max)
 	local socket = require("socket")
 	local retry_max = tonumber(getenv("DUNE_GM_BRIDGE_RETRY_MAX", "30")) or 30
-	local delay, seen = 0.5, 0
+	local delay, seen, last_err = 0.5, 0, nil
 	log("started (pid %d)", ffi.C.getpid())
 	while true do
 		local err
+		connected = false
 		seen, err = session(max, seen)
 		if max and seen >= max then log("stopping after %d messages", seen); return EXIT_OK end
-		delay = math.min(delay, retry_max)
-		log("broker: %s; retrying in %gs", tostring(err), delay)
-		socket.sleep(delay)
+		if connected then delay, last_err = 0.5, nil end
+		err = tostring(err)
+		if err ~= last_err then log("broker: %s; retrying (backoff up to %gs)", err, retry_max) end
+		last_err = err
+		socket.sleep(math.min(delay, retry_max))
 		delay = delay * 2
 	end
 end

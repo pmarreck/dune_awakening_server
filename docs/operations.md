@@ -35,7 +35,7 @@ dune-awakening doctor         # health check of the setup (read-only; exit 1 on 
 | Check | ✗ fail / ⚠ warn when |
 |---|---|
 | `config-dir` | the config directory is missing, not yours, or open to group/others (✗) |
-| `config-files` | `fls_secret`, `join_password`, `world.conf`, `backup.conf` or `public-scrub` is readable by others (✗) |
+| `config-files` | `fls_secret`, `join_password`, `world.conf`, `backup.conf`, `public-scrub` or `gm_bridge.conf` is readable by others (✗) |
 | `secrets` | the generated secrets directory or a file in it is readable by others (✗); it does not exist yet (⚠) |
 | `data-dirs` | the state, unpacked payload or Steam download directory is missing or unreadable (✗) |
 | `templates` | `*.sample` / `*.default` files are left in the config directory (⚠) |
@@ -60,6 +60,7 @@ Runtime state: `~/.local/share/dune_awakening_server/runtime/` (0700). Logs, all
 | Director | `runtime/director/director.log` (**contains credentials**) |
 | Gateway | `runtime/gateway/gateway-console.log`, `runtime/gateway/root/Tools/Battlegroups/GatewayService/logs/` |
 | Map server | `runtime/server/server-console.log`, `runtime/server/Saved/Logs/` |
+| GM bridge | `runtime/gm-bridge/gm-bridge.log` (only `&` chat commands, never other chat) |
 
 ## Ports
 
@@ -68,6 +69,7 @@ Runtime state: `~/.local/share/dune_awakening_server/runtime/` (0700). Logs, all
 | 15431/tcp | Postgres | 127.0.0.1 only |
 | 5673/tcp | admin RabbitMQ (plain AMQP) | 127.0.0.1 only |
 | 31982/tcp | game RabbitMQ (AMQPS) | all interfaces; needed by game clients |
+| 5674/tcp | game RabbitMQ (plain AMQP, for the GM bridge's `gm_bridge` user only) | 127.0.0.1 only |
 | 18081/tcp | TextRouter auth API | 127.0.0.1 only |
 | 18082/tcp | Director HTTP | 127.0.0.1 only |
 | 7777/udp | game traffic (Survival_1) | clients |

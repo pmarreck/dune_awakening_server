@@ -1,6 +1,6 @@
 # Administering the world
 
-One place for every way to administer this world: commands run on the host, and the game's own in-game GM system. `dune` is short for `dune-awakening` (see the README). Everything here needs a shell on the host with the private config; there is no weaker tier. In-game privileges (User, PowerTester, GM, Admin) are the game's own, described in the last section.
+One place for every way to administer this world: commands run on the host, in-game chat commands for trusted players (the GM bridge), and the game's own in-game GM system. `dune` is short for `dune-awakening` (see the README). The host commands need a shell on the host with the private config; the chat commands need only a line in the operator's `gm_bridge.conf`. In-game privileges (User, PowerTester, GM, Admin) are the game's own, described in the last section.
 
 Evidence labels: **verified** means observed on this world; **inferred** means read from the binaries or configs but not exercised.
 
@@ -30,7 +30,9 @@ The server logs each command: `LogDuneServerCommands: Now running ServerCommand 
 
 ### Giving items
 
-`dune-awakening character give <player> ITEM [COUNT]` sends Funcom's `AddItemToInventory` server command (fields `PlayerId`, `ItemName`, `Quantity`); the player must be online, and the item appears in their inventory at once (verified in game with `HarkAr2`, 2026-09-26). The server logs `Now running ServerCommand 'AddItemToInventory'` and nothing else, even for an unknown item id, so check the inventory.
+`dune-awakening character give <player> ITEM [COUNT]` sends Funcom's `AddItemToInventory` server command (fields `PlayerId`, `ItemName`, `Quantity`); the player must be online, and the item appears in their inventory at once (verified in game with `HarkAr2`, 2026-09-26). The server logs `Now running ServerCommand 'AddItemToInventory'`; for an item id it does not know it adds `LogCheatManager: Warning: Cannot find item associated with spawn command <ID>` (**verified** on this world), so grep the server log after a give. The command itself reports success either way.
+
+A full inventory appears to lose given items silently (not yet confirmed), so have the player free some space first.
 
 Item ids are the row names of the game's item tables (`DT_BaseItems_*` in the cooked content). Some verified or read from those tables:
 
@@ -41,6 +43,15 @@ Item ids are the row names of the game's item tables (`DT_BaseItems_*` in the co
 | `SmugDmr1` … `SmugDmr6` | marksman rifles |
 | `Ammo` | light darts (icon `LightDartAmmo`) |
 | `HeavyAmmo` | heavy darts |
+| `SandbikeChassis_1` | sandbike chassis (vehicle part ids carry a tier suffix, `_1` here) |
+| `SandbikeEngine_1` | sandbike engine |
+| `SandbikeGenerator_1` | sandbike power supply (PSU) |
+| `SandbikeHull_1` | sandbike hull |
+| `SandbikeLocomotion_1` | sandbike treads; a sandbike takes 3 or 4 (unconfirmed) |
+| `SandbikeInventory_1` | sandbike storage |
+| `FuelCanister_Large`, `FuelCanister_Medium`, `FuelCanister` | vehicle fuel |
+
+`SandbikeBoost_1` does not exist.
 
 `ServerExec "AddItemToInventory …"` does not work: `ServerExec` runs at world level, with no player to receive the item.
 
@@ -62,6 +73,43 @@ An online character cannot be moved in the database: the map server holds it in 
 `dune-awakening world timeout on` (also `bio-break`, `call-timeout`, `safety-first`) records the current values of four world-level console variables, sets them off, verifies each change in the map server's log, and broadcasts it: `Dac.DamageEnabled` (all damage), `sandworm.dune.Enabled`, `Sandstorm.Enabled`, `Coriolis.Enabled`. `timeout off` restores the recorded values (kept in `runtime/timeout.state`), so a hazard you had disabled on purpose stays disabled. `timeout status` reads the live value.
 
 Why not a real pause: the engine drops a connection after 60 s without traffic (`ConnectionTimeout=60.0` in the shipped `DefaultEngine.ini`, keepalive every 0.2 s), so freezing the server process would disconnect everyone after a minute, and Funcom's server commands include no pause or time-dilation command (`PauseServer` and `SetTimeDilation` are rejected as unknown). Verified on the server: the four variables exist, are settable at runtime, and read back as changed. Not yet verified in game: whether no damage also covers thirst and heat.
+
+## In-game chat commands (the GM bridge)
+
+A trusted player can run a few admin commands from game chat, without host access: they type `&goto Alice` in any chat channel, and `dune-gm-bridge` runs the matching `dune-live` command on the host and whispers the result back (shown as coming from `GM`). It exists because the game's own Admin Panel cannot be opened in the shipping client (see below). **Verified** against a real RabbitMQ 4.2.5 game broker in `tests/integration/gm-bridge`; **not yet verified in game**.
+
+| Command | Does |
+|---|---|
+| `&help` | lists the commands you may use |
+| `&where` | your position, X Y Z rounded (from the chat message itself; no side effects) |
+| `&goto <player>` | moves you to the player (`character move <you> to <player>`) |
+| `&bring <player>` | moves the player to you |
+| `&say <message>` | on-screen broadcast to everyone (`world say`) |
+| `&timeout on\|off\|status` | the break for everyone (`world timeout`) |
+| `&give <item id> [count]` | puts up to 1000 of an item into your own inventory (`character give`; ids above) |
+| `&kick <player>` | disconnects a player |
+
+To enable it, write `gm_bridge.conf` in the config directory (template: `config.sample/gm_bridge.conf.sample`) and `chmod 600` it. One line per player, `<character name or FLS id>: <command>...`, or `<who>: *` for every command; `#` starts a comment. An entry of 16 hex digits is an FLS id and matches that account only; `dune-awakening character whois <FLS id>` names the character of an id. The file is read for every command, so edits apply at once; `dune-awakening doctor` fails if others can read or write it.
+
+```
+# ~/.config/dune_awakening_server/gm_bridge.conf
+Alice: *
+0123456789ABCDEF: where goto bring
+```
+
+The bridge runs as a world component (`dune-awakening start` starts it last, `stop` stops it first, `status` lists it); its log is `runtime/gm-bridge/gm-bridge.log` (0600).
+
+How it works and why it is safe to run:
+
+- **What it sees.** The game client publishes every chat message to the game broker's topic exchange `chat.intercept`, bound with `#` to `queue.intercept`, which Funcom's TextRouter consumes (**verified** with a probe queue, 2026-09-27). The bridge binds its own exclusive, auto-deleted queue `gm.bridge.chat` to the same exchange with `#`, so it receives a copy of every message and chat itself is unaffected.
+- **Who sent it.** A message's routing key and its JSON (`m_FuncomIdFrom`) carry the sender's Funcom id, but the client writes those, so the bridge ignores them. It trusts only the AMQP `user_id` property: RabbitMQ refuses a publish whose `user_id` differs from the connection's authenticated user, which for a player is their FLS id. Messages without a well-formed `user_id` are dropped. The id is turned into a character name with `dune-live character whois`.
+- **Fail closed.** No `gm_bridge.conf`, an empty one, or a sender not listed: every `&` command is refused with a whispered `not allowed`. Unknown commands and malformed lines grant nothing. An account with no character gets no reply.
+- **Privacy.** The bridge sees all chat but logs only `&` commands (sender id, character name, allowed or denied, the command line). Other chat is dropped without a trace.
+- **No shell.** Each command becomes a fixed `dune-live` argument list; player text (a `say` message, a player name) is passed as a single quoted argument and never interpreted by a shell. Arguments starting with `-` are refused, since `dune-live` would read them as its own options.
+- **Broker account.** The bridge connects as `gm_bridge`, a user in the game broker's internal database that `dune-rabbitmq` creates at boot from the 0600 `rabbitmq.conf` (`default_user`), so no `guest` user exists and the password (`runtime/secrets/gm_bridge_rmq_password`, generated once) never appears on a command line. It is loopback-only (`loopback_users`) and connects to a plain-AMQP listener bound to `127.0.0.1` (`DUNE_RMQ_GAME_LOCAL_PORT`, default 5674); players keep using TLS on 31982. The internal backend is tried before the TextRouter's HTTP backend, so the bridge does not depend on the TextRouter, and players, who are not in the internal database, still authenticate through it. Its permissions: configure and write only `^gm\.bridge\..*`, read `^(gm\.bridge\..*|chat\.intercept)$`; the tests confirm it cannot touch a player's `<FLS id>_queue` or bind to `chat.whispers`. RabbitMQ 4.2.5 swaps `default_permissions.read` and `.write` when it seeds the user, so the config sets them crosswise; the broker test fails if a RabbitMQ update changes that.
+- **Reconnects.** When the broker goes away (a restart, a dropped connection) the bridge retries with backoff up to 30 s, logging each distinct error once.
+
+A world whose game broker was started before this listener existed keeps refusing the bridge's connection (logged once) until its next restart.
 
 ## The game's own GM system
 
@@ -116,5 +164,5 @@ How to repeat the check after a client update: find the file offsets of the ASCI
 ### Other routes considered
 
 - `-ExecCmds="AdminLogin …"` as a Steam launch option is suggested in community notes but unverified; it would run before any server connection exists.
-- A whisper chat-command listener (DASH does this): a player whispers `&goto Alice` and a host process runs the matching `dune` command. It would need no client changes, at the cost of a long-running service. With the Admin Panel unreachable, this is the remaining in-game route for a trusted player.
+- A chat-command listener (DASH does this): a player types `&goto Alice` and a host process runs the matching `dune` command. With the Admin Panel unreachable, this is the remaining in-game route for a trusted player; this project now has one, the GM bridge (see "In-game chat commands" above).
 - Sources: [Funcom's self-host FAQ](https://funcom.helpshift.com/hc/en/4-dune-awakening/faq/85-how-to-self-host-a-world-1778514422/), [DASH admin-gm-console.md](https://github.com/snapetech/DuneAwakeningSelfHost/blob/main/docs/admin-gm-console.md), [dune-awakening-truenas ADMIN-COMMANDS.md](https://github.com/Icehunter/dune-awakening-truenas/blob/main/ADMIN-COMMANDS.md), and [research/live-world-control.md](research/live-world-control.md).

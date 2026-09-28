@@ -43,6 +43,7 @@ cp -r config.sample/. ~/.config/dune_awakening_server/
 #    fls_secret.sample   -> fls_secret     (your Funcom token, one line)
 #    join_password.sample -> join_password (optional in-game password)
 #    world.conf.sample   -> generate it instead: dune-awakening init --display-name "My World" --region "North America"
+#    gm_bridge.conf.sample -> gm_bridge.conf (optional: who may use in-game & chat commands; docs/admin.md)
 chmod 600 ~/.config/dune_awakening_server/fls_secret
 
 # 2. Funcom's server payload from Steam (anonymous login works for app 4754530).
@@ -65,7 +66,7 @@ Everything runs through one command, `bin/dune-awakening`. It works from any dir
 
 | Subcommand | Purpose and options |
 |---|---|
-| `start`, `stop`, `restart` | Bring the whole world up in dependency order (database, schema, brokers, Funcom services, map server), or down in reverse |
+| `start`, `stop`, `restart` | Bring the whole world up in dependency order (database, schema, brokers, Funcom services, map server, chat-command bridge), or down in reverse |
 | `doctor [--json]` | Health check of the setup: permissions, secrets, leftover templates, default passwords, token expiry, components, database logins, backups |
 | `status [--json] [--watch SECS]` | One line per component; `--json` adds world identity, characters online, map-server memory and CPU (for admin pages) |
 | `world …` | Whole-world live commands: `say`, `timeout on/off` (a break for everyone: no damage, sandworms or storms), `kick-all`, `exec`, `partitions`, `raw` |
@@ -77,7 +78,7 @@ Everything runs through one command, `bin/dune-awakening`. It works from any dir
 
 `dune-awakening <subcommand> --help` lists each subcommand's options.
 
-**Components** live in `libexec/`. `dune-awakening` calls them; you rarely run them directly. Each manages one piece of Funcom's stack: `dune-server` (the map server, Funcom's Unreal binary), `dune-postgres` (database cluster), `dune-db-setup` (Funcom's schema installer), `dune-world-partitions`, `dune-rabbitmq` (admin and game message brokers), `dune-textrouter`, `dune-director` and `dune-gateway` (Funcom's broker authentication, director and gateway services), plus setup helpers `dune-dotnet-prepare`, `dune-unpack` and `dune-usersettings`. The subcommand tools (`dune-live` for live `world` and `character` commands, `dune-update`, `dune-backup`, `dune-character`, `dune-world-init`, `dune-units`) live there too.
+**Components** live in `libexec/`. `dune-awakening` calls them; you rarely run them directly. Each manages one piece of Funcom's stack: `dune-server` (the map server, Funcom's Unreal binary), `dune-postgres` (database cluster), `dune-db-setup` (Funcom's schema installer), `dune-world-partitions`, `dune-rabbitmq` (admin and game message brokers), `dune-textrouter`, `dune-director` and `dune-gateway` (Funcom's broker authentication, director and gateway services), `dune-gm-bridge` (in-game `&` chat commands for players listed in `gm_bridge.conf`; see [docs/admin.md](docs/admin.md#in-game-chat-commands-the-gm-bridge)), plus setup helpers `dune-dotnet-prepare`, `dune-unpack` and `dune-usersettings`. The subcommand tools (`dune-live` for live `world` and `character` commands, `dune-update`, `dune-backup`, `dune-character`, `dune-world-init`, `dune-units`) live there too.
 
 Gameplay settings (XP, harvest yield, crafting time, death penalties, sandstorm damage and more) go in override files under `~/.config/dune_awakening_server/UserSettings/`; see [docs/operations.md](docs/operations.md#gameplay-settings). Funcom's guide describes the same `UserSettings` files for its VM.
 
@@ -95,7 +96,7 @@ In a clone you push from, run `git config core.hooksPath .githooks` once: the pr
 
 - [docs/architecture.md](docs/architecture.md): how Funcom's components connect, and what replaces Kubernetes here
 - [docs/operations.md](docs/operations.md): day-to-day operation, characters, gameplay settings
-- [docs/admin.md](docs/admin.md): administering the world in one place: host commands, moving and messaging players, the break timeout, and the game's in-game GM system
+- [docs/admin.md](docs/admin.md): administering the world in one place: host commands, moving and messaging players, the break timeout, in-game chat commands for trusted players (the GM bridge), and the game's in-game GM system
 - [docs/postgres-parity.md](docs/postgres-parity.md): Funcom's PostgreSQL fork vs nixpkgs PostgreSQL, and the locale match
 - [docs/acquisition.md](docs/acquisition.md): the Steam payload and the Funcom token
 - [docs/readiness.md](docs/readiness.md): evidence from the first bring-up
