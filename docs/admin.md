@@ -49,9 +49,13 @@ Item ids are the row names of the game's item tables (`DT_BaseItems_*` in the co
 | `SandbikeHull_1` | sandbike hull |
 | `SandbikeLocomotion_1` | sandbike treads; a sandbike takes 3 or 4 (unconfirmed) |
 | `SandbikeInventory_1` | sandbike storage |
-| `FuelCanister_Large`, `FuelCanister_Medium`, `FuelCanister` | vehicle fuel |
+| `FuelCanister_Large`, `FuelCanister_Medium`, `FuelCanister` | vehicle fuel (**verified**: a large canister refuelled a sandbike) |
+| `FremenComponent1` | EMF Generator, the one crafting recipes accept (**verified**: the Survey Probe Launcher recipe took it) |
+| `D_FremenComponent3` | also shown as "EMF Generator", but recipes reject it; do not use |
 
 `SandbikeBoost_1` does not exist.
+
+A display name is not an item id, and two items can share one. The id a recipe wants is in the crafting table, `DT_ItemsCraftingRecipes`: convert it with `retoc to-legacy -f DT_ItemsCraftingRecipes`, then read the recipe's ingredient names from its name map. Display names live in `ST_Localization_Items`, keyed like `ITEMS/RESOURCE_FREMENCOMPONENT3_NAME`, but that key's number need not match the item id's.
 
 `ServerExec "AddItemToInventory …"` does not work: `ServerExec` runs at world level, with no player to receive the item.
 
