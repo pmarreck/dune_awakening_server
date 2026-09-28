@@ -87,6 +87,7 @@ Live (online or offline is detected; handled by dune-live, see `dune-live --help
   xp <player> AMOUNT [CATEGORY]  Award XP (Combat, Crafting, Gathering, Exploration, Sabotage)
   whisper <player> <message> [--from NAME]  Private chat line to an online player
   worm <player>               Send a nearby sandworm at the player (experimental)
+  whois <FLS id>              Character name of an account id (read-only)
 
 Options:
   --server-root DIR   Server tree holding the game's ini chain (default: $DUNE_STATE_DIR/server/tree)
@@ -593,7 +594,7 @@ end
 
 -- Live commands belong to dune-live's character group. They are handed over with the user's arguments in order,
 -- minus this tool's own options, before any database work here.
-local LIVE = { move = true, where = true, kick = true, water = true, xp = true, whisper = true, worm = true, give = true }
+local LIVE = { move = true, where = true, kick = true, water = true, xp = true, whisper = true, worm = true, give = true, whois = true }
 local OWN_WITH_VALUE = { ["--server-root"] = true, ["-o"] = true, ["--output"] = true }
 local OWN_FLAGS = { ["--text"] = true, ["--no-color"] = true, ["--"] = true }
 

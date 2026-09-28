@@ -215,6 +215,14 @@ char move Tester to Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "move to a play
 char move Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "move to a player without a target not a usage error"
 out=$(char move Tester to Nobody 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nobody* ]] || fail "move to a player to an unknown player: $out"
 
+# whois: FLS id (what the broker stamps on a player's messages) -> character name, read-only, exact match only.
+[ "$(char whois fls-1 2>/dev/null)" = Tester ] || fail "whois fls-1 is not Tester"
+[ "$(char whois fls-2 2>/dev/null)" = "O'Brien" ] || fail "whois fls-2 is not O'Brien"
+char whois fls-9 >/dev/null 2>&1; [ $? -eq 1 ] || fail "whois of an unknown id did not exit 1"
+char whois "fls-1' or '1'='1" >/dev/null 2>&1; [ $? -eq 1 ] || fail "whois accepted an injected id"
+char whois >/dev/null 2>&1; [ $? -eq 2 ] || fail "whois without an id is not a usage error"
+[ -s "$work/argv" ] && fail "whois touched the broker"
+
 touch "$work/broker-down"
 out=$(char kick Tester 2>&1); [ $? -eq 1 ] && [[ "$out" == *publish* ]] || fail "broker failure not reported: $out"
 [ -z "$(find "$DUNE_SECRETS_DIR" -name '*.cmd.json')" ] || fail "command body file left behind after a failed publish"

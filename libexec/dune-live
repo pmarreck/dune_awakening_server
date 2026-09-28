@@ -42,6 +42,8 @@ Character (online or offline is detected; offline changes take a backup first):
                                   Online: the server's TeleportTo. Offline: Funcom's offline move, which can also
                                   change partition (default: the current one). Rescues a stuck player
   where <player>                  Partition, map and X Y Z (read-only)
+  whois <FLS id>                  Character name of an account id, e.g. the sender id the broker stamps on chat
+                                  (read-only)
   kick <player>                   Disconnect a player
   water <player> AMOUNT           Fill the player's water containers (UpdateAllWaterFillables)
   give <player> ITEM [COUNT]      Put COUNT (default 1) of ITEM into the player's inventory (AddItemToInventory); ITEM is an
@@ -267,7 +269,7 @@ cmd=${1:-}; [ $# -gt 0 ] && shift
 case "$group" in
 	world) case "$cmd" in say|timeout|bio-break|call-timeout|safety-first|kick-all|exec|partitions|raw) ;; "") usage_error "world needs a command" ;;
 		*) usage_error "unknown world command $cmd" ;; esac ;;
-	character) case "$cmd" in move|where|kick|water|xp|whisper|worm|give) ;; "") usage_error "character needs a command" ;;
+	character) case "$cmd" in move|where|kick|water|xp|whisper|worm|give|whois) ;; "") usage_error "character needs a command" ;;
 		*) usage_error "unknown character command $cmd" ;; esac ;;
 	"") usage >&2; exit 2 ;;
 	*) usage_error "commands are grouped by what they act on: world or character, not $group" ;;
@@ -278,6 +280,12 @@ case "$cmd" in
 		rows=$(sql -c "select coalesce(json_agg(json_build_object('id', partition_id, 'label', label, 'map', map, 'dimension', dimension_index) order by partition_id), '[]') from dune.world_partition") ||
 			die "database lookup failed"
 		if $json; then printf '%s\n' "$rows"; else jq -r '.[] | "\(.id)\t\(.label // "-")\t\(.map)"' <<<"$rows"; fi ;;
+	whois)
+		[ $# -eq 1 ] || usage_error "whois needs an FLS id"
+		name=$(sql -v fls="$1" -f - <<<"select ps.character_name from dune.player_state ps join dune.accounts a on a.id = ps.account_id where a.\"user\" = :'fls' limit 1;") ||
+			die "database lookup failed"
+		[ -n "$name" ] || die "no character for account $1"
+		printf '%s\n' "$name" ;;
 	where)
 		[ $# -eq 1 ] || usage_error "where needs a player"
 		row=$(where_json "$1") || die "database lookup failed"
