@@ -1,0 +1,23 @@
+# Curated item names for the chat bridge's &give (docs/admin.md, "Giving items"). Hand-written and safe to publish;
+# the full list of game item names is generated privately by `dune-awakening items refresh` and never committed.
+# Where both name something, this file wins.
+#
+# Columns, tab-separated: item id, verified (yes = seen working in game on this world), max count per give
+# (- = the default, 1000), aliases (|-separated; case, spacing and punctuation do not matter).
+HarkAr2	yes	-	Karpov 38 rifle|karpov 38|karpov
+Ammo	no	-	Light Darts|light dart|darts
+HeavyAmmo	no	-	Heavy Darts|heavy dart
+SandbikeChassis_1	no	-	Sandbike Chassis
+SandbikeEngine_1	no	-	Sandbike Engine
+SandbikeGenerator_1	no	-	Sandbike Power Unit|sandbike psu|sandbike generator|sandbike power supply
+SandbikeHull_1	no	-	Sandbike Hull
+SandbikeLocomotion_1	no	-	Sandbike Treads|sandbike tread|sandbike locomotion
+SandbikeInventory_1	no	-	Sandbike Storage|sandbike inventory
+FuelCanister_Large	yes	-	Large Vehicle Fuel Cell|fuel|large fuel canister|large fuel cell
+FuelCanister_Medium	no	-	Medium Vehicle Fuel Cell|medium fuel canister|medium fuel cell
+FuelCanister	no	-	Small Vehicle Fuel Cell|fuel canister|small fuel canister|small fuel cell
+FremenComponent1	yes	-	EMF Generator|emf generators|emf
+SolarisCoin	yes	1000000	Solari|solaris|money|gold|cash|coin|coins
+HouseCredit	no	-	House Credits|house credit|landsraad credits
+EventRaiderToken	no	-	Raider Tokens|raider token
+EventEliteRaiderToken	no	-	Elite Raider Tokens|elite raider token

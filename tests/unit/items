@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# libexec/lib/items.lua: item names from the curated list (data/items.tsv) and the generated one, merged and resolved.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+exec luajit tests/unit/items.lua
