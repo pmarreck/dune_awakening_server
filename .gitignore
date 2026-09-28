@@ -13,6 +13,7 @@ fls_secret
 join_password
 world.conf
 backup.conf
+gm_bridge.conf
 /config.sample/UserSettings/*.ini
 *.dump
 backups/

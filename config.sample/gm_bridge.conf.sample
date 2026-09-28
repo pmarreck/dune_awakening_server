@@ -1,0 +1,11 @@
+# Who may use in-game chat commands through the GM bridge (libexec/dune-gm-bridge; docs/admin.md, "In-game chat
+# commands"). Save as gm_bridge.conf in the config directory (chmod 600). Read for every command, so edits apply at once.
+#
+# One line per player:   <character name or FLS id>: <command> <command>...
+# or, for every command: <character name or FLS id>: *
+# Commands: where goto bring say timeout give kick. Anyone listed may also use help.
+# A 16-hex-digit entry is an FLS id (dune-awakening character whois <id> names it) and matches that account only;
+# anything else is a character name, matched exactly. Nobody listed, or no file, means nobody may use the bridge.
+#
+#Alice: *
+#0123456789ABCDEF: where goto bring

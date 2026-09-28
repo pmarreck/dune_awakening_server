@@ -18,7 +18,7 @@ jq -e . >/dev/null 2>&1 <<<"$json" || fail "not valid JSON: $json"
 [ "$(jq -r '.world.unique_name' <<<"$json")" = sh-abc-qwerty ] || fail "world.unique_name missing"
 [ "$(jq -r '.world.display_name' <<<"$json")" = "My World" ] || fail "world.display_name missing"
 [ "$(jq -r '.up' <<<"$json")" = false ] || fail "overall up should be false"
-[ "$(jq -r '[.components[].name] | join(",")' <<<"$json")" = "postgres,rabbitmq-admin,rabbitmq-game,textrouter,director,gateway,server" ] || fail "component list wrong: $(jq -c '[.components[].name]' <<<"$json")"
+[ "$(jq -r '[.components[].name] | join(",")' <<<"$json")" = "postgres,rabbitmq-admin,rabbitmq-game,textrouter,director,gateway,server,gm-bridge" ] || fail "component list wrong: $(jq -c '[.components[].name]' <<<"$json")"
 [ "$(jq -r '[.components[] | select(.up)] | length' <<<"$json")" = 0 ] || fail "components reported up with nothing running"
 [[ "$(jq -r '.timestamp' <<<"$json")" =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}T ]] || fail "timestamp missing or not ISO-8601"
 out=$(bin/dune-awakening status 2>&1)

@@ -7,16 +7,18 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 [ -d config.sample ] || { fail "no config.sample/ templates"; exit 1; }
-for f in fls_secret.sample world.conf.sample join_password.sample; do [ -f "config.sample/$f" ] || fail "missing config.sample/$f"; done
+for f in fls_secret.sample world.conf.sample join_password.sample gm_bridge.conf.sample; do [ -f "config.sample/$f" ] || fail "missing config.sample/$f"; done
 while IFS= read -r f; do
 	case "$f" in *.sample|*.default|*.md) ;; *) fail "config.sample/$f is not a .sample/.default template" ;; esac
 done < <(cd config.sample && find . -type f | sed 's|^\./||')
 # Classifier over a set: filled-in operator files must be ignored wherever they land; templates and code must not be.
 for f in config.sample/fls_secret config.sample/join_password config.sample/world.conf config.sample/backup.conf fls_secret world.conf \
+	config.sample/gm_bridge.conf gm_bridge.conf \
 	config.sample/UserSettings/UserGame.ini backups/x/db.dump char-backups/x.json erl_crash.dump; do
 	git check-ignore -q --no-index "$f" || fail "$f would not be ignored"
 done
-for f in config.sample/fls_secret.sample config.sample/world.conf.sample config.sample/backup.conf.sample bin/dune-awakening README.md tests/unit/public-hygiene; do
+for f in config.sample/fls_secret.sample config.sample/world.conf.sample config.sample/backup.conf.sample config.sample/gm_bridge.conf.sample \
+	bin/dune-awakening README.md tests/unit/public-hygiene; do
 	git check-ignore -q --no-index "$f" && fail "$f is wrongly ignored"
 done
 hits=$(git grep -l -I -E 'eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}' -- . 2>/dev/null)

@@ -1,6 +1,7 @@
 #!/usr/bin/env luajit
 -- dune-awakening: start, stop and report the native Dune: Awakening world in dependency order:
--- postgres -> schema -> partition -> RabbitMQ admin/game -> TextRouter (broker auth) -> Director -> Gateway -> map server.
+-- postgres -> schema -> partition -> RabbitMQ admin/game -> TextRouter (broker auth) -> Director -> Gateway -> map server
+-- -> GM chat bridge.
 -- Location-independent: it resolves its own real path (through symlinks) to find this project's flake and component
 -- scripts, and re-executes itself inside `nix develop` on that flake when the toolchain environment is absent, so it
 -- runs from any cwd via PATH. Operator inputs live in DUNE_CONFIG_DIR, generated state in DUNE_STATE_DIR.
@@ -238,7 +239,8 @@ end
 
 -- Components ----------------------------------------------------------------------------------------------------
 
-local COMPONENTS = { { "postgres" }, { "rabbitmq", "admin" }, { "rabbitmq", "game" }, { "textrouter" }, { "director" }, { "gateway" }, { "server" } }
+local COMPONENTS = { { "postgres" }, { "rabbitmq", "admin" }, { "rabbitmq", "game" }, { "textrouter" }, { "director" }, { "gateway" }, { "server" },
+	{ "gm-bridge" } }
 
 local function comp(dir, name, ...)
 	local parts = { q(dir .. "/dune-" .. name) }
@@ -282,6 +284,7 @@ local function cmd_start(dir, env)
 	end
 	step("gateway"); must("gateway", run(comp(dir, "gateway", "start")))
 	step("map server Survival_1 (partition " .. part .. ")"); must("server", run(comp(dir, "server", "start")))
+	step("gm-bridge (in-game chat commands)"); must("gm-bridge", run(comp(dir, "gm-bridge", "start")))
 end
 
 local function cmd_stop(dir, env)

@@ -56,7 +56,7 @@ check_config_dir() {
 
 check_config_files() {
 	local f open=()
-	for f in fls_secret join_password world.conf backup.conf public-scrub; do
+	for f in fls_secret join_password world.conf backup.conf public-scrub gm_bridge.conf; do
 		[ -e "$DUNE_CONFIG_DIR/$f" ] && too_open "$DUNE_CONFIG_DIR/$f" && open+=("$f ($(mode_of "$DUNE_CONFIG_DIR/$f"))")
 	done
 	if [ ${#open[@]} -gt 0 ]; then report config-files fail "readable by others: ${open[*]}; run: chmod 600 on each in $DUNE_CONFIG_DIR"
@@ -134,7 +134,7 @@ check_fls_token() {
 
 check_components() {
 	local down=() c
-	for c in postgres "rabbitmq status admin --quick" "rabbitmq status game --quick" textrouter director gateway server; do
+	for c in postgres "rabbitmq status admin --quick" "rabbitmq status game --quick" textrouter director gateway server gm-bridge; do
 		set -- $c
 		if [ $# -eq 1 ]; then "$DUNE_COMPONENTS_DIR/dune-$1" status >/dev/null 2>&1 || down+=("$1")
 		else "$DUNE_COMPONENTS_DIR/dune-$1" "${@:2}" >/dev/null 2>&1 || down+=("$1 $3"); fi

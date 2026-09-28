@@ -52,7 +52,7 @@ rm -r -- "$DUNE_CONFIG_DIR/UserSettings" "$DUNE_CONFIG_DIR/join_password.sample"
 # Orchestration against fake components that log each call.
 fake="$work/fake bin"
 mkdir -p "$fake"
-for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server; do
+for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server gm-bridge; do
 	cat > "$fake/dune-$c" <<EOF
 #!$BASH
 printf '%s %s|%s\n' "$c" "\$*" "\${DUNE_PARTITION_INDEX:-}:\${DUNE_EXTERNAL_ADDRESS:-}" >> "$work/calls"
@@ -81,7 +81,7 @@ s=$(PATH="$work/sysbin:$PATH" world status --json 2>/dev/null | jq -c '.server |
 : > "$work/calls"
 out=$(DUNE_EXTERNAL_ADDRESS=10.9.8.7 world start 2>&1) || fail "start with healthy fakes failed: $out"
 got=$(cut -d'|' -f1 "$work/calls" | paste -sd, -)
-[ "$got" = "postgres init,postgres start,db-setup ,world-partitions ,rabbitmq init admin,rabbitmq start admin,rabbitmq init game,rabbitmq start game,textrouter status,dotnet-prepare $DUNE_UNPACKED_DIR/server-text-router/rootfs $DUNE_STATE_DIR/textrouter-root Tools/Battlegroups/TextRouter/TextRouter TextRouter,textrouter start,director status,dotnet-prepare $DUNE_UNPACKED_DIR/server-bg-director/rootfs $DUNE_STATE_DIR/director-root Tools/Battlegroups/Director/BattlegroupDirector Director,director start,gateway start,server start" ] ||
+[ "$got" = "postgres init,postgres start,db-setup ,world-partitions ,rabbitmq init admin,rabbitmq start admin,rabbitmq init game,rabbitmq start game,textrouter status,dotnet-prepare $DUNE_UNPACKED_DIR/server-text-router/rootfs $DUNE_STATE_DIR/textrouter-root Tools/Battlegroups/TextRouter/TextRouter TextRouter,textrouter start,director status,dotnet-prepare $DUNE_UNPACKED_DIR/server-bg-director/rootfs $DUNE_STATE_DIR/director-root Tools/Battlegroups/Director/BattlegroupDirector Director,director start,gateway start,server start,gm-bridge start" ] ||
 	fail "start order wrong: $got"
 [ "$(grep '^server start' "$work/calls" | cut -d'|' -f2)" = 7:10.9.8.7 ] || fail "server not given partition 7 and address: $(grep '^server' "$work/calls")"
 [ "$(readlink "$DUNE_STATE_DIR/secrets/fls_token")" = "$DUNE_CONFIG_DIR/fls_secret" ] || fail "fls token not linked into secrets"
@@ -142,7 +142,7 @@ dirs() { printf '%s|%s|%s|%s' "$2/dune_awakening_server" "$1/dune_awakening_serv
 world stop >/dev/null 2>&1 || fail "stop failed"
 # (the players-online guard first asks dune-character; only component stops count for the order)
 got=$(grep -v '^dune-character ' "$work/calls" | cut -d'|' -f1 | paste -sd, -)
-[ "$got" = "server stop,gateway stop,director stop,textrouter stop,rabbitmq stop game,rabbitmq stop admin,postgres stop" ] || fail "stop order wrong: $got"
+[ "$got" = "gm-bridge stop,server stop,gateway stop,director stop,textrouter stop,rabbitmq stop game,rabbitmq stop admin,postgres stop" ] || fail "stop order wrong: $got"
 
 # Subcommand tools get the world identity too (doctor probes components that need it), when world.conf exists.
 printf '#!%s\nprintf "%%s %%s\\n" "${DUNE_WORLD_NAME:-unset}" "${DUNE_PARTITION_INDEX:-unset}" > "%s"\n' "$BASH" "$work/wname" > "$fake/dune-doctor"; chmod +x "$fake/dune-doctor"

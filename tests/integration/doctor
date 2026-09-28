@@ -32,7 +32,7 @@ token() { printf '%s.%s.sig' "$(printf '{"alg":"none"}' | b64url)" "$(printf '{"
 	printf 'caladan-spice-leto-17\n' > "$DUNE_SECRETS_DIR/gm_password"
 	mkdir -p "$DUNE_BACKUP_DIR/20260925T040000.000Z-scheduled" && printf '{}' > "$DUNE_BACKUP_DIR/20260925T040000.000Z-scheduled/manifest.json")
 mkdir -p "$DUNE_COMPONENTS_DIR"
-for c in postgres rabbitmq textrouter director gateway server; do
+for c in postgres rabbitmq textrouter director gateway server gm-bridge; do
 	printf '#!%s\n[ -e "%s/down-%s" ] && exit 1\nexit 0\n' "$BASH" "$work" "$c" > "$DUNE_COMPONENTS_DIR/dune-$c"
 	chmod +x "$DUNE_COMPONENTS_DIR/dune-$c"
 done
@@ -62,6 +62,9 @@ expect() {
 chmod 755 "$DUNE_CONFIG_DIR"; expect config-dir fail "config dir readable by others"; chmod 700 "$DUNE_CONFIG_DIR"
 chmod 644 "$DUNE_CONFIG_DIR/fls_secret"; expect config-files fail "fls_secret readable by others"; chmod 600 "$DUNE_CONFIG_DIR/fls_secret"
 chmod 644 "$DUNE_SECRETS_DIR/gm_password"; expect secrets fail "a secret readable by others"; chmod 600 "$DUNE_SECRETS_DIR/gm_password"
+# The chat bridge's policy grants in-game powers: it must not be writable (or readable) by others either.
+(umask 077; printf 'Alice: where\n' > "$DUNE_CONFIG_DIR/gm_bridge.conf")
+chmod 664 "$DUNE_CONFIG_DIR/gm_bridge.conf"; expect config-files fail "gm_bridge.conf writable by the group"; chmod 600 "$DUNE_CONFIG_DIR/gm_bridge.conf"
 mv "$DUNE_UNPACKED_DIR" "$work/unpacked.away"; expect data-dirs fail "unpacked dir missing"; mv "$work/unpacked.away" "$DUNE_UNPACKED_DIR"
 touch "$DUNE_CONFIG_DIR/world.conf.sample"; expect templates warn "leftover template"; unlink "$DUNE_CONFIG_DIR/world.conf.sample"
 printf 'change-me\n' > "$DUNE_CONFIG_DIR/join_password"; expect default-passwords fail "sample join password"
@@ -74,6 +77,7 @@ cp "$DUNE_CONFIG_DIR/fls_secret" "$work/token.keep"
 (umask 077; token $(( $(date -d 2026-09-26 +%s) - 86400 )) > "$DUNE_CONFIG_DIR/fls_secret"); expect fls-token fail "expired token"
 cat "$work/token.keep" > "$DUNE_CONFIG_DIR/fls_secret"
 touch "$work/down-gateway"; expect components warn "a component down"; unlink "$work/down-gateway"
+touch "$work/down-gm-bridge"; expect components warn "the chat bridge down"; unlink "$work/down-gm-bridge"
 (umask 077; printf 'wrong\n' > "$DUNE_SECRETS_DIR/postgres_dune_password"); expect database fail "game role cannot log in"
 (umask 077; printf 'dune-pw-for-test\n' > "$DUNE_SECRETS_DIR/postgres_dune_password")
 DUNE_DB_NAME=dune_sb_0_0_0_0 expect database fail "game database missing"
