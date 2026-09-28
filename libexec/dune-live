@@ -47,7 +47,8 @@ Character (online or offline is detected; offline changes take a backup first):
   kick <player>                   Disconnect a player
   water <player> AMOUNT           Fill the player's water containers (UpdateAllWaterFillables)
   give <player> ITEM [COUNT]      Put COUNT (default 1) of ITEM into the player's inventory (AddItemToInventory); ITEM is an
-                                  item template id, e.g. HarkAr2 (Karpov 38 rifle), Ammo (light darts); see docs/admin.md
+                                  item template id, e.g. HarkAr2 (Karpov 38 rifle), Ammo (light darts); see docs/admin.md.
+                                  The player must be online
   xp <player> AMOUNT [CATEGORY]   Award XP; CATEGORY is Combat (default), Crafting, Gathering, Exploration or Sabotage
   whisper <player> <message> [--from NAME]
                                   Private chat line to an online player (chat.whispers to their own queue; the
@@ -350,6 +351,9 @@ case "$cmd" in
 		count=${3:-1}
 		[[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt 0 ] || usage_error "COUNT must be a positive whole number"
 		id=$(fls_id "$1") || exit 1
+		# The server-command channel reaches only a player whose body is in the world.
+		offline=$(is_offline "$1") || exit 1
+		[ "$offline" = f ] || die "$1 is not online; items can only be given to an online player"
 		publish "$(jq -cn --arg p "$id" --arg i "$2" --argjson n "$count" '{ServerCommand: "AddItemToInventory", PlayerId: $p, ItemName: $i, Quantity: $n}')" ;;
 	water)
 		[ $# -eq 2 ] && [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || usage_error "water needs <player> and a positive whole AMOUNT"

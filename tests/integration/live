@@ -101,6 +101,9 @@ char give Tester Ammo 200 >/dev/null 2>&1 && [ "$(inner | jq -r .Quantity)" = 20
 char give Tester Ammo 0 >/dev/null 2>&1; [ $? -eq 2 ] || fail "give count 0 not a usage error"
 char give Tester >/dev/null 2>&1; [ $? -eq 2 ] || fail "give without an item not a usage error"
 char give Tester 'Bad Item' >/dev/null 2>&1; [ $? -eq 2 ] || fail "give with a malformed item id not a usage error"
+# An offline player is refused before anything is published (the chat bridge relies on this to say so).
+out=$(char give "O'Brien" Ammo 2>&1); [ $? -eq 1 ] && [[ "$out" == *"O'Brien is not online"* ]] || fail "give to an offline player not refused: $out"
+[ -e "$work/published.json" ] && fail "give to an offline player published: $(inner)"
 
 # exec: a world-level console command or variable through ServerExec (arguments joined).
 world exec t.MaxFPS 5 >/dev/null 2>&1 || fail "exec failed"
