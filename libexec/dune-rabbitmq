@@ -70,6 +70,7 @@ write_config() {
 			# swapped here. tests/integration/rabbitmq asserts the effective permissions and fails if that changes.
 			printf 'default_permissions.configure = ^gm\\.bridge\\..*\ndefault_permissions.read = ^gm\\.bridge\\..*\n'
 			printf 'default_permissions.write = ^(gm\\.bridge\\..*|chat\\.intercept)$\nloopback_users.gm_bridge = true\n'
+			printf 'anonymous_login_user = none\n'
 		else
 			printf 'auth_backends.1 = cache\n'
 		fi

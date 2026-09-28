@@ -110,6 +110,9 @@ out=$(libexec/dune-rabbitmq ctl game authenticate_user "fresh-user" secret 2>&1)
 out=$(libexec/dune-rabbitmq ctl game authenticate_user gm_bridge "$(cat "$bridge_pw_file")" 2>&1) || fail "bridge user must authenticate from the internal database: $out"
 libexec/dune-rabbitmq ctl game authenticate_user gm_bridge wrong-password >/dev/null 2>&1 && fail "bridge user accepted a wrong password"
 libexec/dune-rabbitmq ctl game authenticate_user guest guest >/dev/null 2>&1 && fail "guest can log in to the game broker"
+# RabbitMQ 4 maps SASL ANONYMOUS logins to anonymous_login_user (default guest); the game broker turns that off.
+[ "$(libexec/dune-rabbitmq ctl game eval 'application:get_env(rabbit, anonymous_login_user).' 2>/dev/null)" = "{ok,none}" ] ||
+	fail "anonymous login not disabled on the game broker: $(libexec/dune-rabbitmq ctl game eval 'application:get_env(rabbit, anonymous_login_user).' 2>&1)"
 # Over AMQP too, with the HTTP backend down (the stub would allow any login): right password in, wrong one refused.
 [ "$(probe declare gm.bridge.t3)" = ok ] || fail "bridge AMQP login needs the HTTP backend: $(probe declare gm.bridge.t3)"
 out=$(luajit tests/lib/amqp_probe.lua "$DUNE_RMQ_GAME_LOCAL_PORT" gm_bridge <(echo wrong-password) declare gm.bridge.t4 2>&1)
