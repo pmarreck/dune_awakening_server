@@ -8,9 +8,10 @@ failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/dune-rmq-test.XXXXXX") || exit 1
-base=$(pick_port_base 6) || { printf "FAIL no free port block\n" >&2; exit 1; }
+base=$(pick_port_base 7) || { printf "FAIL no free port block\n" >&2; exit 1; }
 export DUNE_STATE_DIR="$work/state" DUNE_SECRETS_DIR="$work/secrets"
 export DUNE_RMQ_ADMIN_PORT=$base DUNE_RMQ_GAME_PORT=$((base + 1)) DUNE_RMQ_AUTH_ADDRESS="127.0.0.1:$((base + 2))"
+export DUNE_RMQ_GAME_LOCAL_PORT=$((base + 6))
 export ERL_EPMD_PORT=$((base + 3)) DUNE_RMQ_DIST_BASE=$((base + 4)) DUNE_RMQ_LOG_LEVEL=debug
 stub_log="$work/auth-requests.log"
 stub_pid=
@@ -40,6 +41,24 @@ for broker in admin game; do
 	out=$(libexec/dune-rabbitmq start "$broker" 2>&1) || fail "start $broker: $out"
 done
 [ "$(stat -c %a "$DUNE_SECRETS_DIR/rmq-tls/key.pem" 2>/dev/null)" = 600 ] || fail "TLS key missing or not 0600"
+# The GM bridge's broker account: an internal-database user created at boot from rabbitmq.conf (so no guest user, and
+# no password on a command line), loopback only, least privilege, tried before the HTTP backend.
+bridge_pw_file="$DUNE_SECRETS_DIR/gm_bridge_rmq_password"
+[ "$(stat -c %a "$bridge_pw_file" 2>/dev/null)" = 600 ] && [ -s "$bridge_pw_file" ] || fail "bridge password missing or not 0600"
+for broker in admin game; do
+	[ "$(stat -c %a "$DUNE_STATE_DIR/rabbitmq-$broker/rabbitmq.conf" 2>/dev/null)" = 600 ] || fail "$broker rabbitmq.conf not 0600"
+done
+bridge_pw=$(cat "$bridge_pw_file" 2>/dev/null)
+[ -n "$bridge_pw" ] && grep -qF -- "$bridge_pw" "$DUNE_STATE_DIR/rabbitmq-admin/rabbitmq.conf" && fail "admin broker config carries the bridge password"
+users=$(libexec/dune-rabbitmq ctl game list_users --formatter json 2>/dev/null | jq -c '[.[] | [.user, .tags]]')
+[ "$users" = '[["gm_bridge",[]]]' ] || fail "game broker internal users should be exactly gm_bridge without tags: $users"
+perms=$(libexec/dune-rabbitmq ctl game list_permissions --formatter json 2>/dev/null | jq -c '[.[] | [.user, .configure, .write, .read]]')
+[ "$perms" = '[["gm_bridge","^gm\\.bridge\\..*","^gm\\.bridge\\..*","^(gm\\.bridge\\..*|chat\\.intercept)$"]]' ] || fail "bridge permissions: $perms"
+[ "$(libexec/dune-rabbitmq ctl game eval 'application:get_env(rabbit, auth_backends).' 2>/dev/null)" = '{ok,[rabbit_auth_backend_internal,rabbit_auth_backend_cache]}' ] ||
+	fail "game auth backends: $(libexec/dune-rabbitmq ctl game eval 'application:get_env(rabbit, auth_backends).' 2>&1)"
+[ "$(libexec/dune-rabbitmq ctl game eval 'application:get_env(rabbit, loopback_users).' 2>/dev/null)" = '{ok,[<<"gm_bridge">>]}' ] || fail "gm_bridge not loopback-only"
+listeners=$(ss -Hltn "sport = :$DUNE_RMQ_GAME_LOCAL_PORT" | awk '{print $4}' | paste -sd, -)
+[ "$listeners" = "127.0.0.1:$DUNE_RMQ_GAME_LOCAL_PORT" ] || fail "game broker local plain listener should be loopback only: '$listeners'"
 pid_before=$(libexec/dune-rabbitmq ctl admin eval "os:getpid()." 2>/dev/null)
 libexec/dune-rabbitmq ctl admin add_vhost idempotence-marker >/dev/null 2>&1 || fail "could not add marker vhost"
 out=$(libexec/dune-rabbitmq start admin 2>&1) || fail "start while already running must be a no-op success: $out"
@@ -64,6 +83,10 @@ grep -q '^POST /v0/auth/user HTTP' "$stub_log" 2>/dev/null || fail "no POST /v0/
 
 kill "$stub_pid" 2>/dev/null; wait "$stub_pid" 2>/dev/null; stub_pid=
 out=$(libexec/dune-rabbitmq ctl admin authenticate_user "fresh-user" secret 2>&1) && fail "auth succeeded with backend down (must fail closed)"
+out=$(libexec/dune-rabbitmq ctl game authenticate_user "fresh-user" secret 2>&1) && fail "game auth succeeded with backend down (must fail closed)"
+out=$(libexec/dune-rabbitmq ctl game authenticate_user gm_bridge "$(cat "$bridge_pw_file")" 2>&1) || fail "bridge user must authenticate from the internal database: $out"
+libexec/dune-rabbitmq ctl game authenticate_user gm_bridge wrong-password >/dev/null 2>&1 && fail "bridge user accepted a wrong password"
+libexec/dune-rabbitmq ctl game authenticate_user guest guest >/dev/null 2>&1 && fail "guest can log in to the game broker"
 
 for broker in admin game; do
 	libexec/dune-rabbitmq stop "$broker" >/dev/null 2>&1 || fail "stop $broker"

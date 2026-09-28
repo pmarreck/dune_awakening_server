@@ -10,10 +10,11 @@ fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
 unpacked="${DUNE_UNPACKED_DIR:-$DUNE_DATA_ROOT/unpacked}"
 work=$(mktemp -d "${TMPDIR:-/tmp}/dune-tr-test.XXXXXX") || exit 1
-base=$(pick_port_base 7) || { printf "FAIL no free port block\n" >&2; exit 1; }
+base=$(pick_port_base 8) || { printf "FAIL no free port block\n" >&2; exit 1; }
 export DUNE_STATE_DIR="$work/state" DUNE_SECRETS_DIR="$work/secrets" DUNE_PG_DATA="$work/pg" DUNE_PG_PORT=$base
 export DUNE_RMQ_ADMIN_PORT=$((base + 1)) DUNE_RMQ_GAME_PORT=$((base + 2)) DUNE_TEXTROUTER_PORT=$((base + 3))
 export ERL_EPMD_PORT=$((base + 4)) DUNE_RMQ_DIST_BASE=$((base + 5)) DUNE_RMQ_AUTH_ADDRESS="127.0.0.1:$((base + 3))"
+export DUNE_RMQ_GAME_LOCAL_PORT=$((base + 7))
 export DUNE_DB_UTILS_SRC="$unpacked/server-db-utils/rootfs/root" DUNE_TEXTROUTER_ROOT="$work/textrouter"
 export DUNE_WORLD_NAME=test-world DUNE_WORLD_DISPLAY_NAME="Test World"
 cleanup() {

@@ -10,9 +10,18 @@ set -u
 DUNE_RMQ_ADMIN_PORT=${DUNE_RMQ_ADMIN_PORT:-5673}
 DUNE_RMQ_GAME_PORT=${DUNE_RMQ_GAME_PORT:-31982}
 DUNE_RMQ_DIST_BASE=${DUNE_RMQ_DIST_BASE:-25672}
+# Game broker only: a loopback plain-AMQP listener for the GM bridge's own account (see write_config).
+DUNE_RMQ_GAME_LOCAL_PORT=${DUNE_RMQ_GAME_LOCAL_PORT:-5674}
 tls_dir="$DUNE_SECRETS_DIR/rmq-tls"
+bridge_pw_file="$DUNE_SECRETS_DIR/gm_bridge_rmq_password"
 
 die() { printf 'dune-rabbitmq: %s\n' "$*" >&2; exit 1; }
+
+# The GM bridge's broker password (libexec/dune-gm-bridge), created once.
+ensure_bridge_password() {
+	[ -s "$bridge_pw_file" ] && return 0
+	(umask 077; openssl rand -hex 24 > "$bridge_pw_file") || die "cannot write $bridge_pw_file"
+}
 
 # Self-signed CA plus server certificate, created once. Clients use verify_none, as in Funcom's template.
 ensure_tls() {
@@ -45,16 +54,32 @@ broker_env() {
 	export ELIXIR_ERL_OPTIONS="+fnu"
 }
 
+# The game broker also holds the GM bridge's account in its internal database, created at boot from this file (0600),
+# so no guest user exists and the password never appears on a command line. The internal backend is tried first, so
+# the bridge never depends on the TextRouter; a player's name is not in it and falls through to the HTTP backend.
+# The account is loopback-only and may create and read only gm.bridge.* queues and read chat.intercept.
 write_config() {
 	local broker=$1 auth="http://$DUNE_RMQ_AUTH_ADDRESS/v0/auth"
+	(umask 077; : > "$RABBITMQ_CONFIG_FILE") || die "cannot write $RABBITMQ_CONFIG_FILE"
 	{
-		printf 'auth_backends.1 = cache\nauth_cache.cache_ttl = 5000\nauth_cache.cached_backend = http\n'
+		if [ "$broker" = game ]; then
+			printf 'auth_backends.1 = internal\nauth_backends.2 = cache\n'
+			printf 'default_user = gm_bridge\ndefault_pass = %s\ndefault_user_tags.administrator = false\n' "$(cat "$bridge_pw_file")"
+			# RabbitMQ 4.2.5 applies default_permissions.read as the write permission and .write as the read one
+			# (observed with list_permissions; its schema builds the list as [configure, read, write]), so the keys are
+			# swapped here. tests/integration/rabbitmq asserts the effective permissions and fails if that changes.
+			printf 'default_permissions.configure = ^gm\\.bridge\\..*\ndefault_permissions.read = ^gm\\.bridge\\..*\n'
+			printf 'default_permissions.write = ^(gm\\.bridge\\..*|chat\\.intercept)$\nloopback_users.gm_bridge = true\n'
+		else
+			printf 'auth_backends.1 = cache\n'
+		fi
+		printf 'auth_cache.cache_ttl = 5000\nauth_cache.cached_backend = http\n'
 		printf 'auth_http.http_method = post\n'
 		[ -n "${DUNE_RMQ_LOG_LEVEL:-}" ] && printf "log.file.level = %s\n" "$DUNE_RMQ_LOG_LEVEL"
 		printf 'auth_http.user_path = %s/user\nauth_http.vhost_path = %s/vhost\n' "$auth" "$auth"
 		printf 'auth_http.resource_path = %s/resource\nauth_http.topic_path = %s/topic\n' "$auth" "$auth"
 		if [ "$broker" = game ]; then
-			printf 'listeners.tcp = none\nlisteners.ssl.default = 0.0.0.0:%s\n' "$DUNE_RMQ_GAME_PORT"
+			printf 'listeners.tcp.1 = 127.0.0.1:%s\nlisteners.ssl.default = 0.0.0.0:%s\n' "$DUNE_RMQ_GAME_LOCAL_PORT" "$DUNE_RMQ_GAME_PORT"
 			printf 'ssl_options.cacertfile = %s/cacert.pem\nssl_options.certfile = %s/cert.pem\n' "$tls_dir" "$tls_dir"
 			printf 'ssl_options.keyfile = %s/key.pem\nssl_options.verify = verify_none\nssl_options.fail_if_no_peer_cert = false\n' "$tls_dir"
 		else
@@ -66,7 +91,7 @@ write_config() {
 
 cmd_init() {
 	mkdir -p -m 700 "$DUNE_STATE_DIR" "$DUNE_SECRETS_DIR" "$instance" || die "cannot create state dirs"
-	[ "$1" = game ] && ensure_tls
+	[ "$1" = game ] && { ensure_tls; ensure_bridge_password; }
 	if [ ! -s "$instance/.erlang.cookie" ]; then
 		(umask 077; openssl rand -hex 32 > "$instance/.erlang.cookie") || die "cannot write cookie"
 	fi
