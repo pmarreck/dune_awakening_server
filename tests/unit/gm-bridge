@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# libexec/lib/gm_bridge.lua: the chat command bridge's pure logic (delivery parsing, commands, policy, actions).
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+exec luajit tests/unit/gm_bridge.lua
