@@ -126,7 +126,7 @@ Alice: *
 0123456789ABCDEF: where goto bring
 ```
 
-How `&give` reads its words: everything after the last standalone `to` (any case) is the player; a whole number just before it (or at the end) is the count, unless the whole text is itself an item name (`&give karpov 38` is one Karpov 38 rifle; `&give karpov 38 2` is two). An item name containing a standalone `to` therefore needs its id. A give to another player needs them online; otherwise the reply says so and nothing is sent. The reply names what was given, to whom, with the item's name and id, notes ids not yet verified in game, and reminds that a full inventory can drop items.
+How `&give` reads its words: everything after the last standalone `to` (any case) is the player; a standalone whole number just before it (or at the end) is always the count. So names containing numbers are typed hyphenated, and replies and suggestions show them that way: `&give karpov-38` is one Karpov-38 rifle, `&give karpov-38 2` is two, and `&give karpov 38` is 38 of the item called "karpov". Matching ignores spacing and punctuation, so `karpov-38` finds an item the game calls "Karpov 38". The same goes for an item name containing the word `to`: type it hyphenated (`ticket-to-ride`), since only a standalone `to` starts the player name. A give to another player needs them online; otherwise the reply says so and nothing is sent. The reply names what was given, to whom, with the item's name and id, notes ids not yet verified in game, and reminds that a full inventory can drop items.
 
 The bridge runs as a world component (`dune-awakening start` starts it last, `stop` stops it first, `status` lists it); its log is `runtime/gm-bridge/gm-bridge.log` (0600).
 

@@ -103,9 +103,9 @@ end
 local GIVE_USAGE = "&give <item name or id> [count] [to <player>]"
 local FULL_INVENTORY = "; a full inventory can drop items"
 
--- parse_give(cmd) -> {item, count (string or nil), whole, target (nil = the sender)} or nil for a usage error. The
--- target is everything after the last standalone `to` (any case); a trailing whole number before it is the count,
--- unless the whole text (number included) names an item, which plan decides (whole keeps that text).
+-- parse_give(cmd) -> {item, count (string or nil), target (nil = the sender)} or nil for a usage error. The target is
+-- everything after the last standalone `to` (any case); a standalone whole number before it is always the count, so
+-- names containing numbers are typed hyphenated (karpov-38).
 function M.parse_give(cmd)
 	local s = " " .. (cmd.rest or "") .. " "
 	local cut, target
@@ -121,11 +121,11 @@ function M.parse_give(cmd)
 		if target == "" then return nil end
 	end
 	local item, count = trim(head), nil
-	local whole = item
+
 	local before, n = item:match("^(.-)%s+(%d+)$")
 	if before then item, count = before, n end
 	if item == "" or item:match("^%d+$") then return nil end
-	return { item = item, count = count, whole = whole, target = target }
+	return { item = item, count = count, target = target }
 end
 
 -- permission(cmd, me) -> the policy permission cmd needs when sent by character me: give-others for a give to
@@ -174,15 +174,9 @@ function M.plan(cmd, sender, policy, item_db)
 	elseif n == "give" then
 		local g = M.parse_give(cmd)
 		if not g or (g.target and not ok_arg(g.target)) then return usage(GIVE_USAGE) end
-		-- "karpov 38" is a name, not 38 karpovs: an exact name or id for the whole text wins over a trailing count.
-		local r
-		if g.count then
-			local w = items.resolve(item_db, g.whole)
-			if w.item and not w.item.raw then r, g.count = w, nil end
-		end
 		if g.count and tonumber(g.count) < 1 then return usage(GIVE_USAGE) end
-		r = r or items.resolve(item_db, g.item)
-		local function label(it) return string.format("%s (%s)", it.name, it.id) end
+		local r = items.resolve(item_db, g.item)
+		local function label(it) return string.format("%s (%s)", items.display(it.name), it.id) end
 		if not r.item then
 			local c = r.candidates or {}
 			local list = {}
@@ -203,7 +197,7 @@ function M.plan(cmd, sender, policy, item_db)
 			or it.verified == false and string.format(" (%s, id not yet verified in game)", it.id)
 			or string.format(" (%s)", it.id)
 		return { actions = { { "character", "give", who, it.id, tostring(count) } },
-			reply = string.format("gave %s %d %s%s%s", who == me and "you" or who, count, it.name, note, FULL_INVENTORY) }
+			reply = string.format("gave %s %d %s%s%s", who == me and "you" or who, count, items.display(it.name), note, FULL_INVENTORY) }
 	elseif n == "kick" then
 		if not ok_arg(cmd.rest) then return usage("&kick <player>") end
 		return { actions = { { "character", "kick", cmd.rest } }, reply = "kicked " .. cmd.rest }

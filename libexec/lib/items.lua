@@ -9,6 +9,13 @@ local function is_id(s) return s:match("^[%w_]+$") ~= nil end
 
 -- normalize(s): the form names are compared in. Lowercase, apostrophes dropped, any other run of non-alphanumeric
 -- characters one space, trimmed; so "Karpov-38" = "karpov 38" and "Flamegouger's" = "flamegougers".
+-- display(name): how an item name is shown to players. A standalone number is joined to the word before it
+-- ("Karpov 38 rifle" -> "Karpov-38 rifle"), because &give reads a standalone trailing number as the count; the
+-- hyphenated form is what players type, and normalize makes both forms match the same item.
+function M.display(name)
+	return (name:gsub("(%S)%s+(%d+)%f[%s%z]", "%1-%2"))
+end
+
 function M.normalize(s)
 	return trim((s:lower():gsub("['\226\128\153]", ""):gsub("[^%w]+", " ")))
 end

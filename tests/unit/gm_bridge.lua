@@ -150,12 +150,14 @@ local give_cases = {
 	{ "&give  EMF   generator  TO  Bob Two", { { "character", "give", "Bob Two", "FremenComponent1", "1" } }, "gave Bob Two 1 EMF Generator (FremenComponent1)" .. FULL },
 	{ "&give solari 5000", { { "character", "give", "Alice", "SolarisCoin", "5000" } }, "gave you 5000 Solari (SolarisCoin)" .. FULL },
 	{ "&give money 1000000", { { "character", "give", "Alice", "SolarisCoin", "1000000" } }, "gave you 1000000 Solari (SolarisCoin)" .. FULL },
-	{ "&give HarkAr2", { { "character", "give", "Alice", "HarkAr2", "1" } }, "gave you 1 Karpov 38 rifle (HarkAr2)" .. FULL },
-	-- A name ending in a number: the whole text names an item, so the number is part of the name, not a count.
-	{ "&give karpov 38", { { "character", "give", "Alice", "HarkAr2", "1" } }, "gave you 1 Karpov 38 rifle (HarkAr2)" .. FULL },
-	{ "&give Karpov-38 to Bob", { { "character", "give", "Bob", "HarkAr2", "1" } }, "gave Bob 1 Karpov 38 rifle (HarkAr2)" .. FULL },
-	{ "&give karpov 38 2", { { "character", "give", "Alice", "HarkAr2", "2" } }, "gave you 2 Karpov 38 rifle (HarkAr2)" .. FULL },
-	{ "&give karpov 3", { { "character", "give", "Alice", "HarkAr2", "3" } }, "gave you 3 Karpov 38 rifle (HarkAr2)" .. FULL },
+	{ "&give HarkAr2", { { "character", "give", "Alice", "HarkAr2", "1" } }, "gave you 1 Karpov-38 rifle (HarkAr2)" .. FULL },
+	-- A standalone trailing number is always the count: names containing numbers are typed
+	-- hyphenated (karpov-38), and replies show them that way. Matching ignores spacing and punctuation.
+	{ "&give karpov 38", { { "character", "give", "Alice", "HarkAr2", "38" } }, "gave you 38 Karpov-38 rifle (HarkAr2)" .. FULL },
+	{ "&give karpov-38", { { "character", "give", "Alice", "HarkAr2", "1" } }, "gave you 1 Karpov-38 rifle (HarkAr2)" .. FULL },
+	{ "&give Karpov-38 to Bob", { { "character", "give", "Bob", "HarkAr2", "1" } }, "gave Bob 1 Karpov-38 rifle (HarkAr2)" .. FULL },
+	{ "&give karpov-38 2", { { "character", "give", "Alice", "HarkAr2", "2" } }, "gave you 2 Karpov-38 rifle (HarkAr2)" .. FULL },
+	{ "&give karpov 3", { { "character", "give", "Alice", "HarkAr2", "3" } }, "gave you 3 Karpov-38 rifle (HarkAr2)" .. FULL },
 	{ "&give solari 3 to Alice", { { "character", "give", "Alice", "SolarisCoin", "3" } }, "gave you 3 Solari (SolarisCoin)" .. FULL },
 	{ "&give D_FremenComponent3", { { "character", "give", "Alice", "D_FremenComponent3", "1" } }, "gave you 1 EMF Generator (D_FremenComponent3)" .. FULL },
 	{ "&give raider tokens 10", { { "character", "give", "Alice", "EventRaiderToken", "10" } }, "gave you 10 Raider Tokens (EventRaiderToken, id not yet verified in game)" .. FULL },
@@ -175,7 +177,7 @@ end
 local many = {}
 for i = 1, 8 do many[i] = "Rock" .. i .. "\tRock Type " .. i .. "\t0" end
 p = plan("&give rock type", items.build({}, items.parse_generated(table.concat(many, "\n"))))
-eq("suggestions capped", p.reply, 'no item "rock type"; did you mean: Rock Type 1 (Rock1), Rock Type 2 (Rock2), Rock Type 3 (Rock3), Rock Type 4 (Rock4), Rock Type 5 (Rock5), and 3 more?')
+eq("suggestions capped", p.reply, 'no item "rock type"; did you mean: Rock Type-1 (Rock1), Rock Type-2 (Rock2), Rock Type-3 (Rock3), Rock Type-4 (Rock4), Rock Type-5 (Rock5), and 3 more?')
 for _, bad in ipairs({ "&give", "&give 5", "&give to Bob", "&give solari to", "&give solari 0", "&give solari 5 to -h", "&give solari to Bob\tx" }) do
 	p = plan(bad)
 	if #p.actions ~= 0 then fail(bad .. " produced actions: " .. cjson.encode(p.actions)) end
