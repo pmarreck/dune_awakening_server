@@ -100,10 +100,13 @@ end
 
 -- Plans: argv for dune-live and the reply -----------------------------------------------------------------------
 local alice = { fls = ALICE, name = "Alice", origin = { x = 155566.13, y = 300580.16, z = 1590.89 } }
--- Item names: the curated list shipped in the repo plus a tiny synthetic generated list.
+-- Item names: the curated list shipped in the repo plus a tiny synthetic generated list (id, name, deprecated,
+-- category, stack size).
 local f = assert(io.open("data/items.tsv", "rb")); local curated = items.parse_curated(f:read("*a")); f:close()
-local generated = items.parse_generated(table.concat({ "FremenComponent1\tEMF Generator\t0", "D_FremenComponent3\tEMF Generator\t1",
-	"SolarisCoin\tSolari\t0", "SandbikeChassis_1\tSandbike Chassis\t0", "Ammo\tLight Darts\t0", "BarA\tTwin Bar\t0", "BarB\tTwin Bar\t0" }, "\n"))
+local generated = items.parse_generated(table.concat({ "FremenComponent1\tEMF Generator\t0\tResources\t500",
+	"D_FremenComponent3\tEMF Generator\t1\tResources\t500", "SolarisCoin\tSolari\t0\tResources\t50000",
+	"SandbikeChassis_1\tSandbike Chassis\t0\tVehicles\t1", "Ammo\tLight Darts\t0\tWeapons\t1000", "HarkAr2\tKarpov 38\t0\tWeapons\t1",
+	"BarA\tTwin Bar\t0", "BarB\tTwin Bar\t0" }, "\n"))
 local db, nogen = items.build(curated, generated), items.build(curated, nil)
 local function plan(text, d) return gm.plan(gm.parse_command(text), alice, policy, d == nil and db or d) end
 local p = plan("&where")
@@ -150,19 +153,28 @@ local give_cases = {
 	{ "&give  EMF   generator  TO  Bob Two", { { "character", "give", "Bob Two", "FremenComponent1", "1" } }, "gave Bob Two 1 EMF Generator (FremenComponent1)" .. FULL },
 	{ "&give solari 5000", { { "character", "give", "Alice", "SolarisCoin", "5000" } }, "gave you 5000 Solari (SolarisCoin)" .. FULL },
 	{ "&give money 1000000", { { "character", "give", "Alice", "SolarisCoin", "1000000" } }, "gave you 1000000 Solari (SolarisCoin)" .. FULL },
-	{ "&give HarkAr2", { { "character", "give", "Alice", "HarkAr2", "1" } }, "gave you 1 Karpov-38 rifle (HarkAr2)" .. FULL },
+	{ "&give HarkAr2", { { "character", "give", "Alice", "HarkAr2", "1" } }, "gave you 1 Karpov-38 (HarkAr2)" .. FULL },
 	-- A standalone trailing number is always the count: names containing numbers are typed
 	-- hyphenated (karpov-38), and replies show them that way. Matching ignores spacing and punctuation.
-	{ "&give karpov 38", { { "character", "give", "Alice", "HarkAr2", "38" } }, "gave you 38 Karpov-38 rifle (HarkAr2)" .. FULL },
-	{ "&give karpov-38", { { "character", "give", "Alice", "HarkAr2", "1" } }, "gave you 1 Karpov-38 rifle (HarkAr2)" .. FULL },
-	{ "&give Karpov-38 to Bob", { { "character", "give", "Bob", "HarkAr2", "1" } }, "gave Bob 1 Karpov-38 rifle (HarkAr2)" .. FULL },
-	{ "&give karpov-38 2", { { "character", "give", "Alice", "HarkAr2", "2" } }, "gave you 2 Karpov-38 rifle (HarkAr2)" .. FULL },
-	{ "&give karpov 3", { { "character", "give", "Alice", "HarkAr2", "3" } }, "gave you 3 Karpov-38 rifle (HarkAr2)" .. FULL },
+	{ "&give karpov 38", {}, "at most 10 Karpov-38 (HarkAr2) per give" },
+	{ "&give karpov-38 10", { { "character", "give", "Alice", "HarkAr2", "10" } }, "gave you 10 Karpov-38 (HarkAr2)" .. FULL },
+	{ "&give karpov-38", { { "character", "give", "Alice", "HarkAr2", "1" } }, "gave you 1 Karpov-38 (HarkAr2)" .. FULL },
+	{ "&give Karpov-38 to Bob", { { "character", "give", "Bob", "HarkAr2", "1" } }, "gave Bob 1 Karpov-38 (HarkAr2)" .. FULL },
+	{ "&give karpov-38 2", { { "character", "give", "Alice", "HarkAr2", "2" } }, "gave you 2 Karpov-38 (HarkAr2)" .. FULL },
+	{ "&give karpov 3", { { "character", "give", "Alice", "HarkAr2", "3" } }, "gave you 3 Karpov-38 (HarkAr2)" .. FULL },
 	{ "&give solari 3 to Alice", { { "character", "give", "Alice", "SolarisCoin", "3" } }, "gave you 3 Solari (SolarisCoin)" .. FULL },
 	{ "&give D_FremenComponent3", { { "character", "give", "Alice", "D_FremenComponent3", "1" } }, "gave you 1 EMF Generator (D_FremenComponent3)" .. FULL },
 	{ "&give raider tokens 10", { { "character", "give", "Alice", "EventRaiderToken", "10" } }, "gave you 10 Raider Tokens (EventRaiderToken, id not yet verified in game)" .. FULL },
 	{ "&give solari 1000001 to Bob", {}, "at most 1000000 Solari (SolarisCoin) per give" },
-	{ "&give emf 1001", {}, "at most 1000 EMF Generator (FremenComponent1) per give" },
+	-- Without a curated max count, the cap is the item's stack size (at least 10), else 1000.
+	{ "&give emf 500", { { "character", "give", "Alice", "FremenComponent1", "500" } }, "gave you 500 EMF Generator (FremenComponent1)" .. FULL },
+	{ "&give emf 501", {}, "at most 500 EMF Generator (FremenComponent1) per give" },
+	{ "&give light darts 1001", {}, "at most 1000 Light Darts (Ammo) per give" },
+	{ "&give sandbike chassis 11", {}, "at most 10 Sandbike Chassis (SandbikeChassis_1) per give" },
+	{ "&give twin bar", {}, 'several items are named "twin bar": Twin Bar (BarA), Twin Bar (BarB); give one by id' },
+	{ "&give BarA 1000", { { "character", "give", "Alice", "BarA", "1000" } }, "gave you 1000 Twin Bar (BarA)" .. FULL },
+	{ "&give BarA 1001", {}, "at most 1000 Twin Bar (BarA) per give" },
+	{ "&give FooBar_9 1001", {}, "at most 1000 FooBar_9 (FooBar_9) per give", nogen },
 	{ "&give twin bar", {}, 'several items are named "twin bar": Twin Bar (BarA), Twin Bar (BarB); give one by id' },
 	{ "&give solary 5", {}, 'no item "solary"; did you mean: Solari (SolarisCoin)?' },
 	{ "&give zzqqzzqq", {}, 'no item "zzqqzzqq"; try another name or an item id' },

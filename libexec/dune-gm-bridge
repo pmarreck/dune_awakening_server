@@ -44,7 +44,8 @@ the bridge runs it through dune-live and whispers the result back (sender shown 
   &say <message>         on-screen broadcast to everyone
   &timeout on|off|status the world break (no damage, sandworms or storms)
   &give <item> [n] [to <player>]
-                         put n (default 1, at most 1000 unless the item list says more) of an item, by name
+                         put n (default 1, at most one stack of the item but at least 10, 1000 when the
+                         stack size is unknown, unless data/items.tsv sets another max) of an item, by name
                          or id, into your inventory (permission give) or an online player's (give-others)
   &kick <player>         disconnect a player
 

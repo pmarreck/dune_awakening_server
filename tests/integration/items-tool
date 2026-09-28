@@ -12,8 +12,10 @@ unset DUNE_RETOC DUNE_ITEMS_GENERATED DUNE_SERVER_SRC
 export DUNE_STATE_DIR="$work/state dir"
 tool() { libexec/dune-items "$@" >"$work/out" 2>"$work/err"; }
 luajit tests/lib/ue_fixture.lua "$work/legacy tree" || { fail "fixture"; exit 1; }
-want=$(printf '%s\n' "Creme	Crème 🐛 Brûlée €	0	Vehicles" "D_FremenComponent3	EMF Generator	1	Resources" "FremenComponent1	EMF Generator	0	Resources" \
-	"SandbikeChassis_1	Sandbike Chassis	0	Vehicles" "SolarisCoin	Solari	0	Resources" "TestThing	Base Text Thing	0	Vehicles")
+# id, name, deprecated, category, stack size (empty: unknown).
+want=$(printf '%s\n' "Creme	Crème 🐛 Brûlée €	0	Vehicles	" "D_FremenComponent3	EMF Generator	1	Resources	500" \
+	"FremenComponent1	EMF Generator	0	Resources	500" "SandbikeChassis_1	Sandbike Chassis	0	Vehicles	1" "SolarisCoin	Solari	0	Resources	50000" \
+	"TestThing	Base Text Thing	0	Vehicles	")
 body() { grep -v '^#' "$1"; }
 
 tool --help || fail "--help exited nonzero"
@@ -66,14 +68,17 @@ tool refresh; [ $? -eq 1 ] && [[ "$(cat "$work/err")" == *"retoc failed"*boom* ]
 [ "$(cat "$default")" = "keep me" ] || fail "a failed refresh replaced the previous list"
 tool refresh --paks "$work/nowhere"; [ $? -eq 1 ] && [[ "$(cat "$work/err")" == *"$work/nowhere"* ]] || fail "missing Paks dir: $(cat "$work/err")"
 
-# find: the bridge's lookup (curated data/items.tsv first, then the generated list).
+# find: the bridge's lookup (curated data/items.tsv first, then the generated list), with the most one give hands out:
+# the curated max count, else the stack size (at least 10), else 1000.
 export DUNE_ITEMS_GENERATED="$work/out dir/generated.tsv"
-tool find emf generator && [ "$(cat "$work/out")" = "FremenComponent1	EMF Generator" ] || fail "find emf generator: $(cat "$work/out" "$work/err")"
+tool find emf generator && [ "$(cat "$work/out")" = "FremenComponent1	EMF Generator	max 500" ] || fail "find emf generator: $(cat "$work/out" "$work/err")"
 tool find "  SOLARI " && [ "$(cat "$work/out")" = "SolarisCoin	Solari	max 1000000" ] || fail "find solari: $(cat "$work/out" "$work/err")"
-tool find raider tokens && [ "$(cat "$work/out")" = "EventRaiderToken	Raider Tokens	unverified" ] || fail "find raider tokens: $(cat "$work/out" "$work/err")"
-tool find Base Text Thing && [ "$(cat "$work/out")" = "TestThing	Base Text Thing" ] || fail "find generated-only: $(cat "$work/out" "$work/err")"
+tool find sandbike chassis && [ "$(cat "$work/out")" = "SandbikeChassis_1	Sandbike Chassis	max 10" ] || fail "find sandbike chassis: $(cat "$work/out" "$work/err")"
+tool find raider tokens && [ "$(cat "$work/out")" = "EventRaiderToken	Raider Tokens	max 1000	unverified" ] || fail "find raider tokens: $(cat "$work/out" "$work/err")"
+tool find Base Text Thing && [ "$(cat "$work/out")" = "TestThing	Base Text Thing	max 1000" ] || fail "find generated-only: $(cat "$work/out" "$work/err")"
 tool find solary; [ $? -eq 1 ] && [ "$(cat "$work/out")" = "SolarisCoin	Solari" ] && [[ "$(cat "$work/err")" == *'no item "solary"'* ]] || fail "find solary: $(cat "$work/out" "$work/err")"
-tool --json find solari && [ "$(jq -r '.item.id' "$work/out")" = SolarisCoin ] || fail "find --json: $(cat "$work/out")"
+tool --json find solari && [ "$(jq -r '[.item.id, .item.cap, .item.stack, .item.max] | join(" ")' "$work/out")" = "SolarisCoin 1000000 50000 1000000" ] ||
+	fail "find --json: $(cat "$work/out")"
 tool find --json solary; [ $? -eq 1 ] && [ "$(jq -r '.candidates[0].id' "$work/out")" = SolarisCoin ] || fail "find --json candidates: $(cat "$work/out")"
 tool find; [ $? -eq 2 ] || fail "find without a name is not a usage error"
 

@@ -1,8 +1,14 @@
 -- Item names for the chat bridge's &give: a curated list kept in the repo (data/items.tsv: id, verified, max count,
 -- aliases) and a list generated privately from the game's own item tables (dune-items refresh: id, display name,
--- deprecated), merged into one lookup where the curated list wins. Pure: callers pass file contents in.
+-- deprecated, category, stack size), merged into one lookup where the curated list wins. Pure: callers pass file
+-- contents in.
 local M = {}
 M.MAX_SUGGESTIONS = 5
+-- The most one &give hands out when the curated list sets no max count: one stack (the game's MaxStackSize), but at
+-- least MIN_STACK_CAP so several unstackable items (weapons, fuel cells: stack size 1) can be given in one go; and
+-- DEFAULT_CAP when the stack size is unknown.
+M.DEFAULT_CAP = 1000
+M.MIN_STACK_CAP = 10
 
 local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
 local function is_id(s) return s:match("^[%w_]+$") ~= nil end
@@ -59,13 +65,15 @@ function M.parse_curated(text)
 	return entries, errors
 end
 
--- parse_generated(text) -> entries {id, name, deprecated}. Lines `id<TAB>display name<TAB>0|1`; others are skipped.
+-- parse_generated(text) -> entries {id, name, deprecated, stack}. Lines `id<TAB>display name<TAB>0|1[<TAB>category
+-- [<TAB>stack size]]`; others are skipped. stack is nil unless the fifth column is a whole number >= 1.
 function M.parse_generated(text)
 	local out = {}
 	for _, l in lines(text) do
 		local f = fields(l)
 		if not l:match("^#") and #f >= 3 and is_id(f[1]) and f[2] ~= "" then
-			out[#out + 1] = { id = f[1], name = f[2], deprecated = f[3] == "1" }
+			local stack = (f[5] or ""):match("^%d+$") and tonumber(f[5]) or nil
+			out[#out + 1] = { id = f[1], name = f[2], deprecated = f[3] == "1", stack = stack and stack >= 1 and stack or nil }
 		end
 	end
 	return out
@@ -82,7 +90,7 @@ function M.build(curated, generated)
 		return db.by_id[k]
 	end
 	for _, g in ipairs(generated or {}) do
-		local it = item(g.id); it.name = it.name or g.name; it.deprecated = g.deprecated
+		local it = item(g.id); it.name = it.name or g.name; it.deprecated = g.deprecated; it.stack = g.stack
 	end
 	local owned = {}
 	local function add(n, id)
@@ -108,9 +116,14 @@ function M.build(curated, generated)
 	return db
 end
 
+-- give_cap(max, stack): the most one &give hands out; see DEFAULT_CAP.
+local function give_cap(max, stack)
+	return max or (stack and math.max(stack, M.MIN_STACK_CAP)) or M.DEFAULT_CAP
+end
+
 local function view(db, id)
 	local it = db.by_id[id:lower()]
-	return { id = it.id, name = it.name or it.id, max = it.max, verified = it.verified }
+	return { id = it.id, name = it.name or it.id, max = it.max, stack = it.stack, cap = give_cap(it.max, it.stack), verified = it.verified }
 end
 
 local function levenshtein(a, b)
@@ -166,7 +179,8 @@ local function suggest(db, n)
 	return out, more
 end
 
--- resolve(db, query) -> {item = {id, name, max, verified, raw}} for exactly one item; otherwise {candidates = {...},
+-- resolve(db, query) -> {item = {id, name, max, stack, cap, verified, raw}} for exactly one item (max: the curated
+-- count; cap: the most one give hands out); otherwise {candidates = {...},
 -- ambiguous = true when several items share the name, more = how many candidates were left out}. An exact item id
 -- (any case) wins over names.
 function M.resolve(db, query)
@@ -181,7 +195,7 @@ function M.resolve(db, query)
 		for i = 1, math.min(#ids, M.MAX_SUGGESTIONS) do c[i] = view(db, ids[i]) end
 		return { candidates = c, ambiguous = true, more = math.max(0, #ids - M.MAX_SUGGESTIONS) }
 	end
-	if not db.has_generated and is_id(q) then return { item = { id = q, name = q, raw = true } } end
+	if not db.has_generated and is_id(q) then return { item = { id = q, name = q, cap = M.DEFAULT_CAP, raw = true } } end
 	local c, more = suggest(db, n)
 	return { candidates = c, more = more }
 end

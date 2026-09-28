@@ -27,7 +27,19 @@ for pair in "SolarisCoin	Solari	0" "HarkAr2	Karpov 38	0" "FremenComponent1	EMF G
 	"FuelCanister_Large	Large Vehicle Fuel Cell	0"; do
 	grep -qP "^\Q$pair\E\t" "$list" || fail "not in the generated list: $(tr '\t' '|' <<<"$pair")"
 done
+# Stack sizes (StackAndDurability.MaxStackSize, fifth column) as read from the 1.5 tables; they fit the items (coins,
+# darts and resources stack, a rifle and a fuel cell do not) but are not checked in game.
+for pair in SolarisCoin=50000 Ammo=1000 HeavyAmmo=1000 FremenComponent1=500 HarkAr2=1 FuelCanister_Large=1; do
+	got=$(awk -F'\t' -v id="${pair%%=*}" '$1 == id { print $5 }' "$list")
+	[ "$got" = "${pair#*=}" ] || fail "stack size of ${pair%%=*}: got '$got', want ${pair#*=}"
+done
+[ "$(awk -F'\t' '!/^#/ && $5 == ""' "$list" | wc -l)" -lt 50 ] || fail "many items without a stack size in $list"
 export DUNE_ITEMS_GENERATED="$list"
+# The most one give hands out: curated max count, else the stack size (at least 10), else 1000.
+for c in "solari=1000000" "emf generator=500" "light darts=1000" "karpov-38=10" "large vehicle fuel cell=10"; do
+	got=$(libexec/dune-items find "${c%%=*}" 2>&1 | cut -f3)
+	[ "$got" = "max ${c#*=}" ] || fail "find ${c%%=*} cap: got $got, want max ${c#*=}"
+done
 for c in "emf generator=FremenComponent1" "EMF Generator=FremenComponent1" "solari=SolarisCoin" "karpov 38=HarkAr2" "sandbike psu=SandbikeGenerator_1"; do
 	got=$(libexec/dune-items find "${c%%=*}" 2>&1 | cut -f1)
 	[ "$got" = "${c#*=}" ] || fail "find ${c%%=*}: got $got, want ${c#*=}"

@@ -30,15 +30,16 @@ Usage: dune-items refresh [--paks DIR | --legacy DIR] [--out FILE]
 Item names for the in-game &give command (docs/admin.md, "Giving items").
 
   refresh   Read the game's item tables (DT_BaseItems_*) and string tables (ST_Localization_*) and write the
-            generated list of item ids and display names. It is derived from Funcom's content, so it stays private
-            (0600, outside the repository); run it again after a game update.
+            generated list of item ids, display names and stack sizes. It is derived from Funcom's content, so it
+            stays private (0600, outside the repository); run it again after a game update.
               --paks DIR    the server's Paks directory (default $DUNE_SERVER_SRC/DuneSandbox/Content/Paks),
                             converted with retoc: set DUNE_RETOC to a retoc binary (not part of this project)
               --legacy DIR  an already converted tree instead (retoc to-legacy output); retoc is not needed
               --out FILE    where to write (default $DUNE_ITEMS_GENERATED, else $DUNE_STATE_DIR/items/generated.tsv);
                             - or @stdout for standard output
   find      Resolve a name the way the bridge does (curated data/items.tsv first, then the generated list). Prints
-            `id<TAB>name` (plus the max count and "unverified" when the curated list says so) and exits 0; for an
+            `id<TAB>name<TAB>max N` (N: the most one give hands out; the curated max count, else the item's stack
+            size but at least 10, else 1000), plus "unverified" when the curated list says so, and exits 0; for an
             unknown or ambiguous name prints the closest matches and exits 1.
               --json        {"item": {...}} or {"candidates": [...], "ambiguous": bool, "more": n}
 
@@ -163,7 +164,7 @@ local function cmd_find(o)
 	end
 	if r.item then
 		local it = r.item
-		local extra = (it.max and ("\tmax " .. it.max) or "") .. (it.verified == false and "\tunverified" or "") .. (it.raw and "\tnot in the item list" or "")
+		local extra = "\tmax " .. it.cap .. (it.verified == false and "\tunverified" or "") .. (it.raw and "\tnot in the item list" or "")
 		io.stdout:write(it.id, "\t", it.name, extra, "\n")
 		return EXIT_OK
 	end

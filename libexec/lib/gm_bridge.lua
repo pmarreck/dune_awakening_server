@@ -12,7 +12,6 @@ M.NOT_ALLOWED = "not allowed"
 M.COMMANDS = { "bring", "give", "give-others", "goto", "kick", "say", "timeout", "where" }
 local KNOWN = { help = true }
 for _, c in ipairs(M.COMMANDS) do KNOWN[c] = true end
-local MAX_GIVE = 1000 -- per give, unless the curated item list sets a max for the item
 local MAX_ARG = 200
 
 local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
@@ -190,7 +189,8 @@ function M.plan(cmd, sender, policy, item_db)
 			return { actions = {}, reply = string.format('no item "%s"; try another name or an item id', g.item) }
 		end
 		local it = r.item
-		local count, max = tonumber(g.count or "1"), it.max or MAX_GIVE
+		-- The cap per give (lib/items.lua): the curated max count, else the stack size (at least 10), else 1000.
+		local count, max = tonumber(g.count or "1"), it.cap
 		if count > max then return { actions = {}, reply = string.format("at most %d %s per give", max, label(it)) } end
 		local who = g.target or me
 		local note = it.raw and " (not in the item list; nothing arrives if the game does not know it)"

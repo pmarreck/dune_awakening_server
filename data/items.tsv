@@ -3,7 +3,8 @@
 # Where both name something, this file wins.
 #
 # Columns, tab-separated: item id, verified (yes = seen working in game on this world), max count per give
-# (- = the default, 1000), aliases (|-separated; case, spacing and punctuation do not matter).
+# (- = the default: the item's stack size from the generated list, at least 10, or 1000 when the stack size is
+# unknown), aliases (|-separated; case, spacing and punctuation do not matter).
 HarkAr2	yes	-	Karpov 38 rifle|karpov 38|karpov
 Ammo	no	-	Light Darts|light dart|darts
 HeavyAmmo	no	-	Heavy Darts|heavy dart

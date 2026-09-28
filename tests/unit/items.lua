@@ -30,22 +30,24 @@ for i, want in ipairs({ "line 6", "line 7", "line 8", "line 9" }) do
 	if not (errors[i] or ""):find(want, 1, true) then fail("curated error " .. i .. " does not name " .. want .. ": " .. tostring(errors[i])) end
 end
 
--- Generated: id, display name, deprecated flag. A deprecated item that shares a live item's name is never chosen by
--- that name; two live items sharing a name are ambiguous.
+-- Generated: id, display name, deprecated flag, category, stack size (optional: older lists have only the first
+-- three or four columns). A deprecated item that shares a live item's name is never chosen by that name; two live
+-- items sharing a name are ambiguous.
 local generated = items.parse_generated("# generated\n" .. tsv({
-	{ "FremenComponent1", "EMF Generator", "0" },
-	{ "D_FremenComponent3", "EMF Generator", "1" },
-	{ "SolarisCoin", "Solari", "0" },
+	{ "FremenComponent1", "EMF Generator", "0", "Resources", "500" },
+	{ "D_FremenComponent3", "EMF Generator", "1", "Resources", "500" },
+	{ "SolarisCoin", "Solari", "0", "Resources", "50000" },
 	{ "OldThing", "Old Thing", "1" },
-	{ "BarA", "Twin Bar", "0" },
-	{ "BarB", "Twin Bar", "0" },
-	{ "GlowStick_1", "Glow Stick", "0" },
-	{ "GlowStickDep", "Glow Stick", "1" },
-	{ "HarkAr3", "Karpov 38", "0" },
-	{ "ScrapKnife", "Scrap Metal Knife", "0" },
-	{ "ScrapAxe", "Scrap Metal Axe", "0" },
+	{ "BarA", "Twin Bar", "0", "Misc", "" },
+	{ "BarB", "Twin Bar", "0", "Misc", "0" },
+	{ "GlowStick_1", "Glow Stick", "0", "Gadgets", "20" },
+	{ "GlowStickDep", "Glow Stick", "1", "Gadgets", "x" },
+	{ "HarkAr3", "Karpov 38", "0", "Weapons", "1" },
+	{ "ScrapKnife", "Scrap Metal Knife", "0", "Weapons", "1" },
+	{ "ScrapAxe", "Scrap Metal Axe", "0", "Weapons", "5" },
+	{ "Pebble", "Pebble", "0", "Resources" },
 }))
-eq("generated entries", #generated, 11)
+eq("generated entries", #generated, 12)
 
 local db = items.build(curated, generated)
 local nogen = items.build(curated, nil)
@@ -88,12 +90,37 @@ eq("curated wins over a live namesake", outcome(items.build(curated, items.parse
 
 -- What a resolved item carries: friendly name (generated display name, else the first alias), cap, verified.
 local r = items.resolve(db, "house credits").item
-eq("curated-only name", r.name, "House Credits"); eq("unverified", r.verified, false); eq("default cap", r.max, nil)
+eq("curated-only name", r.name, "House Credits"); eq("unverified", r.verified, false); eq("no curated max", r.max, nil)
 r = items.resolve(db, "cash").item
-eq("generated display name", r.name, "Solari"); eq("cap", r.max, 1000000); eq("verified", r.verified, true)
+eq("generated display name", r.name, "Solari"); eq("curated max", r.max, 1000000); eq("verified", r.verified, true)
 r = items.resolve(db, "glow stick").item
 eq("generated-only verified is nil", r.verified, nil)
 eq("suggestion names", items.resolve(db, "solary").candidates[1].name, "Solari")
+-- The most one give hands out (cap), a classifier over a set of items: the curated max count if set; else the
+-- item's stack size, raised to MIN_STACK_CAP so several unstackable items (weapons, stack size 1) can be given at
+-- once; else (stack size unknown: no column, empty, 0 or not a number) DEFAULT_CAP.
+eq("default cap", items.DEFAULT_CAP, 1000); eq("minimum stack cap", items.MIN_STACK_CAP, 10)
+for _, c in ipairs({
+	{ "SolarisCoin", 1000000 },    -- curated max wins over the stack size (50000)
+	{ "FremenComponent1", 500 },   -- curated with max -, stack size 500
+	{ "GlowStick_1", 20 },         -- generated only, stack size 20
+	{ "ScrapKnife", 10 },          -- stack size 1: raised to the minimum
+	{ "ScrapAxe", 10 },            -- stack size 5: raised to the minimum
+	{ "HarkAr3", 10 },
+	{ "BarA", 1000 },              -- empty stack size: unknown
+	{ "BarB", 1000 },              -- 0: unknown
+	{ "GlowStickDep", 1000 },      -- not a number: unknown
+	{ "OldThing", 1000 },          -- an older list without the column
+	{ "Pebble", 1000 },
+	{ "HouseCredit", 1000 },       -- curated only
+}) do
+	local it = items.resolve(db, c[1]).item
+	eq("cap " .. c[1], it and it.cap, c[2])
+end
+eq("stack size carried", items.resolve(db, "GlowStick_1").item.stack, 20)
+eq("unknown stack size is nil", items.resolve(db, "BarB").item.stack, nil)
+eq("raw id cap", items.resolve(nogen, "NotAnItem").item.cap, 1000)
+eq("suggestion cap", items.resolve(db, "solary").candidates[1].cap, 1000000)
 -- At most five suggestions.
 local many = {}
 for i = 1, 9 do many[i] = { "Rock" .. i, "Rock Type " .. i, "0" } end

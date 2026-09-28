@@ -5,6 +5,8 @@
 -- rows of (FName row name, tagged struct); a StringTable holds namespace, count and key/value FStrings.
 -- An item's id is its row name; its display name is StaticData.Name, an FText whose StringTableEntry history (type 11)
 -- names a string table and key (checked against known pairs: SolarisCoin = Solari, HarkAr2 = Karpov 38).
+-- Its stack size is StackAndDurability.MaxStackSize, an IntProperty in the row's ItemStackAndDurabilityStats struct
+-- (a sibling of StaticData; SolarisCoin 50000, Ammo 1000, raw resources 500, HarkAr2 and fuel cells 1).
 local M = {}
 
 local PACKAGE_TAG = 0x9E2A83C1
@@ -117,8 +119,8 @@ function M.string_table(uasset, uexp)
 	end)
 end
 
--- item_rows(uasset, uexp) -> {{id, table, key, text, deprecated}...} or nil, error. table/key: the string table entry
--- naming the item; text: an inline name (Base history) instead.
+-- item_rows(uasset, uexp) -> {{id, table, key, text, deprecated, stack}...} or nil, error. table/key: the string table
+-- entry naming the item; text: an inline name (Base history) instead; stack: MaxStackSize, nil when the row has none.
 function M.item_rows(uasset, uexp)
 	return protect(function()
 		local sum = summary(uasset)
@@ -131,6 +133,11 @@ function M.item_rows(uasset, uexp)
 			local row = { id = fname(R, names), deprecated = false }
 			properties(R, names, function(name, typ, struct_name, bool, start)
 				if name == "bIsDeprecated" and typ == "BoolProperty" then row.deprecated = bool
+				elseif struct_name == "ItemStackAndDurabilityStats" then
+					local S = reader(uexp); S.p = start
+					properties(S, names, function(n2, t2, _, _, s2)
+						if n2 == "MaxStackSize" and t2 == "IntProperty" then local V = reader(uexp); V.p = s2; row.stack = V.i32() end
+					end)
 				elseif struct_name == "GameItemStaticData" then
 					local S = reader(uexp); S.p = start
 					properties(S, names, function(n2, t2, _, _, s2)
@@ -153,7 +160,8 @@ end
 local function flatten(s) return (s:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")) end
 
 -- generated_tsv(rows, string_tables) -> text, {named, unnamed, missing}. Lines `id<TAB>name<TAB>0|1 (deprecated)
--- <TAB>category`, sorted by id, after a header comment; the format lib/items.lua parse_generated reads.
+-- <TAB>category<TAB>stack size` (empty when unknown: absent or below 1), sorted by id, after a header comment; the
+-- format lib/items.lua parse_generated reads.
 function M.generated_tsv(rows, string_tables)
 	local by_name = {}
 	for _, st in ipairs(string_tables) do by_name[st.name] = st end
@@ -168,7 +176,8 @@ function M.generated_tsv(rows, string_tables)
 		name = name and flatten(name)
 		if name and name ~= "" then
 			stats.named = stats.named + 1
-			lines[#lines + 1] = table.concat({ r.id, name, r.deprecated and "1" or "0", r.category or "" }, "\t")
+			local stack = (r.stack or 0) >= 1 and tostring(r.stack) or ""
+			lines[#lines + 1] = table.concat({ r.id, name, r.deprecated and "1" or "0", r.category or "", stack }, "\t")
 		end
 	end
 	table.sort(lines)

@@ -65,7 +65,8 @@ function M.package(folder)
 	return P
 end
 
--- An item table (DT_BaseItems_*): rows = {{id, number, key or source, table, deprecated}...}.
+-- An item table (DT_BaseItems_*): rows = {{id, number, key or source, table, deprecated, stack}...}; stack is the
+-- row's StackAndDurability.MaxStackSize, and a row without one has no StackAndDurability struct.
 function M.item_table(rows)
 	local P = M.package("/Game/Fixture/DT_BaseItems_Fixture")
 	local body = { P.prop("RowStruct", "ObjectProperty", u32(7)), P.bool("bIgnoreExtraFields", true), P.none(), u32(0), u32(#rows) }
@@ -84,7 +85,10 @@ function M.item_table(rows)
 		body[#body + 1] = P.name(r.id, r.number)
 		body[#body + 1] = P.prop("IconLayers", "ArrayProperty", u32(0), P.name("StructProperty"))
 		body[#body + 1] = P.struct("StaticData", "GameItemStaticData", table.concat(static))
-		body[#body + 1] = P.struct("StackAndDurability", "ItemStackAndDurabilityStats", P.int("MaxStackSize", 500) .. P.none())
+		if r.stack then
+			body[#body + 1] = P.struct("StackAndDurability", "ItemStackAndDurabilityStats", P.prop("MaxDurability", "FloatProperty", string.rep("\0", 4))
+				.. P.int("MaxStackSize", r.stack) .. P.prop("DecayedMaxDurability", "FloatProperty", "\0\0\200\66") .. P.none())
+		end
 		body[#body + 1] = P.bool("bIsDeprecated", r.deprecated)
 		body[#body + 1] = P.none()
 	end
@@ -105,16 +109,16 @@ local BUILDINGS = "/Game/Dune/Localization/ST_Localization_Buildings.ST_Localiza
 M.ITEMS_TABLE = ITEMS
 M.TABLES = {
 	DT_BaseItems_Resources = {
-		{ id = "FremenComponent1", key = "ITEMS/RESOURCE_EMF_GENERATOR_NAME", table = ITEMS },
-		{ id = "D_FremenComponent3", key = "ITEMS/RESOURCE_FREMENCOMPONENT3_NAME", table = ITEMS, deprecated = true },
-		{ id = "SolarisCoin", key = "ITEMS/RESOURCE_SOLARIS_COIN_NAME", table = ITEMS },
-		{ id = "Nameless" },
-		{ id = "LostKey", key = "ITEMS/NOT_IN_ANY_TABLE", table = ITEMS },
+		{ id = "FremenComponent1", key = "ITEMS/RESOURCE_EMF_GENERATOR_NAME", table = ITEMS, stack = 500 },
+		{ id = "D_FremenComponent3", key = "ITEMS/RESOURCE_FREMENCOMPONENT3_NAME", table = ITEMS, deprecated = true, stack = 500 },
+		{ id = "SolarisCoin", key = "ITEMS/RESOURCE_SOLARIS_COIN_NAME", table = ITEMS, stack = 50000 },
+		{ id = "Nameless", stack = 1 },
+		{ id = "LostKey", key = "ITEMS/NOT_IN_ANY_TABLE", table = ITEMS, stack = 1 },
 	},
 	DT_BaseItems_Vehicles = {
-		{ id = "SandbikeChassis", number = 2, key = "BUILDINGS/VEHICLE_SANDBIKECHASSIS1_ITEMNAME", table = BUILDINGS },
+		{ id = "SandbikeChassis", number = 2, key = "BUILDINGS/VEHICLE_SANDBIKECHASSIS1_ITEMNAME", table = BUILDINGS, stack = 1 },
 		{ id = "TestThing", source = "Base  Text\nThing" },
-		{ id = "Creme", key = "ITEMS/CREME_NAME", table = ITEMS },
+		{ id = "Creme", key = "ITEMS/CREME_NAME", table = ITEMS, stack = 0 },
 	},
 }
 M.STRINGS = {

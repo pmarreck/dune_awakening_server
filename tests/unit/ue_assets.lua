@@ -30,10 +30,15 @@ if rows then
 	eq("key", rows[1].key, "BUILDINGS/VEHICLE_SANDBIKECHASSIS1_ITEMNAME")
 	eq("inline text", rows[2].text, "Base  Text\nThing")
 	eq("not deprecated", rows[1].deprecated, false)
+	-- Stack size: StackAndDurability.MaxStackSize, found by struct type among other properties; nil without the struct.
+	eq("stack size 1", rows[1].stack, 1)
+	eq("no stack struct", rows[2].stack, nil)
+	eq("stack size 0 is read as 0", rows[3].stack, 0)
 end
 ia, ix = fx.item_table(fx.TABLES.DT_BaseItems_Resources)
 rows = ue.item_rows(ia, ix)
 eq("deprecated", rows and rows[2].deprecated, true)
+eq("stack size 50000", rows and rows[3].stack, 50000)
 eq("no name", rows and rows[4].key, nil)
 
 -- Refusals: not a package, an unsupported file version, a truncated body.
@@ -45,7 +50,8 @@ eq("truncated rows", r2, nil)
 if not (e2 or ""):find("truncated", 1, true) then fail("truncated body error: " .. tostring(e2)) end
 
 -- The generated list: one line per named row, sorted by id, names flattened to one line; unnamed rows and keys
--- missing from every string table are counted, not listed.
+-- missing from every string table are counted, not listed. The fifth column is the stack size, empty when the row
+-- has none or a size below 1 (unknown).
 local tables = {}
 for name, entries in pairs(fx.STRINGS) do tables[#tables + 1] = assert(ue.string_table(fx.string_table(name, entries))) end
 local all = {}
@@ -56,12 +62,12 @@ end
 local text, stats = ue.generated_tsv(all, tables)
 local body = text:gsub("^#[^\n]*\n", "")
 eq("generated list", body, table.concat({
-	"Creme\tCrème \240\159\144\155 Brûlée \226\130\172\t0\tVehicles",
-	"D_FremenComponent3\tEMF Generator\t1\tResources",
-	"FremenComponent1\tEMF Generator\t0\tResources",
-	"SandbikeChassis_1\tSandbike Chassis\t0\tVehicles",
-	"SolarisCoin\tSolari\t0\tResources",
-	"TestThing\tBase Text Thing\t0\tVehicles",
+	"Creme\tCrème \240\159\144\155 Brûlée \226\130\172\t0\tVehicles\t",
+	"D_FremenComponent3\tEMF Generator\t1\tResources\t500",
+	"FremenComponent1\tEMF Generator\t0\tResources\t500",
+	"SandbikeChassis_1\tSandbike Chassis\t0\tVehicles\t1",
+	"SolarisCoin\tSolari\t0\tResources\t50000",
+	"TestThing\tBase Text Thing\t0\tVehicles\t",
 }, "\n") .. "\n")
 if not text:match("^# [^\n]*never commit") then fail("generated list lacks its private-content header: " .. text:sub(1, 80)) end
 eq("named", stats.named, 6); eq("unnamed", stats.unnamed, 1); eq("missing keys", stats.missing, 1)
