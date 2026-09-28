@@ -158,7 +158,7 @@ local give_cases = {
 	{ "&give karpov 3", { { "character", "give", "Alice", "HarkAr2", "3" } }, "gave you 3 Karpov 38 rifle (HarkAr2)" .. FULL },
 	{ "&give solari 3 to Alice", { { "character", "give", "Alice", "SolarisCoin", "3" } }, "gave you 3 Solari (SolarisCoin)" .. FULL },
 	{ "&give D_FremenComponent3", { { "character", "give", "Alice", "D_FremenComponent3", "1" } }, "gave you 1 EMF Generator (D_FremenComponent3)" .. FULL },
-	{ "&give house credits 10", { { "character", "give", "Alice", "HouseCredit", "10" } }, "gave you 10 House Credits (HouseCredit, id not yet verified in game)" .. FULL },
+	{ "&give raider tokens 10", { { "character", "give", "Alice", "EventRaiderToken", "10" } }, "gave you 10 Raider Tokens (EventRaiderToken, id not yet verified in game)" .. FULL },
 	{ "&give solari 1000001 to Bob", {}, "at most 1000000 Solari (SolarisCoin) per give" },
 	{ "&give emf 1001", {}, "at most 1000 EMF Generator (FremenComponent1) per give" },
 	{ "&give twin bar", {}, 'several items are named "twin bar": Twin Bar (BarA), Twin Bar (BarB); give one by id' },

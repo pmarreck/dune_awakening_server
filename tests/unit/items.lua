@@ -123,7 +123,7 @@ do
 	end
 	eq("solari cap", items.resolve(d, "solari").item.max, 1000000)
 	eq("emf verified", items.resolve(d, "emf generator").item.verified, true)
-	eq("house credits unverified", items.resolve(d, "house credits").item.verified, false)
+	eq("raider tokens unverified", items.resolve(d, "raider tokens").item.verified, false)
 end
 
 os.exit(failures == 0 and 0 or 1)

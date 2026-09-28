@@ -70,7 +70,7 @@ tool refresh --paks "$work/nowhere"; [ $? -eq 1 ] && [[ "$(cat "$work/err")" == 
 export DUNE_ITEMS_GENERATED="$work/out dir/generated.tsv"
 tool find emf generator && [ "$(cat "$work/out")" = "FremenComponent1	EMF Generator" ] || fail "find emf generator: $(cat "$work/out" "$work/err")"
 tool find "  SOLARI " && [ "$(cat "$work/out")" = "SolarisCoin	Solari	max 1000000" ] || fail "find solari: $(cat "$work/out" "$work/err")"
-tool find house credits && [ "$(cat "$work/out")" = "HouseCredit	House Credits	unverified" ] || fail "find house credits: $(cat "$work/out" "$work/err")"
+tool find raider tokens && [ "$(cat "$work/out")" = "EventRaiderToken	Raider Tokens	unverified" ] || fail "find raider tokens: $(cat "$work/out" "$work/err")"
 tool find Base Text Thing && [ "$(cat "$work/out")" = "TestThing	Base Text Thing" ] || fail "find generated-only: $(cat "$work/out" "$work/err")"
 tool find solary; [ $? -eq 1 ] && [ "$(cat "$work/out")" = "SolarisCoin	Solari" ] && [[ "$(cat "$work/err")" == *'no item "solary"'* ]] || fail "find solary: $(cat "$work/out" "$work/err")"
 tool --json find solari && [ "$(jq -r '.item.id' "$work/out")" = SolarisCoin ] || fail "find --json: $(cat "$work/out")"
