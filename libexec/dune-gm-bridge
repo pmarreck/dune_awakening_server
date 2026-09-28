@@ -97,12 +97,13 @@ local function log(fmt, ...)
 	log_fh:flush()
 end
 
--- Run dune-live with argv (each element single-quoted, so nothing is shell-interpreted); returns ok, output.
+-- Run dune-live with argv (each element single-quoted, so nothing is shell-interpreted); returns ok, output
+-- (stdout and stderr, or stdout alone when stdout_only).
 local LIVE = getenv("DUNE_LIVE", DIR .. "/dune-live")
-local function live(args)
+local function live(args, stdout_only)
 	local argv = { LIVE }
 	for _, a in ipairs(args) do argv[#argv + 1] = a end
-	local p = io.popen(gm.command_line(argv) .. " 2>&1 </dev/null; printf '\\n%d' $?")
+	local p = io.popen(gm.command_line(argv) .. (stdout_only and " 2>/dev/null" or " 2>&1") .. " </dev/null; printf '\\n%d' $?")
 	local out = p:read("*a"); p:close()
 	local body, code = out:match("^(.*)\n(%d+)$")
 	return code == "0", (body or out):gsub("%s+$", "")
@@ -125,7 +126,7 @@ local function handle(d)
 	if not m then return end
 	local cmd = gm.parse_command(m.text)
 	if not cmd then return end
-	local ok, name = live({ "character", "whois", m.sender_fls })
+	local ok, name = live({ "character", "whois", m.sender_fls }, true)
 	name = ok and name:match("^([^\n]+)") or nil
 	if not name then log("%s", gm.log_line(m.sender_fls, nil, m.text, "unknown account")); return end
 	local policy_text = read_file(getenv("DUNE_CONFIG_DIR", "") .. "/gm_bridge.conf")

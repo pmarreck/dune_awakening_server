@@ -60,7 +60,7 @@ broker_env() {
 # The account is loopback-only and may create and read only gm.bridge.* queues and read chat.intercept.
 write_config() {
 	local broker=$1 auth="http://$DUNE_RMQ_AUTH_ADDRESS/v0/auth"
-	(umask 077; : > "$RABBITMQ_CONFIG_FILE") || die "cannot write $RABBITMQ_CONFIG_FILE"
+	(umask 077; : > "$RABBITMQ_CONFIG_FILE" && chmod 600 "$RABBITMQ_CONFIG_FILE") || die "cannot write $RABBITMQ_CONFIG_FILE"
 	{
 		if [ "$broker" = game ]; then
 			printf 'auth_backends.1 = internal\nauth_backends.2 = cache\n'

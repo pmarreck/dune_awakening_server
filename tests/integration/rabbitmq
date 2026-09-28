@@ -37,6 +37,8 @@ done
 [ -n "$stub_ok" ] || fail "auth stub not answering: $(curl -sv -m 2 -X POST "http://$DUNE_RMQ_AUTH_ADDRESS/v0/auth/user" 2>&1 | tail -3)"
 : > "$stub_log"
 
+# A config left from an older version (mode 0644) must still end up 0600: it now carries the bridge password.
+mkdir -p -m 700 "$DUNE_STATE_DIR/rabbitmq-game" && (umask 022; : > "$DUNE_STATE_DIR/rabbitmq-game/rabbitmq.conf")
 for broker in admin game; do
 	out=$(libexec/dune-rabbitmq init "$broker" 2>&1) || fail "init $broker: $out"
 	out=$(libexec/dune-rabbitmq start "$broker" 2>&1) || fail "start $broker: $out"
