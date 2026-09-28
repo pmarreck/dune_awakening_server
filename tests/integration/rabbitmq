@@ -4,6 +4,7 @@
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
 . tests/lib/ports.bash
+. tests/lib/chat.bash
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
@@ -81,12 +82,36 @@ for broker in admin game; do
 done
 grep -q '^POST /v0/auth/user HTTP' "$stub_log" 2>/dev/null || fail "no POST /v0/auth/user reached the auth backend: $(cat "$stub_log" 2>/dev/null)"
 
+# The bridge account over real AMQP (libexec/lib/amqp.lua) on the loopback listener: it may use gm.bridge.* queues and
+# read chat.intercept, and receives the broker-stamped user_id; it may not touch a player's queue or other exchanges.
+probe() { luajit tests/lib/amqp_probe.lua "$DUNE_RMQ_GAME_LOCAL_PORT" gm_bridge "$bridge_pw_file" "$@" 2>&1; }
+declare_exchange chat.intercept topic || fail "cannot declare chat.intercept"
+declare_exchange chat.whispers direct || fail "cannot declare chat.whispers"
+[ "$(probe declare gm.bridge.t1)" = ok ] || fail "bridge cannot declare its own queue: $(probe declare gm.bridge.t1)"
+out=$(probe declare ABCDEF0123456789_queue); [[ "$out" == *403*ACCESS_REFUSED* ]] || fail "bridge declared a player's queue: $out"
+out=$(probe bind gm.bridge.t2 chat.whispers ABCDEF0123456789); [[ "$out" == *403*ACCESS_REFUSED* ]] || fail "bridge bound to chat.whispers: $out"
+
+text_chat 'Alice#1234' Proximity 'hello there' 1 2 3 > "$work/chat.json"
+probe consume chat.intercept '#' 2 "$work/ready" > "$work/consumed" &
+probe_pid=$!
+for _ in $(seq 1 100); do [ -e "$work/ready" ] && break; kill -0 "$probe_pid" 2>/dev/null || break; sleep 0.1; done
+[ -e "$work/ready" ] || fail "probe consumer never became ready: $(cat "$work/consumed")"
+publish_chat chat.intercept 'Alice#1234' ABCDEF0123456789 "$work/chat.json" || fail "publish with user_id"
+publish_chat chat.intercept 'Bob#99' '' "$work/chat.json" || fail "publish without user_id"
+wait "$probe_pid" || fail "probe consumer failed: $(cat "$work/consumed")"
+[ "$(grep . "$work/consumed" | cut -d'|' -f1,2 | paste -sd, -)" = 'Alice#1234|ABCDEF0123456789,Bob#99|nil' ] || fail "consumed: $(cat "$work/consumed")"
+[ "$(head -1 "$work/consumed" | cut -d'|' -f3- | jq -r '.content | fromjson | .m_Message.m_UnlocalizedMessage')" = "hello there" ] || fail "consumed body: $(head -1 "$work/consumed")"
+
 kill "$stub_pid" 2>/dev/null; wait "$stub_pid" 2>/dev/null; stub_pid=
 out=$(libexec/dune-rabbitmq ctl admin authenticate_user "fresh-user" secret 2>&1) && fail "auth succeeded with backend down (must fail closed)"
 out=$(libexec/dune-rabbitmq ctl game authenticate_user "fresh-user" secret 2>&1) && fail "game auth succeeded with backend down (must fail closed)"
 out=$(libexec/dune-rabbitmq ctl game authenticate_user gm_bridge "$(cat "$bridge_pw_file")" 2>&1) || fail "bridge user must authenticate from the internal database: $out"
 libexec/dune-rabbitmq ctl game authenticate_user gm_bridge wrong-password >/dev/null 2>&1 && fail "bridge user accepted a wrong password"
 libexec/dune-rabbitmq ctl game authenticate_user guest guest >/dev/null 2>&1 && fail "guest can log in to the game broker"
+# Over AMQP too, with the HTTP backend down (the stub would allow any login): right password in, wrong one refused.
+[ "$(probe declare gm.bridge.t3)" = ok ] || fail "bridge AMQP login needs the HTTP backend: $(probe declare gm.bridge.t3)"
+out=$(luajit tests/lib/amqp_probe.lua "$DUNE_RMQ_GAME_LOCAL_PORT" gm_bridge <(echo wrong-password) declare gm.bridge.t4 2>&1)
+[[ "$out" == *ACCESS_REFUSED* ]] || fail "wrong bridge password not refused: $out"
 
 for broker in admin game; do
 	libexec/dune-rabbitmq stop "$broker" >/dev/null 2>&1 || fail "stop $broker"

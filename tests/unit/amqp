@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# libexec/lib/amqp.lua: AMQP 0-9-1 frame codec and client handshake, against bytes hand-computed from the spec.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+exec luajit tests/unit/amqp.lua
