@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# libexec/dune-items: refresh writes the private generated item list from a legacy tree (synthetic fixture from
+# tests/lib/ue_fixture.lua, never Funcom's content), either given directly (--legacy) or converted by retoc (a fake
+# here, whose argv is checked); find resolves a name the way the chat bridge does. Paths contain spaces.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-items-test.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+unset DUNE_RETOC DUNE_ITEMS_GENERATED DUNE_SERVER_SRC
+export DUNE_STATE_DIR="$work/state dir"
+tool() { libexec/dune-items "$@" >"$work/out" 2>"$work/err"; }
+luajit tests/lib/ue_fixture.lua "$work/legacy tree" || { fail "fixture"; exit 1; }
+want=$(printf '%s\n' "Creme	Crème 🐛 Brûlée €	0	Vehicles" "D_FremenComponent3	EMF Generator	1	Resources" "FremenComponent1	EMF Generator	0	Resources" \
+	"SandbikeChassis_1	Sandbike Chassis	0	Vehicles" "SolarisCoin	Solari	0	Resources" "TestThing	Base Text Thing	0	Vehicles")
+body() { grep -v '^#' "$1"; }
+
+tool --help || fail "--help exited nonzero"
+[[ "$(cat "$work/out")" == *refresh*find* ]] || fail "--help does not describe refresh and find"
+help=$(cat "$work/out"); tool -h; [ "$(cat "$work/out")" = "$help" ] || fail "-h differs from --help"
+tool --about; [ "$(wc -l < "$work/out")" -eq 1 ] && [[ "$(cat "$work/out")" == dune-items*"$(uname -m)"* ]] || fail "--about: $(cat "$work/out")"
+tool; [ $? -eq 2 ] || fail "no command is not a usage error"
+tool bogus; [ $? -eq 2 ] || fail "unknown command is not a usage error"
+tool refresh --bogus; [ $? -eq 2 ] || fail "unknown option is not a usage error"
+tool refresh --out; [ $? -eq 2 ] || fail "--out without a value is not a usage error"
+
+# --legacy: an already converted tree.
+tool refresh --legacy "$work/legacy tree" --out "$work/out dir/generated.tsv" || fail "refresh --legacy: $(cat "$work/err")"
+[ -s "$work/out" ] && fail "refresh wrote to stdout: $(cat "$work/out")"
+[ "$(cat "$work/err")" = "dune-items: 6 item names from 8 rows in 2 tables (1 without a name, 1 with a key in no string table) -> $work/out dir/generated.tsv" ] ||
+	fail "refresh summary: $(cat "$work/err")"
+[ "$(body "$work/out dir/generated.tsv")" = "$want" ] || fail "generated list:
+$(body "$work/out dir/generated.tsv")"
+[ "$(stat -c %a "$work/out dir/generated.tsv")" = 600 ] || fail "generated list is not 0600"
+[ "$(stat -c %a "$work/out dir")" = 700 ] || fail "new output directory is not 0700"
+tool refresh --legacy "$work/legacy tree" --out - && [ "$(body "$work/out")" = "$want" ] || fail "refresh --out - did not write stdout"
+tool refresh --legacy "$work/legacy tree" --out @stdout && [ "$(body "$work/out")" = "$want" ] || fail "refresh --out @stdout did not write stdout"
+mkdir -p "$work/empty"
+tool refresh --legacy "$work/empty" --out "$work/x.tsv"; [ $? -eq 1 ] && [[ "$(cat "$work/err")" == *"no DT_BaseItems_"* ]] || fail "empty tree: $(cat "$work/err")"
+[ -e "$work/x.tsv" ] && fail "empty tree still wrote a list"
+
+# retoc: required when there is no --legacy tree; run with the Paks directory and a private temporary directory.
+export DUNE_SERVER_SRC="$work/server root"
+mkdir -p "$DUNE_SERVER_SRC/DuneSandbox/Content/Paks"
+tool refresh; [ $? -eq 1 ] && [[ "$(cat "$work/err")" == *"set DUNE_RETOC"* ]] || fail "missing DUNE_RETOC: $(cat "$work/err")"
+mkdir -p "$work/fake retoc"
+cat > "$work/fake retoc/retoc" <<FAKE
+#!$BASH
+printf '%s\n' "\$@" > "$work/retoc-argv"
+[ -e "$work/retoc-fails" ] && { echo "retoc: boom" >&2; exit 3; }
+cp -r "$work/legacy tree/." "\${@: -1}/"
+FAKE
+chmod +x "$work/fake retoc/retoc"
+export DUNE_RETOC="$work/fake retoc/retoc"
+tool refresh || fail "refresh through retoc: $(cat "$work/err")"
+default="$DUNE_STATE_DIR/items/generated.tsv"
+[ "$(body "$default")" = "$want" ] || fail "default output $default: $(cat "$work/err")"
+mapfile -t argv < "$work/retoc-argv"
+[ "${argv[*]:0:6}" = "to-legacy --no-shaders -f DT_BaseItems -f ST_Localization_" ] && [ "${argv[6]}" = "$DUNE_SERVER_SRC/DuneSandbox/Content/Paks" ] ||
+	fail "retoc argv: $(cat "$work/retoc-argv")"
+[ -n "${argv[7]:-}" ] && [ ! -e "${argv[7]}" ] || fail "retoc's temporary directory was left behind: ${argv[7]:-}"
+touch "$work/retoc-fails"
+printf 'keep me\n' > "$default"
+tool refresh; [ $? -eq 1 ] && [[ "$(cat "$work/err")" == *"retoc failed"*boom* ]] || fail "failing retoc: $(cat "$work/err")"
+[ "$(cat "$default")" = "keep me" ] || fail "a failed refresh replaced the previous list"
+tool refresh --paks "$work/nowhere"; [ $? -eq 1 ] && [[ "$(cat "$work/err")" == *"$work/nowhere"* ]] || fail "missing Paks dir: $(cat "$work/err")"
+
+# find: the bridge's lookup (curated data/items.tsv first, then the generated list).
+export DUNE_ITEMS_GENERATED="$work/out dir/generated.tsv"
+tool find emf generator && [ "$(cat "$work/out")" = "FremenComponent1	EMF Generator" ] || fail "find emf generator: $(cat "$work/out" "$work/err")"
+tool find "  SOLARI " && [ "$(cat "$work/out")" = "SolarisCoin	Solari	max 1000000" ] || fail "find solari: $(cat "$work/out" "$work/err")"
+tool find house credits && [ "$(cat "$work/out")" = "HouseCredit	House Credits	unverified" ] || fail "find house credits: $(cat "$work/out" "$work/err")"
+tool find Base Text Thing && [ "$(cat "$work/out")" = "TestThing	Base Text Thing" ] || fail "find generated-only: $(cat "$work/out" "$work/err")"
+tool find solary; [ $? -eq 1 ] && [ "$(cat "$work/out")" = "SolarisCoin	Solari" ] && [[ "$(cat "$work/err")" == *'no item "solary"'* ]] || fail "find solary: $(cat "$work/out" "$work/err")"
+tool --json find solari && [ "$(jq -r '.item.id' "$work/out")" = SolarisCoin ] || fail "find --json: $(cat "$work/out")"
+tool find --json solary; [ $? -eq 1 ] && [ "$(jq -r '.candidates[0].id' "$work/out")" = SolarisCoin ] || fail "find --json candidates: $(cat "$work/out")"
+tool find; [ $? -eq 2 ] || fail "find without a name is not a usage error"
+
+# Through the main CLI.
+out=$(bin/dune-awakening items --help 2>&1) && [[ "$out" == *refresh* ]] || fail "dune-awakening items --help: $out"
+exit "$failures"

@@ -1,0 +1,205 @@
+#!/usr/bin/env luajit
+-- dune-items: item names for the chat bridge's &give. refresh converts the game's item tables and string tables
+-- (retoc to-legacy) and writes the private generated list; find resolves a name exactly as the bridge does.
+-- Logic lives in lib/ue_assets.lua (package reading) and lib/items.lua (name lookup); this file does the I/O.
+local ffi = require("ffi")
+ffi.cdef [[
+char *realpath(const char *path, char *resolved);
+void free(void *p);
+int getpid(void);
+]]
+
+local NAME, VERSION = "dune-items", "0.1.0"
+local EXIT_OK, EXIT_ERR, EXIT_USAGE = 0, 1, 2
+
+local function self_path()
+	local r = ffi.C.realpath(arg[0], nil)
+	if r == nil then return arg[0] end
+	local s = ffi.string(r); ffi.C.free(r)
+	return s
+end
+local DIR = self_path():match("^(.*)/[^/]*$") or "."
+package.path = DIR .. "/lib/?.lua;" .. package.path
+local ue = require("ue_assets")
+local items = require("items")
+
+local USAGE = [[
+Usage: dune-items refresh [--paks DIR | --legacy DIR] [--out FILE]
+       dune-items find [--json] <item name or id>
+
+Item names for the in-game &give command (docs/admin.md, "Giving items").
+
+  refresh   Read the game's item tables (DT_BaseItems_*) and string tables (ST_Localization_*) and write the
+            generated list of item ids and display names. It is derived from Funcom's content, so it stays private
+            (0600, outside the repository); run it again after a game update.
+              --paks DIR    the server's Paks directory (default $DUNE_SERVER_SRC/DuneSandbox/Content/Paks),
+                            converted with retoc: set DUNE_RETOC to a retoc binary (not part of this project)
+              --legacy DIR  an already converted tree instead (retoc to-legacy output); retoc is not needed
+              --out FILE    where to write (default $DUNE_ITEMS_GENERATED, else $DUNE_STATE_DIR/items/generated.tsv);
+                            - or @stdout for standard output
+  find      Resolve a name the way the bridge does (curated data/items.tsv first, then the generated list). Prints
+            `id<TAB>name` (plus the max count and "unverified" when the curated list says so) and exits 0; for an
+            unknown or ambiguous name prints the closest matches and exits 1.
+              --json        {"item": {...}} or {"candidates": [...], "ambiguous": bool, "more": n}
+
+Options: --about, -h/--help.
+Environment: DUNE_RETOC, DUNE_SERVER_SRC, DUNE_STATE_DIR, DUNE_ITEMS_GENERATED, DUNE_GCC_LIB (library path for retoc).
+]]
+
+local function die(code, fmt, ...)
+	io.stderr:write(NAME, ": ", string.format(fmt, ...), "\n")
+	os.exit(code)
+end
+local function usage_error(fmt, ...) die(EXIT_USAGE, fmt .. " (see --help)", ...) end
+local function getenv(k) local v = os.getenv(k); if v == "" then return nil end; return v end
+local function q(s) return "'" .. tostring(s):gsub("'", "'\\''") .. "'" end
+local function read_file(p)
+	local f = io.open(p, "rb"); if not f then return nil end
+	local s = f:read("*a"); f:close(); return s
+end
+local function run_ok(cmd)
+	local a, _, c = os.execute(cmd)
+	if type(a) == "number" then return a == 0 end
+	return a == true and (c == nil or c == 0)
+end
+local function is_dir(p) return run_ok("test -d " .. q(p)) end
+local function lines_of(cmd)
+	local out = {}
+	local h = io.popen(cmd)
+	for l in h:lines() do out[#out + 1] = l end
+	h:close()
+	table.sort(out)
+	return out
+end
+
+local function default_generated()
+	local st = getenv("DUNE_STATE_DIR")
+	return getenv("DUNE_ITEMS_GENERATED") or (st and st .. "/items/generated.tsv")
+end
+
+-- The generated list from a legacy tree: every DT_BaseItems_* table, names from every ST_Localization_* table.
+local function generate(tree)
+	local tables = {}
+	for _, p in ipairs(lines_of("find " .. q(tree) .. " -type f -name 'ST_Localization_*.uexp' 2>/dev/null")) do
+		local base = p:gsub("%.uexp$", "")
+		local st, err = ue.string_table(read_file(base .. ".uasset") or "", read_file(p))
+		if not st then die(EXIT_ERR, "%s: %s", base, err) end
+		tables[#tables + 1] = st
+	end
+	local rows, count = {}, 0
+	for _, p in ipairs(lines_of("find " .. q(tree) .. " -type f -name 'DT_BaseItems_*.uexp' 2>/dev/null")) do
+		local base = p:gsub("%.uexp$", "")
+		local rs, err = ue.item_rows(read_file(base .. ".uasset") or "", read_file(p))
+		if not rs then die(EXIT_ERR, "%s: %s", base, err) end
+		count = count + 1
+		for _, r in ipairs(rs) do r.category = base:match("DT_BaseItems_([^/]*)$"); rows[#rows + 1] = r end
+	end
+	if count == 0 then die(EXIT_ERR, "no DT_BaseItems_* tables in %s", tree) end
+	local text, stats = ue.generated_tsv(rows, tables)
+	stats.rows, stats.tables = #rows, count
+	return text, stats
+end
+
+-- Write text to path privately: the directory is created 0700, the file 0600, replaced atomically.
+local function write_private(path, text)
+	local dir = path:match("^(.*)/[^/]*$")
+	if dir and not run_ok("umask 077; mkdir -p " .. q(dir)) then die(EXIT_ERR, "cannot create %s", dir) end
+	local tmp = path .. ".tmp." .. ffi.C.getpid()
+	if not run_ok("umask 077; : > " .. q(tmp)) then die(EXIT_ERR, "cannot write %s", tmp) end
+	local f = io.open(tmp, "wb")
+	if not f then die(EXIT_ERR, "cannot write %s", tmp) end
+	f:write(text); f:close()
+	local ok, err = os.rename(tmp, path)
+	if not ok then die(EXIT_ERR, "cannot replace %s: %s", path, tostring(err)) end
+end
+
+local function cmd_refresh(o)
+	if o.paks and o.legacy then usage_error("--paks and --legacy exclude each other") end
+	local out = o.out or default_generated() or die(EXIT_ERR, "set DUNE_STATE_DIR or DUNE_ITEMS_GENERATED, or pass --out")
+	local tree, tmp = o.legacy, nil
+	if not tree then
+		local retoc = getenv("DUNE_RETOC") or die(EXIT_ERR, "set DUNE_RETOC to a retoc binary (https://github.com/trumank/retoc), or pass --legacy DIR")
+		local src = getenv("DUNE_SERVER_SRC")
+		local paks = o.paks or (src and src .. "/DuneSandbox/Content/Paks") or die(EXIT_ERR, "set DUNE_SERVER_SRC or pass --paks DIR")
+		if not is_dir(paks) then die(EXIT_ERR, "no Paks directory at %s", paks) end
+		local h = io.popen("umask 077; mktemp -d \"${TMPDIR:-/tmp}/dune-items.XXXXXX\"")
+		tmp = (h:read("*a") or ""):match("^(%S+)"); h:close()
+		if not tmp then die(EXIT_ERR, "cannot create a temporary directory") end
+		local gcc = getenv("DUNE_GCC_LIB")
+		local env = gcc and ("LD_LIBRARY_PATH=" .. q(gcc) .. "${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ") or ""
+		local p = io.popen(env .. q(retoc) .. " to-legacy --no-shaders -f DT_BaseItems -f ST_Localization_ " .. q(paks) .. " " .. q(tmp) ..
+			" 2>&1 </dev/null; printf '\\n%d' $?")
+		local res = p:read("*a"); p:close()
+		local body, code = res:match("^(.*)\n(%d+)$")
+		if code ~= "0" then
+			run_ok("rm -r -- " .. q(tmp))
+			die(EXIT_ERR, "retoc failed (exit %s): %s", tostring(code), ((body or res):gsub("%s+$", "")):match("([^\n]*)$"))
+		end
+		tree = tmp
+	end
+	local ok, text, stats = pcall(generate, tree)
+	if tmp then run_ok("rm -r -- " .. q(tmp)) end
+	if not ok then error(text, 0) end
+	if out == "-" or out == "@stdout" then io.stdout:write(text); out = "standard output"
+	else write_private(out, text) end
+	io.stderr:write(string.format("%s: %d item names from %d rows in %d tables (%d without a name, %d with a key in no string table) -> %s\n",
+		NAME, stats.named, stats.rows, stats.tables, stats.unnamed, stats.missing, out))
+	return EXIT_OK
+end
+
+local function cmd_find(o)
+	local query = table.concat(o.words, " ")
+	if query:match("^%s*$") then usage_error("find needs an item name or id") end
+	local curated, errors = items.parse_curated(read_file(DIR .. "/../data/items.tsv"))
+	for _, e in ipairs(errors) do io.stderr:write(NAME, ": data/items.tsv ", e, "\n") end
+	local gpath = default_generated()
+	local gtext = gpath and read_file(gpath)
+	local r = items.resolve(items.build(curated, gtext and items.parse_generated(gtext) or nil), query)
+	if o.json then
+		local cjson = require("cjson")
+		if r.item then io.stdout:write(cjson.encode({ item = r.item }), "\n")
+		else io.stdout:write(cjson.encode({ candidates = #r.candidates > 0 and r.candidates or cjson.empty_array, ambiguous = r.ambiguous == true, more = r.more or 0 }), "\n") end
+		return r.item and EXIT_OK or EXIT_ERR
+	end
+	if r.item then
+		local it = r.item
+		local extra = (it.max and ("\tmax " .. it.max) or "") .. (it.verified == false and "\tunverified" or "") .. (it.raw and "\tnot in the item list" or "")
+		io.stdout:write(it.id, "\t", it.name, extra, "\n")
+		return EXIT_OK
+	end
+	for _, c in ipairs(r.candidates) do io.stdout:write(c.id, "\t", c.name, "\n") end
+	local more = (r.more or 0) > 0 and string.format(" (and %d more)", r.more) or ""
+	if r.ambiguous then io.stderr:write(string.format('%s: several items are named "%s"%s\n', NAME, query, more))
+	elseif #r.candidates > 0 then io.stderr:write(string.format('%s: no item "%s"; closest matches above%s\n', NAME, query, more))
+	else io.stderr:write(string.format('%s: no item "%s"\n', NAME, query)) end
+	return EXIT_ERR
+end
+
+-- Options anywhere; `--` ends them. The first word is the command, the rest are find's words.
+local o, words, i = { words = {} }, {}, 1
+local only_words = false
+while arg[i] do
+	local a = arg[i]
+	local function value() i = i + 1; return arg[i] or usage_error("%s needs a value", a) end
+	if only_words or a:sub(1, 1) ~= "-" or a == "-" then words[#words + 1] = a
+	elseif a == "--" then only_words = true
+	elseif a == "-h" or a == "--help" then io.stdout:write(USAGE); os.exit(EXIT_OK)
+	elseif a == "--about" then
+		local map = { x64 = "x86_64", arm64 = "aarch64" }
+		io.stdout:write(string.format("%s %s: item names for the chat bridge's &give (%s %s)\n", NAME, VERSION, (jit.os or "unknown"):lower(), map[jit.arch] or jit.arch))
+		os.exit(EXIT_OK)
+	elseif a == "--json" then o.json = true
+	elseif a == "--paks" then o.paks = value()
+	elseif a == "--legacy" then o.legacy = value()
+	elseif a == "--out" then o.out = value()
+	else usage_error("unknown option %s", a) end
+	i = i + 1
+end
+local command = table.remove(words, 1)
+o.words = words
+if command == "refresh" then
+	if #words > 0 then usage_error("unexpected argument %s", words[1]) end
+	os.exit(cmd_refresh(o))
+elseif command == "find" then os.exit(cmd_find(o))
+elseif command == nil then io.stderr:write(USAGE); os.exit(EXIT_USAGE)
+else usage_error("unknown command %s", command) end

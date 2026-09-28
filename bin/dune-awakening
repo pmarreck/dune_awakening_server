@@ -40,6 +40,8 @@ Commands:
                   whisper, worm, give
   doctor          Check the setup: permissions, secrets, templates, default passwords, token expiry,
                   components, database logins, backups (read-only; exit 1 on a failure)
+  items ...       Item names for the in-game &give: refresh (the private list from the game's own tables;
+                  needs DUNE_RETOC), find <name> (resolve a name as the chat bridge does)
   init ...        One-time setup: write world.conf from your Funcom token
   units ...       render DEST: systemd user units for unattended running
 
@@ -125,7 +127,7 @@ end
 
 -- Subcommands that hand their arguments to a tool in libexec/.
 local TOOLS = { world = "dune-live", update = "dune-update", backup = "dune-backup", character = "dune-character",
-	init = "dune-world-init", units = "dune-units", doctor = "dune-doctor" }
+	init = "dune-world-init", units = "dune-units", doctor = "dune-doctor", items = "dune-items" }
 -- Arguments put before the user's for a tool that serves several subcommands.
 local TOOL_ARGS = { world = { "world" } }
 

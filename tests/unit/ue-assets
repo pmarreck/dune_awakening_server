@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# libexec/lib/ue_assets.lua: reading the game's item tables and string tables (synthetic packages, no Funcom content).
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+exec luajit tests/unit/ue_assets.lua

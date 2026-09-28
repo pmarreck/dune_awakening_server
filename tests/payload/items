@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# The generated item list read from the game's own tables (dune-items refresh) links ids to names correctly, checked
+# against pairs verified in game, and the curated data/items.tsv agrees with the game: every id it marks verified is a
+# real item, and "emf generator" never resolves to the recipe-rejected D_FremenComponent3. With DUNE_RETOC set the list
+# is regenerated from the unpacked server's Paks; otherwise the operator's private list is checked (run
+# `dune-awakening items refresh` after each game update).
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. libexec/dune-dirs.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+: "${DUNE_SERVER_SRC:=$DUNE_DATA_ROOT/unpacked/server/rootfs/home/dune/server}"
+export DUNE_SERVER_SRC
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-items-payload.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+if [ -n "${DUNE_RETOC:-}" ]; then
+	list="$work/generated.tsv"
+	libexec/dune-items refresh --out "$list" 2>"$work/err" || { fail "refresh: $(cat "$work/err")"; exit 1; }
+else
+	list=${DUNE_ITEMS_GENERATED:-${DUNE_STATE_DIR:-$DUNE_DATA_ROOT/runtime}/items/generated.tsv}
+	[ -f "$list" ] || { printf 'FAIL payload missing: %s (run dune-awakening items refresh; needs DUNE_RETOC)\n' "$list" >&2; exit 1; }
+fi
+[ "$(stat -c %a "$list")" = 600 ] || fail "$list is not 0600"
+[ "$(grep -vc '^#' "$list")" -gt 1000 ] || fail "suspiciously few items in $list"
+# Pairs verified in game (docs/admin.md): id -> display name, and the deprecated flag of the EMF Generator twin.
+for pair in "SolarisCoin	Solari	0" "HarkAr2	Karpov 38	0" "FremenComponent1	EMF Generator	0" "D_FremenComponent3	EMF Generator	1" \
+	"FuelCanister_Large	Large Vehicle Fuel Cell	0"; do
+	grep -qP "^\Q$pair\E\t" "$list" || fail "not in the generated list: $(tr '\t' '|' <<<"$pair")"
+done
+export DUNE_ITEMS_GENERATED="$list"
+for c in "emf generator=FremenComponent1" "EMF Generator=FremenComponent1" "solari=SolarisCoin" "karpov 38=HarkAr2" "sandbike psu=SandbikeGenerator_1"; do
+	got=$(libexec/dune-items find "${c%%=*}" 2>&1 | cut -f1)
+	[ "$got" = "${c#*=}" ] || fail "find ${c%%=*}: got $got, want ${c#*=}"
+done
+# Every id the curated list calls verified is an item in the game's tables.
+while IFS=$'\t' read -r id verified _; do
+	case "$id" in ''|'#'*) continue ;; esac
+	[ "$verified" = yes ] || continue
+	cut -f1 "$list" | grep -qxF "$id" || fail "data/items.tsv marks $id verified, but the game's tables have no such item"
+done < data/items.tsv
+exit "$failures"
