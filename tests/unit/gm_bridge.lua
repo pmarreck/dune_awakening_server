@@ -151,6 +151,11 @@ local give_cases = {
 	{ "&give solari 5000", { { "character", "give", "Alice", "SolarisCoin", "5000" } }, "gave you 5000 Solari (SolarisCoin)" .. FULL },
 	{ "&give money 1000000", { { "character", "give", "Alice", "SolarisCoin", "1000000" } }, "gave you 1000000 Solari (SolarisCoin)" .. FULL },
 	{ "&give HarkAr2", { { "character", "give", "Alice", "HarkAr2", "1" } }, "gave you 1 Karpov 38 rifle (HarkAr2)" .. FULL },
+	-- A name ending in a number: the whole text names an item, so the number is part of the name, not a count.
+	{ "&give karpov 38", { { "character", "give", "Alice", "HarkAr2", "1" } }, "gave you 1 Karpov 38 rifle (HarkAr2)" .. FULL },
+	{ "&give Karpov-38 to Bob", { { "character", "give", "Bob", "HarkAr2", "1" } }, "gave Bob 1 Karpov 38 rifle (HarkAr2)" .. FULL },
+	{ "&give karpov 38 2", { { "character", "give", "Alice", "HarkAr2", "2" } }, "gave you 2 Karpov 38 rifle (HarkAr2)" .. FULL },
+	{ "&give karpov 3", { { "character", "give", "Alice", "HarkAr2", "3" } }, "gave you 3 Karpov 38 rifle (HarkAr2)" .. FULL },
 	{ "&give solari 3 to Alice", { { "character", "give", "Alice", "SolarisCoin", "3" } }, "gave you 3 Solari (SolarisCoin)" .. FULL },
 	{ "&give D_FremenComponent3", { { "character", "give", "Alice", "D_FremenComponent3", "1" } }, "gave you 1 EMF Generator (D_FremenComponent3)" .. FULL },
 	{ "&give house credits 10", { { "character", "give", "Alice", "HouseCredit", "10" } }, "gave you 10 House Credits (HouseCredit, id not yet verified in game)" .. FULL },

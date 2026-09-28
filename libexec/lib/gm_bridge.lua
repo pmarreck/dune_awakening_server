@@ -103,8 +103,9 @@ end
 local GIVE_USAGE = "&give <item name or id> [count] [to <player>]"
 local FULL_INVENTORY = "; a full inventory can drop items"
 
--- parse_give(cmd) -> {item, count (string or nil), target (nil = the sender)} or nil for a usage error. The target is
--- everything after the last standalone `to` (any case); a trailing whole number before it is the count.
+-- parse_give(cmd) -> {item, count (string or nil), whole, target (nil = the sender)} or nil for a usage error. The
+-- target is everything after the last standalone `to` (any case); a trailing whole number before it is the count,
+-- unless the whole text (number included) names an item, which plan decides (whole keeps that text).
 function M.parse_give(cmd)
 	local s = " " .. (cmd.rest or "") .. " "
 	local cut, target
@@ -120,10 +121,11 @@ function M.parse_give(cmd)
 		if target == "" then return nil end
 	end
 	local item, count = trim(head), nil
+	local whole = item
 	local before, n = item:match("^(.-)%s+(%d+)$")
 	if before then item, count = before, n end
 	if item == "" or item:match("^%d+$") then return nil end
-	return { item = item, count = count, target = target }
+	return { item = item, count = count, whole = whole, target = target }
 end
 
 -- permission(cmd, me) -> the policy permission cmd needs when sent by character me: give-others for a give to
@@ -171,8 +173,15 @@ function M.plan(cmd, sender, policy, item_db)
 		return { actions = { { "world", "timeout", a } }, reply = "timeout " .. a }
 	elseif n == "give" then
 		local g = M.parse_give(cmd)
-		if not g or (g.target and not ok_arg(g.target)) or (g.count and tonumber(g.count) < 1) then return usage(GIVE_USAGE) end
-		local r = items.resolve(item_db, g.item)
+		if not g or (g.target and not ok_arg(g.target)) then return usage(GIVE_USAGE) end
+		-- "karpov 38" is a name, not 38 karpovs: an exact name or id for the whole text wins over a trailing count.
+		local r
+		if g.count then
+			local w = items.resolve(item_db, g.whole)
+			if w.item and not w.item.raw then r, g.count = w, nil end
+		end
+		if g.count and tonumber(g.count) < 1 then return usage(GIVE_USAGE) end
+		r = r or items.resolve(item_db, g.item)
 		local function label(it) return string.format("%s (%s)", it.name, it.id) end
 		if not r.item then
 			local c = r.candidates or {}
