@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# libexec/lib/idle_throttle.lua: the idle frame-rate throttle's pure logic (configuration, connection counting from
+# ss output, the tier decision over time, weekly deep-idle notices, persisted state).
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+exec luajit tests/unit/idle_throttle.lua
