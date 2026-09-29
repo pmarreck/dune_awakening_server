@@ -63,6 +63,8 @@ Runtime state: `~/.local/share/dune_awakening_server/runtime/` (0700). Logs, all
 | GM bridge | `runtime/gm-bridge/gm-bridge.log` (only `&` chat commands, never other chat) |
 | Idle throttle | `runtime/idle-throttle/idle-throttle.log` (rate changes, first and last connection, notices); its state in `runtime/idle-throttle/state` |
 
+**Broker auth needs a CA bundle, even over plain HTTP (verified 2026-09-28).** Both brokers ask the TextRouter over plain HTTP (`auth_http.*_path`), yet each request resolves CA certificates: when `auth_http.ssl_options` has no `cacertfile`, RabbitMQ 4.2.5's `rabbit_ssl_options:fix_client` calls `public_key:cacerts_get()`, and with no ssl options at all Erlang/OTP 27.3's `httpc` computes its default `ssl` option the same way. Where none of OTP's hard-coded distro CA files exist (the Nix build sandbox's `/etc` holds only `group`, `hosts` and `passwd`), the lookup crashes with `function_clause` in `pubkey_os_cacerts:conv_error_reason(no_cacerts_found)` (public_key 1.17.1.3 has no clause for that reason), `fix_client`'s `catch _ ->` catches only throws, and every login fails with "authentication failed with internal error"; the stack trace appears only at `DUNE_RMQ_LOG_LEVEL=debug`. `libexec/dune-rabbitmq` therefore writes `auth_http.ssl_options.cacertfile` from `NIX_SSL_CERT_FILE` (the flake's pinned `cacert`), else `SSL_CERT_FILE`, and refuses to write a config without one. `tests/integration/rabbitmq` hides the OS CA store (`-public_key cacerts_path` to a missing file) so it covers this on the host too, and it runs in the Nix check.
+
 ## Ports
 
 | Port | Component | Exposure |

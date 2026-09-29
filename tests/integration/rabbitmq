@@ -14,6 +14,9 @@ export DUNE_STATE_DIR="$work/state" DUNE_SECRETS_DIR="$work/secrets"
 export DUNE_RMQ_ADMIN_PORT=$base DUNE_RMQ_GAME_PORT=$((base + 1)) DUNE_RMQ_AUTH_ADDRESS="127.0.0.1:$((base + 2))"
 export DUNE_RMQ_GAME_LOCAL_PORT=$((base + 6))
 export ERL_EPMD_PORT=$((base + 3)) DUNE_RMQ_DIST_BASE=$((base + 4)) DUNE_RMQ_LOG_LEVEL=debug
+# Hide the OS CA store from the brokers (the Nix build sandbox has none): Erlang's httpc resolves it even for plain-HTTP
+# auth requests unless the broker is given a CA bundle, and crashes when it is missing (see docs/operations.md).
+export RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS='-public_key cacerts_path "/nonexistent/os-ca-store.crt"'
 stub_log="$work/auth-requests.log"
 stub_pid=
 start_stub() {

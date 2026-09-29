@@ -17,6 +17,17 @@ bridge_pw_file="$DUNE_SECRETS_DIR/gm_bridge_rmq_password"
 
 die() { printf 'dune-rabbitmq: %s\n' "$*" >&2; exit 1; }
 
+# The CA bundle handed to the HTTP auth client: the pinned Nix one first, then the conventional override. Without an
+# explicit bundle, Erlang 27's httpc looks up the OS CA store on every request, even plain HTTP, and the lookup crashes
+# (a function_clause in pubkey_os_cacerts) where no distro CA file exists, e.g. in the Nix build sandbox.
+ca_bundle() {
+	local f
+	for f in "${NIX_SSL_CERT_FILE:-}" "${SSL_CERT_FILE:-}"; do
+		[ -n "$f" ] && [ -r "$f" ] && { printf '%s\n' "$f"; return 0; }
+	done
+	return 1
+}
+
 # The GM bridge's broker password (libexec/dune-gm-bridge), created once.
 ensure_bridge_password() {
 	[ -s "$bridge_pw_file" ] && return 0
@@ -59,7 +70,8 @@ broker_env() {
 # the bridge never depends on the TextRouter; a player's name is not in it and falls through to the HTTP backend.
 # The account is loopback-only and may create and read only gm.bridge.* queues and read chat.intercept.
 write_config() {
-	local broker=$1 auth="http://$DUNE_RMQ_AUTH_ADDRESS/v0/auth"
+	local broker=$1 auth="http://$DUNE_RMQ_AUTH_ADDRESS/v0/auth" ca
+	ca=$(ca_bundle) || die "no readable CA bundle; set NIX_SSL_CERT_FILE or SSL_CERT_FILE (run inside the flake's dev shell)"
 	(umask 077; : > "$RABBITMQ_CONFIG_FILE" && chmod 600 "$RABBITMQ_CONFIG_FILE") || die "cannot write $RABBITMQ_CONFIG_FILE"
 	{
 		if [ "$broker" = game ]; then
@@ -75,7 +87,7 @@ write_config() {
 			printf 'auth_backends.1 = cache\n'
 		fi
 		printf 'auth_cache.cache_ttl = 5000\nauth_cache.cached_backend = http\n'
-		printf 'auth_http.http_method = post\n'
+		printf 'auth_http.http_method = post\nauth_http.ssl_options.cacertfile = %s\n' "$ca"
 		[ -n "${DUNE_RMQ_LOG_LEVEL:-}" ] && printf "log.file.level = %s\n" "$DUNE_RMQ_LOG_LEVEL"
 		printf 'auth_http.user_path = %s/user\nauth_http.vhost_path = %s/vhost\n' "$auth" "$auth"
 		printf 'auth_http.resource_path = %s/resource\nauth_http.topic_path = %s/topic\n' "$auth" "$auth"

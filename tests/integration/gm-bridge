@@ -3,7 +3,7 @@
 # chat.intercept with a broker-style user_id, a fake dune-live that records argv and answers whois. Checks: an allowed
 # command runs exactly its argv (player text verbatim, never shell-interpreted) and whispers a reply; an unlisted sender
 # gets only "not allowed"; ordinary chat produces nothing and is never logged; a message without user_id is ignored.
-# The bridge starts before chat.intercept exists, so its retry path runs too. Host tier (real broker).
+# The bridge starts before chat.intercept exists, so its retry path runs too. Hermetic (runs in the Nix check).
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
 . tests/lib/ports.bash
