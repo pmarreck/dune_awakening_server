@@ -31,6 +31,8 @@ World:
   kick-all                        Disconnect everyone online
   exec <console command...>       World-level engine console command or variable via ServerExec, e.g.
                                   \`exec t.MaxFPS 5\` (output is not returned; watch the server log)
+  cvar <name> [value]             Console variable: print its value as the server logs it, or set it and verify
+                                  the new value in the server log (exit 1 when it cannot be verified)
   partitions                      World partitions: id, label, map (read-only)
   raw <ServerCommand> [--player P] [Key=value[:int|:float]...]
                                   Any other server command, for exploration (see the server log for the result)
@@ -271,7 +273,7 @@ set -- "${args[@]+"${args[@]}"}"
 group=${1:-}; [ $# -gt 0 ] && shift
 cmd=${1:-}; [ $# -gt 0 ] && shift
 case "$group" in
-	world) case "$cmd" in say|timeout|bio-break|call-timeout|safety-first|kick-all|exec|partitions|raw) ;; "") usage_error "world needs a command" ;;
+	world) case "$cmd" in say|timeout|bio-break|call-timeout|safety-first|kick-all|exec|cvar|partitions|raw) ;; "") usage_error "world needs a command" ;;
 		*) usage_error "unknown world command $cmd" ;; esac ;;
 	character) case "$cmd" in move|where|kick|water|xp|whisper|worm|give|whois) ;; "") usage_error "character needs a command" ;;
 		*) usage_error "unknown character command $cmd" ;; esac ;;
@@ -345,6 +347,16 @@ case "$cmd" in
 	exec)
 		[ $# -ge 1 ] || usage_error "exec needs a console command"
 		publish "$(jq -cn --arg e "$*" '{ServerCommand: "ServerExec", Exec: $e}')" ;;
+	cvar)
+		{ [ $# -eq 1 ] || [ $# -eq 2 ]; } || usage_error "cvar needs <name> [value]"
+		[[ "$1" =~ ^[A-Za-z0-9_.]+$ ]] || usage_error "not a console variable name: $1"
+		if [ $# -eq 1 ]; then
+			cvar_get "$1" || die "could not read $1 from the server log (is the map server up? log: $DUNE_SERVER_LOG)"
+		else
+			[[ "$2" =~ ^-?[A-Za-z0-9_.]+$ ]] || usage_error "not a console variable value: $2"
+			cvar_set_verified "$1" "$2"
+			printf '%s = %s\n' "$1" "$2"
+		fi ;;
 	give)
 		{ [ $# -eq 2 ] || [ $# -eq 3 ]; } || usage_error "give needs <player> ITEM [COUNT]"
 		[[ "$2" =~ ^[A-Za-z0-9_]+$ ]] || usage_error "not an item template id: $2"

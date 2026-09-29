@@ -32,7 +32,7 @@ Commands:
   restart         stop, then start (same guard)
   status          One line per component, ● up / ○ down; exit 0 only if all are up
   world ...       Whole-world live commands: say, timeout on/off/status (aliases bio-break, call-timeout,
-                  safety-first), kick-all, exec, partitions, raw
+                  safety-first), kick-all, exec, cvar, partitions, raw
   update ...      Steam build: check (exit 1 = update available), apply (backup, stop, download, start)
   backup ...      create, list, verify (restore drill), restore --yes, prune (policy in backup.conf)
   character ...   One character: list, show, set-intel, add-intel, set-skill-points, add-skill-points, export,

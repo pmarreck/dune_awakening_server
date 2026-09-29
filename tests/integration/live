@@ -152,6 +152,23 @@ touch "$work/server-silent"
 out=$(world timeout on 2>&1); [ $? -eq 1 ] && [[ "$out" == *verif* ]] || fail "unverified timeout not reported: $out"
 unlink "$work/server-silent"
 
+# cvar: read one console variable back from the server log, or set it and verify (the idle throttle uses t.MaxFPS).
+printf 't.MaxFPS=20\n' >> "$work/cvars"
+out=$(world cvar t.MaxFPS 2>"$work/err"); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = 20 ] || fail "cvar read: rc=$rc out=$out err=$(cat "$work/err")"
+out=$(world cvar t.MaxFPS 5 2>"$work/err"); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "t.MaxFPS = 5" ] || fail "cvar set: rc=$rc out=$out err=$(cat "$work/err")"
+grep -qx 't.MaxFPS=5' "$work/cvars" || fail "cvar set did not reach the server: $(paste -sd, "$work/cvars")"
+[ "$(world cvar t.MaxFPS 2>/dev/null)" = 5 ] || fail "cvar read after set"
+touch "$work/server-silent"
+out=$(world cvar t.MaxFPS 20 2>&1); [ $? -eq 1 ] && [[ "$out" == *verif* ]] || fail "unverified cvar set not reported: $out"
+unlink "$work/server-silent"
+for bad in "" "a b c" "t.Max;FPS" "t.MaxFPS 5;reboot" "t.MaxFPS -"; do
+	# shellcheck disable=SC2086
+	world cvar $bad >/dev/null 2>&1; [ $? -eq 2 ] || fail "cvar '$bad' not a usage error"
+done
+grep -q 'reboot' "$work/sent" && fail "an invalid cvar value reached the server"
+
 # partitions / where (read-only, straight from world_partition and actors; Funcom's admin_get_* readers are broken in 1.5).
 json=$(world partitions --json 2>&1) || fail "partitions failed: $json"
 [ "$(jq -c '[.[] | [.id, .label, .map]]' <<<"$json" 2>/dev/null)" = '[[1,"Abbir","Survival_1"],[2,"Deep","DeepDesert_1"]]' ] || fail "partitions: $json"

@@ -69,7 +69,7 @@ Everything runs through one command, `bin/dune-awakening`. It works from any dir
 | `start`, `stop`, `restart` | Bring the whole world up in dependency order (database, schema, brokers, Funcom services, map server, chat-command bridge), or down in reverse |
 | `doctor [--json]` | Health check of the setup: permissions, secrets, leftover templates, default passwords, token expiry, components, database logins, backups |
 | `status [--json] [--watch SECS]` | One line per component; `--json` adds world identity, characters online, map-server memory and CPU (for admin pages) |
-| `world …` | Whole-world live commands: `say`, `timeout on/off` (a break for everyone: no damage, sandworms or storms), `kick-all`, `exec`, `partitions`, `raw` |
+| `world …` | Whole-world live commands: `say`, `timeout on/off` (a break for everyone: no damage, sandworms or storms), `kick-all`, `exec`, `cvar` (read or set-and-verify a console variable), `partitions`, `raw` |
 | `update …` | Steam build: `check` (exit 0 current, 1 update available, 3 unknown), `apply` (backup, stop, download, unpack, start, re-check) |
 | `backup …` | `create`, `list`, `verify` (restore drill), `restore --yes`, `prune` (retention policy in `backup.conf`) |
 | `character …` | One character: `list`, `show`, `set-intel`/`add-intel`, `set-skill-points`/`add-skill-points`, `export`, `validate`, `import`, and live or offline: `move` (to another player or X Y Z), `where`, `kick`, `water`, `xp`, `whisper`, `worm`, `give` |

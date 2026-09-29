@@ -12,6 +12,7 @@ The map server starts with Funcom's server-command channel on: `dune-server` wri
 dune-awakening world say "Restart in 5 minutes" --duration 30
 dune-awakening world kick-all
 dune-awakening world exec t.MaxFPS 5            # world-level engine command or variable (ServerExec)
+dune-awakening world cvar t.MaxFPS [5]         # read a console variable from the server log, or set it and verify
 dune-awakening world partitions
 dune-awakening world raw <ServerCommand> [--player P] [Key=value[:int|:float]...]
 dune-awakening character list                   # ● online / ○ offline, Intel, skill points
