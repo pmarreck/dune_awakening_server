@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# libexec/dune-idle-throttle: the component around lib/idle_throttle.lua. Fake dune-live (records calls, can fail),
+# fake ss (scripted output per poll), fake notifier; `run --polls N --virtual-clock T` makes it deterministic (no
+# sleeping). The test shell's pid stands in for the map server's.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-idle-throttle.XXXXXX") || exit 1
+trap 'libexec/dune-idle-throttle stop >/dev/null 2>&1; rm -r -- "$work"' EXIT
+export DUNE_STATE_DIR="$work/state dir" DUNE_LIVE="$work/fake/dune-live" DUNE_SS="$work/fake/ss" DUNE_NOTIFY_CMD="$work/fake/notify"
+unset DUNE_NOTIFY_TO DUNE_IDLE_THROTTLE DUNE_ACTIVE_FPS DUNE_IDLE_FPS DUNE_DEEP_IDLE_FPS DUNE_WORLD_DISPLAY_NAME DUNE_RMQ_GAME_PORT
+export DUNE_IDLE_AFTER=30 DUNE_IDLE_POLL=10 DUNE_DEEP_IDLE_AFTER=60 DUNE_DEEP_IDLE_POLL=20 DUNE_DEEP_IDLE_NOTICE=100
+mkdir -p "$work/fake" "$DUNE_STATE_DIR/server"
+echo $$ > "$DUNE_STATE_DIR/server/pid"
+cat > "$work/fake/dune-live" <<FAKE
+#!$BASH
+printf '%s\n' "\$*" >> "$work/live"
+[ -e "$work/live-fails" ] && { n=\$(cat "$work/live-fails"); [ "\$n" -gt 0 ] && { echo \$((n - 1)) > "$work/live-fails"; echo "dune-live: could not verify" >&2; exit 1; }; }
+printf '%s = %s\n' "\$3" "\$4"
+FAKE
+# ss: poll K prints poll-K's lines (players) after the world's own loopback connections; ss-fails makes it fail.
+cat > "$work/fake/ss" <<FAKE
+#!$BASH
+printf '%s\n' "\$*" > "$work/ss-args"
+[ -e "$work/ss-fails" ] && exit 1
+n=\$(cat "$work/ss-count" 2>/dev/null || echo 0); echo \$((n + 1)) > "$work/ss-count"
+printf '0      0      127.0.0.1:31982 127.0.0.1:37078\n0      0      [::ffff:127.0.0.1]:31982 [::ffff:127.0.0.1]:38352\n'
+cat "$work/poll-\$n" 2>/dev/null
+exit 0
+FAKE
+cat > "$work/fake/notify" <<FAKE
+#!$BASH
+printf '%s\n' "\$*" >> "$work/notices"
+[ -e "$work/notify-fails" ] && { n=\$(cat "$work/notify-fails"); [ "\$n" -gt 0 ] && { echo \$((n - 1)) > "$work/notify-fails"; exit 1; }; }
+exit 0
+FAKE
+chmod +x "$work/fake/dune-live" "$work/fake/ss" "$work/fake/notify"
+T=libexec/dune-idle-throttle
+log="$DUNE_STATE_DIR/idle-throttle/idle-throttle.log"
+player() { printf '0      0      192.0.2.10:31982 198.51.100.7:5%04d\n' "$2" > "$work/poll-$1"; }
+reset() { rm -rf -- "$DUNE_STATE_DIR/idle-throttle"; rm -f -- "$work/live" "$work/notices" "$work/ss-count" "$work/live-fails" "$work/notify-fails" "$work/ss-fails"; glob_rm_polls; }
+glob_rm_polls() { local f; for f in "$work"/poll-*; do [ -e "$f" ] && rm -- "$f"; done; }
+# Log lines without their timestamps.
+events() { sed -E 's/^[0-9TZ:-]+ //' "$log" 2>/dev/null; }
+runit() { "$T" run "$@" >"$work/out" 2>&1; local rc=$?; [ -s "$work/out" ] && fail "run printed output: $(cat "$work/out")"; return $rc; }
+
+out=$("$T" --help 2>&1) && [[ "$out" == *start* && "$out" == *IDLE_FPS* && "$out" == *NOTIFY_TO* ]] || fail "--help: $out"
+out=$("$T" --about 2>&1) && [ "$(printf '%s\n' "$out" | wc -l)" -eq 1 ] && [[ "$out" == dune-idle-throttle* ]] || fail "--about: $out"
+"$T" bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown action not a usage error"
+
+# Tiers against the virtual clock (a poll every 10 s, 20 s in deep idle). Polls: t=0,10,20,30 (throttle to 5),40,50,
+# 60 (deep: 1),80,100 (player: restore 20),110 (gone),120,...,140 (throttle to 5 again, idle 30 s since 110).
+reset; player 8 1
+runit --polls 14 --virtual-clock 0 || fail "run exited nonzero"
+[ "$(paste -sd, "$work/live" 2>/dev/null)" = "world cvar t.MaxFPS 5,world cvar t.MaxFPS 1,world cvar t.MaxFPS 20,world cvar t.MaxFPS 5" ] ||
+	fail "rate changes: $(paste -sd, "$work/live" 2>/dev/null)"
+want="started: active 20 fps, idle 5 fps after 30 s, deep idle 1 fps after 60 s
+throttled to 5 fps (idle 30 s)
+throttled to 1 fps (deep idle, idle 60 s)
+first connection (1 connection; nobody connected since 1970-01-01T00:00:00Z)
+restored 20 fps (1 connection)
+nobody connected (was 1 connection)
+throttled to 5 fps (idle 30 s)
+stopping after 14 polls"
+[ "$(events)" = "$want" ] || fail "log (nothing per poll):
+$(events)"
+[[ "$(cat "$work/ss-args")" == *-Htn*"state established"*":31982"* ]] || fail "ss not asked for established connections on the broker port: $(cat "$work/ss-args")"
+[ "$(stat -c %a "$DUNE_STATE_DIR/idle-throttle")" = 700 ] && [ "$(stat -c %a "$log")" = 600 ] || fail "run dir or log not private"
+grep -qx 'applied=5' "$DUNE_STATE_DIR/idle-throttle/state" && grep -qx "server=$$" "$DUNE_STATE_DIR/idle-throttle/state" || fail "state not persisted: $(cat "$DUNE_STATE_DIR/idle-throttle/state")"
+
+# The broker port follows DUNE_RMQ_GAME_PORT; a player on another port does not count.
+reset; printf '0      0      192.0.2.10:31982 198.51.100.7:50000\n' > "$work/poll-0"
+DUNE_RMQ_GAME_PORT=40000 runit --polls 1 --virtual-clock 0
+[[ "$(cat "$work/ss-args")" == *":40000"* ]] || fail "DUNE_RMQ_GAME_PORT ignored: $(cat "$work/ss-args")"
+events | grep -q 'first connection' && fail "a connection on another port counted"
+
+# A failed change is logged once and retried at the next poll.
+reset; echo 2 > "$work/live-fails"
+runit --polls 6 --virtual-clock 0
+[ "$(paste -sd, "$work/live")" = "world cvar t.MaxFPS 5,world cvar t.MaxFPS 5,world cvar t.MaxFPS 5" ] || fail "failed set not retried each poll: $(paste -sd, "$work/live")"
+[ "$(events | grep -c 'could not set 5 fps')" = 1 ] || fail "failure not logged exactly once: $(events)"
+events | grep -qx 'throttled to 5 fps (idle 50 s)' || fail "success after retries not logged: $(events)"
+
+# ss failing: no decision on a blind poll (never counts as nobody connected), logged once.
+reset; touch "$work/ss-fails"
+runit --polls 6 --virtual-clock 0
+[ -e "$work/live" ] && fail "changed the rate without seeing the connections: $(paste -sd, "$work/live")"
+[ "$(events | grep -c 'cannot list connections')" = 1 ] || fail "ss failure not logged once: $(events)"
+
+# Weekly (here: every 100 s) notice while in deep idle, with no recipient configured: logged, not sent.
+reset
+runit --polls 12 --virtual-clock 0
+events | grep -q '^deep idle notice (NOTIFY_TO not set, not sent): ' || fail "notice without recipient not logged: $(events)"
+[ -e "$work/notices" ] && fail "notice sent without a recipient"
+# With a recipient: sent through the notifier with post's arguments; a failure is retried at the next poll; a restart
+# keeps the clock (state file) so nothing is re-sent at once.
+reset; echo 1 > "$work/notify-fails"
+DUNE_NOTIFY_TO=someone DUNE_WORLD_DISPLAY_NAME="Test World" runit --polls 9 --virtual-clock 0
+# polls: 0,10,20,30,40,50,60 (deep),80,100; deep since 60, so the first notice is due at 160: then 160 (fails), 180 (sent)
+[ "$(cat "$work/notices" 2>/dev/null | wc -l)" = 0 ] || fail "notice before its time: $(cat "$work/notices")"
+DUNE_NOTIFY_TO=someone DUNE_WORLD_DISPLAY_NAME="Test World" runit --polls 3 --virtual-clock 160
+[ "$(cat "$work/notices" 2>/dev/null | wc -l)" = 2 ] || fail "failed notice not retried at the next poll: $(cat "$work/notices")"
+[[ "$(tail -1 "$work/notices")" == "to someone --as dune_awakening_server --subject Test World: still up, nobody connected since 1970-01-01T00:00:00Z --body "*" --yes" ]] ||
+	fail "notifier arguments: $(tail -1 "$work/notices")"
+events | grep -q 'notice failed' && events | grep -q '^sent deep idle notice to someone' || fail "notice failure/success not logged: $(events)"
+grep -qx 'last_notice=180' "$DUNE_STATE_DIR/idle-throttle/state" || fail "notice time not persisted: $(cat "$DUNE_STATE_DIR/idle-throttle/state")"
+[ -e "$work/live" ] && [ "$(paste -sd, "$work/live")" = "world cvar t.MaxFPS 5,world cvar t.MaxFPS 1" ] || fail "restart re-sent a rate: $(paste -sd, "$work/live")"
+DUNE_NOTIFY_TO=someone runit --polls 4 --virtual-clock 200
+[ "$(cat "$work/notices" 2>/dev/null | wc -l)" = 2 ] || fail "restart re-sent the notice at once: $(cat "$work/notices")"
+DUNE_NOTIFY_TO=someone runit --polls 1 --virtual-clock 280
+[ "$(cat "$work/notices" 2>/dev/null | wc -l)" = 3 ] || fail "next notice not 100 s after the last: $(cat "$work/notices")"
+
+# Off switch: observes and logs connections, never changes the rate.
+reset; player 2 1
+DUNE_IDLE_THROTTLE=0 runit --polls 12 --virtual-clock 0
+[ -e "$work/live" ] && fail "disabled throttle changed the rate: $(paste -sd, "$work/live")"
+events | grep -q 'first connection' && events | grep -q 'started: off' || fail "disabled: $(events)"
+
+# Invalid settings: run and start refuse, naming the setting.
+out=$(DUNE_IDLE_FPS=0 "$T" start 2>&1); [ $? -eq 1 ] && [[ "$out" == *IDLE_FPS* ]] || fail "start with IDLE_FPS=0: $out"
+out=$(DUNE_IDLE_FPS=0 "$T" run --polls 1 --virtual-clock 0 2>&1); [ $? -eq 1 ] && [[ "$out" == *IDLE_FPS* ]] || fail "run with IDLE_FPS=0: $out"
+"$T" status >/dev/null 2>&1 && fail "running after a refused start"
+
+# stop restores the active rate when the state says it may be lowered and the same map server is up.
+reset; mkdir -p -m 700 "$DUNE_STATE_DIR/idle-throttle"
+printf 'server=%s\napplied=5\nidle_since=0\n' $$ > "$DUNE_STATE_DIR/idle-throttle/state"
+"$T" stop >/dev/null 2>&1 || fail "stop failed"
+[ "$(paste -sd, "$work/live" 2>/dev/null)" = "world cvar t.MaxFPS 20" ] || fail "stop did not restore 20 fps: $(paste -sd, "$work/live" 2>/dev/null)"
+grep -qx 'applied=20' "$DUNE_STATE_DIR/idle-throttle/state" || fail "restore not recorded: $(cat "$DUNE_STATE_DIR/idle-throttle/state")"
+grep -qx 'idle_since=0' "$DUNE_STATE_DIR/idle-throttle/state" || fail "stop lost the idle clock"
+rm -f -- "$work/live"; "$T" stop >/dev/null 2>&1
+[ -e "$work/live" ] && fail "stop re-sent the active rate: $(cat "$work/live")"
+printf 'server=%s\napplied=unknown\n' $$ > "$DUNE_STATE_DIR/idle-throttle/state"
+"$T" stop >/dev/null 2>&1; [ "$(cat "$work/live" 2>/dev/null)" = "world cvar t.MaxFPS 20" ] || fail "stop with an unknown rate did not restore"
+rm -f -- "$work/live"; printf 'server=1\napplied=5\n' > "$DUNE_STATE_DIR/idle-throttle/state"
+"$T" stop >/dev/null 2>&1; [ -e "$work/live" ] && fail "stop touched a different map server"
+rm -f -- "$work/live"; printf 'server=%s\napplied=5\n' $$ > "$DUNE_STATE_DIR/idle-throttle/state"; : > "$DUNE_STATE_DIR/server/pid"
+"$T" stop >/dev/null 2>&1 || fail "stop with the map server down failed"
+[ -e "$work/live" ] && fail "stop sent a rate to a map server that is down"
+echo $$ > "$DUNE_STATE_DIR/server/pid"
+echo 5 > "$work/live-fails"
+out=$("$T" stop 2>&1); [ $? -eq 1 ] && [[ "$out" == *restore* ]] || fail "failed restore on stop not reported: $out"
+
+# Lifecycle: start runs it in the background (real clock), status sees it, stop ends it (its whole process group).
+reset; export DUNE_IDLE_AFTER=3600 DUNE_DEEP_IDLE_AFTER=7200
+"$T" start >/dev/null 2>&1 || fail "start failed"
+"$T" status >/dev/null 2>&1 || fail "status after start"
+pid=$(cat "$DUNE_STATE_DIR/idle-throttle/pid")
+"$T" start >/dev/null 2>&1 && [ "$(cat "$DUNE_STATE_DIR/idle-throttle/pid")" = "$pid" ] || fail "second start did not leave the running one alone"
+"$T" stop >/dev/null 2>&1 || fail "stop failed"
+"$T" status >/dev/null 2>&1 && fail "status after stop"
+kill -0 "$pid" 2>/dev/null && fail "process $pid survived stop"
+[ -e "$work/live" ] && fail "start/stop at the active rate changed it: $(cat "$work/live")"
+exit "$failures"

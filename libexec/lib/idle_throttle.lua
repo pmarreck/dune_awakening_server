@@ -39,7 +39,7 @@ function M.parse_config(get)
 		return nil, string.format("DEEP_IDLE_AFTER (%d) must not be less than IDLE_AFTER (%d)", c.deep_after, c.idle_after)
 	end
 	local w = get("DUNE_WORLD_DISPLAY_NAME")
-	c.world_name = (w and w ~= "") and w or "Dune: Awakening world"
+	c.world_name = (w and w ~= "") and w or nil
 	return c
 end
 
@@ -128,8 +128,8 @@ function M.step(state, obs, now, cfg)
 	-- Deep idle polls less often, from the poll that sets its rate on.
 	local poll = tier == "deep" and cfg.deep_poll or cfg.poll
 	if tier == "deep" and s.applied == cfg.deep_fps and not s.deep_since then s.deep_since = now end
-	if now - s.started < cfg.idle_after then return s, nil, poll, events end
-	if fps ~= s.applied then
+	-- The start grace holds back rate changes only; a notice that is due still goes out.
+	if fps ~= s.applied and now - s.started >= cfg.idle_after then
 		local message
 		if tier == "deep" then message = string.format("throttled to %d fps (deep idle, idle %d s)", fps, idle_for)
 		elseif tier == "idle" then message = string.format("throttled to %d fps (idle %d s)", fps, idle_for)
@@ -139,9 +139,10 @@ function M.step(state, obs, now, cfg)
 	if s.deep_since and cfg.notice_every > 0 and now >= (s.last_notice or s.deep_since) + cfg.notice_every then
 		local since = M.format_time(s.idle_since)
 		return s, { notify = true,
-			subject = string.format("%s: still up, nobody connected since %s", cfg.world_name, since),
-			body = string.format("The Dune: Awakening world %s is still up. Nobody has connected since %s (%d days). " ..
-				"The map server has been at %d fps since %s.", cfg.world_name, since, math.floor(idle_for / DAY), cfg.deep_fps,
+			subject = string.format("%s: still up, nobody connected since %s", cfg.world_name or "Dune world", since),
+			body = string.format("The Dune: Awakening world%s is still up. Nobody has connected since %s (%d days). " ..
+				"The map server has been at %d fps since %s.", cfg.world_name and (" " .. cfg.world_name) or "", since,
+				math.floor(idle_for / DAY), cfg.deep_fps,
 				M.format_time(s.deep_since)) }, poll, events
 	end
 	return s, nil, poll, events

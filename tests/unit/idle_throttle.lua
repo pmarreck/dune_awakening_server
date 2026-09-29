@@ -270,6 +270,15 @@ do
 	-- A component restart keeps the weekly clock: no notice at once, the next one a week after the last.
 	local log = drive({ t0 = DAY + WEEK + 5000, t1 = DAY + 2 * WEEK + 20, persisted = p, conn = function() return 0 end })
 	eq("restart keeps the weekly clock", log, (DAY + 2 * WEEK + 20 - ((DAY + 2 * WEEK + 20 - (DAY + WEEK + 5000)) % 30)) .. ":notify")
+	-- The start grace only holds back lowering the rate: a notice already due at a restart goes out at once.
+	local due = { server = SERVER, applied = 1, idle_since = 0, deep_since = DAY, last_notice = DAY + WEEK }
+	eq("notice due at restart is not held by the grace", (drive({ t0 = DAY + 2 * WEEK, t1 = DAY + 2 * WEEK, persisted = due, conn = function() return 0 end })),
+		(DAY + 2 * WEEK) .. ":notify")
+	-- Without a display name the notice still reads well.
+	local unnamed = assert(it.parse_config(env({})))
+	local _, a = it.step(it.initial_state(0, unnamed, due, SERVER), { connections = 0, server = SERVER }, DAY + 2 * WEEK, unnamed)
+	eq("unnamed subject", a and a.subject, "Dune world: still up, nobody connected since 1970-01-01T00:00:00Z")
+	eq("unnamed body", a and a.body and a.body:sub(1, 42), "The Dune: Awakening world is still up. Nob")
 	-- Unknown rate persists as unknown; garbage and missing fields are ignored.
 	local u = it.decode(it.encode(it.applied(st, { set_fps = 5, tier = "idle" }, false, 1)))
 	eq("unknown persists", u.applied, nil); eq("unknown keeps server", u.server, SERVER)
