@@ -104,6 +104,10 @@ The format DASH documented (a spoofed sender name, `m_TimeStamp`) arrived but re
 
 How to repeat such an experiment: RabbitMQ's firehose (`dune-rabbitmq ctl game trace_on`, with a queue bound to `amq.rabbitmq.trace` with `publish.#`) copies every publish, including the TextRouter's, to show what the game itself sends; turn it off (`trace_off`) and delete the queue afterwards, because it copies all chat.
 
+### Inventory slots cannot be raised (tried 2026-09-28)
+
+The number of inventory slots is not adjustable. The server's 46 custom settings (`UserServerCustomSettings`) include `InventoryVolumeMultiplier`, which makes each slot hold more, but nothing for the slot count. The database does store a slot count per inventory (`dune.inventories.max_item_count`, 35 for a player's main backpack), but it is not authoritative: with the player offline, raising it from 35 to 50 changed nothing in game (still 35 slots), and the server wrote 35 back when the player logged in. The count comes from the game's own data.
+
 ### Timeout (a break without logging off)
 
 `dune-awakening world timeout on` (also `bio-break`, `call-timeout`, `safety-first`) records the current values of four world-level console variables, sets them off, verifies each change in the map server's log, and broadcasts it: `Dac.DamageEnabled` (all damage), `sandworm.dune.Enabled`, `Sandstorm.Enabled`, `Coriolis.Enabled`. `timeout off` restores the recorded values (kept in `runtime/timeout.state`), so a hazard you had disabled on purpose stays disabled. `timeout status` reads the live value.
