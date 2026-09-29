@@ -180,16 +180,28 @@ end
 
 -- World configuration -------------------------------------------------------------------------------------------
 
--- world.conf is written with Bash %q quoting, so let Bash read it.
+-- Optional world.conf settings handed to the components as DUNE_<key> (an environment variable of that name wins).
+local WORLD_SETTINGS = { "IDLE_THROTTLE", "ACTIVE_FPS", "IDLE_FPS", "IDLE_AFTER", "IDLE_POLL", "DEEP_IDLE_FPS", "DEEP_IDLE_AFTER",
+	"DEEP_IDLE_POLL", "DEEP_IDLE_NOTICE", "NOTIFY_TO", "NOTIFY_CMD" }
+
+-- world.conf is written with Bash %q quoting, so let Bash read it. Each value is printed on its own line, with
+-- newlines inside a value flattened to spaces.
 local function load_world(config_dir)
 	local conf = config_dir .. "/world.conf"
 	local f = io.open(conf); if not f then die(EXIT_ERR, "missing %s; run dune-world-init", conf) end; f:close()
-	local out, ok = capture("bash -c '. \"$1\" && printf \"%s\\n\" \"${WORLD_UNIQUE_NAME-}\" \"${WORLD_DISPLAY_NAME-}\" \"${WORLD_REGION-}\" \"${EXTERNAL_ADDRESS-}\"' _ " .. q(conf))
+	local vars = { "WORLD_UNIQUE_NAME", "WORLD_DISPLAY_NAME", "WORLD_REGION", "EXTERNAL_ADDRESS" }
+	for _, k in ipairs(WORLD_SETTINGS) do vars[#vars + 1] = k end
+	local refs = {}
+	for i, k in ipairs(vars) do refs[i] = "\"${" .. k .. "-}\"" end
+	local out, ok = capture("bash -c '. \"$1\" && for v in " .. table.concat(refs, " ") .. "; do printf \"%s\\n\" \"${v//$'\"'\"'\\n'\"'\"'/ }\"; done' _ " .. q(conf))
 	if not ok then die(EXIT_ERR, "cannot read %s", conf) end
 	local v = {}
 	for line in (out .. "\n"):gmatch("([^\n]*)\n") do v[#v + 1] = line end
 	if (v[1] or "") == "" then die(EXIT_ERR, "%s has no WORLD_UNIQUE_NAME", conf) end
-	return { unique = v[1], display = v[2] ~= "" and v[2] or v[1], region = v[3] ~= "" and v[3] or "North America", external = v[4] ~= "" and v[4] or nil }
+	local settings = {}
+	for i, k in ipairs(WORLD_SETTINGS) do settings[k] = v[4 + i] ~= "" and v[4 + i] or nil end
+	return { unique = v[1], display = v[2] ~= "" and v[2] or v[1], region = v[3] ~= "" and v[3] or "North America", external = v[4] ~= "" and v[4] or nil,
+		settings = settings }
 end
 
 local function default_route_source()
@@ -236,13 +248,14 @@ local function world_env(env)
 	world.external = getenv("DUNE_EXTERNAL_ADDRESS") or world.external or default_route_source()
 	setenv("DUNE_WORLD_NAME", world.unique); setenv("DUNE_WORLD_DISPLAY_NAME", world.display)
 	setenv("DUNE_WORLD_REGION", world.region); setenv("DUNE_EXTERNAL_ADDRESS", world.external)
+	for k, v in pairs(world.settings) do if not getenv("DUNE_" .. k) then setenv("DUNE_" .. k, v) end end
 	return world
 end
 
 -- Components ----------------------------------------------------------------------------------------------------
 
 local COMPONENTS = { { "postgres" }, { "rabbitmq", "admin" }, { "rabbitmq", "game" }, { "textrouter" }, { "director" }, { "gateway" }, { "server" },
-	{ "gm-bridge" } }
+	{ "gm-bridge" }, { "idle-throttle" } }
 
 local function comp(dir, name, ...)
 	local parts = { q(dir .. "/dune-" .. name) }
@@ -287,6 +300,7 @@ local function cmd_start(dir, env)
 	step("gateway"); must("gateway", run(comp(dir, "gateway", "start")))
 	step("map server Survival_1 (partition " .. part .. ")"); must("server", run(comp(dir, "server", "start")))
 	step("gm-bridge (in-game chat commands)"); must("gm-bridge", run(comp(dir, "gm-bridge", "start")))
+	step("idle-throttle (lower frame rate while nobody is connected)"); must("idle-throttle", run(comp(dir, "idle-throttle", "start")))
 end
 
 local function cmd_stop(dir, env)

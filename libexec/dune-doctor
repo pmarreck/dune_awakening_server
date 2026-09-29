@@ -134,7 +134,7 @@ check_fls_token() {
 
 check_components() {
 	local down=() c
-	for c in postgres "rabbitmq status admin --quick" "rabbitmq status game --quick" textrouter director gateway server gm-bridge; do
+	for c in postgres "rabbitmq status admin --quick" "rabbitmq status game --quick" textrouter director gateway server gm-bridge idle-throttle; do
 		set -- $c
 		if [ $# -eq 1 ]; then "$DUNE_COMPONENTS_DIR/dune-$1" status >/dev/null 2>&1 || down+=("$1")
 		else "$DUNE_COMPONENTS_DIR/dune-$1" "${@:2}" >/dev/null 2>&1 || down+=("$1 $3"); fi

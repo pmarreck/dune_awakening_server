@@ -22,7 +22,7 @@ The client and server must be on the **same build**. When Steam updates the Dune
 `bin/dune-awakening` (LuaJIT) resolves its own real path to find this checkout's flake, and re-executes itself inside `nix develop` on it when needed, so it works from any cwd once `bin/` is on PATH (or through a symlink).
 
 ```bash
-dune-awakening start          # postgres → schema → partition → RabbitMQ admin/game → TextRouter → Director → Gateway → Survival_1
+dune-awakening start          # postgres → schema → partition → RabbitMQ admin/game → TextRouter → Director → Gateway → Survival_1 → GM bridge → idle throttle
 dune-awakening status         # one line per component, ● up / ○ down; exit 0 only if all are up
 dune-awakening status --json  # plus world identity, external address, flake path, map-server uptime and memory vs cap (admin page)
 dune-awakening stop           # reverse order; refuses while characters are online (--force overrides)
@@ -61,6 +61,7 @@ Runtime state: `~/.local/share/dune_awakening_server/runtime/` (0700). Logs, all
 | Gateway | `runtime/gateway/gateway-console.log`, `runtime/gateway/root/Tools/Battlegroups/GatewayService/logs/` |
 | Map server | `runtime/server/server-console.log`, `runtime/server/Saved/Logs/` |
 | GM bridge | `runtime/gm-bridge/gm-bridge.log` (only `&` chat commands, never other chat) |
+| Idle throttle | `runtime/idle-throttle/idle-throttle.log` (rate changes, first and last connection, notices); its state in `runtime/idle-throttle/state` |
 
 ## Ports
 
@@ -145,7 +146,8 @@ The sandstorm structs come from the server's `DuneSandbox/Config/DefaultGame.ini
  "world": {"unique_name": "sh-…", "display_name": "…", "region": "North America"},
  "external_address": "100.64.0.10", "flake": "/path/to/checkout",
  "components": [{"name": "postgres", "up": true}, {"name": "rabbitmq-admin", "up": true}, {"name": "rabbitmq-game", "up": true},
-                {"name": "textrouter", "up": true}, {"name": "director", "up": true}, {"name": "gateway", "up": true}, {"name": "server", "up": true}],
+                {"name": "textrouter", "up": true}, {"name": "director", "up": true}, {"name": "gateway", "up": true}, {"name": "server", "up": true},
+                {"name": "gm-bridge", "up": true}, {"name": "idle-throttle", "up": true}],
  "characters": {"stored": 1, "online": 1},
  "server": {"uptime_seconds": 2107, "memory_bytes": 10231160832, "memory_max_bytes": 21474836480, "cpu_seconds": 905.18}}
 ```
@@ -155,6 +157,45 @@ The sandstorm structs come from the server's `DuneSandbox/Config/DefaultGame.ini
 ## Live-world commands and in-game GM
 
 Everything about administering the running world (the command channel, world and character commands, moving and messaging players, the break timeout, and the game's own GM system) is in [admin.md](admin.md).
+
+## Idle frame-rate throttle
+
+The map server runs its world simulation at the game's frame cap, `t.MaxFPS 20`, whether or not anyone is playing. `dune-idle-throttle` (started last by `dune-awakening start`, stopped first by `stop`) lowers that cap while nobody is connected and restores it as soon as someone connects. Measured on this world's map server with nobody online, 60 s at each setting:
+
+| `t.MaxFPS` | Map-server CPU (one core = 100%) |
+|---|---|
+| 20 (the game's default) | 39% |
+| 5 | 12.7% |
+| 1 | 4.3% |
+
+It has the active rate and two lower tiers:
+
+1. **Active**: the game's 20 fps while anyone is connected, and for the first 5 minutes after the last player leaves.
+2. **Idle**: 5 fps after 5 minutes (300 s) with nobody connected.
+3. **Deep idle**: 1 fps after 24 hours with nobody connected.
+
+Any connection restores 20 fps at once, from either tier. A player counts as connected while their game client holds a TCP connection to the game broker's TLS port (31982, `DUNE_RMQ_GAME_PORT`) from an address other than this host's loopback; the world's own components (TextRouter, Director, map server, GM bridge) connect over loopback and never count. The throttle reads this with `ss` every 10 s (every 30 s in deep idle), which costs next to nothing; it never polls `rabbitmqctl`, which boots an Erlang VM (about 1 s of CPU each time). Rates change through `dune-awakening world cvar t.MaxFPS N`, which sets the value and reads it back from the server log, so a change counts only once the server confirms it; a change that fails is retried at the next poll.
+
+The cost is a delay when someone connects: up to one poll (10 s idle, 30 s deep idle) plus a few seconds for the command and its read-back before the frame rate is back to 20. The client is still loading the map during that time. `idle-throttle.log` records the moment each first connection is seen (`first connection (1 connection; nobody connected since …)`), to compare with when the character shows up online.
+
+Nothing is lowered in the first 5 minutes after the throttle or the map server starts. A restarted map server runs at the game's default, so the throttle takes its rate to be 20 again. (That a console-set `t.MaxFPS` does not survive a map-server restart is assumed, not measured.) `stop` puts 20 fps back when the rate may be lowered and the map server is up.
+
+**Weekly notice.** While the world stays in deep idle, the throttle sends a notice every 7 days (the first one 7 days after deep idle began) that the world is still up, with the time the last player left. A failed notice is retried at the next poll. The idle clock, the deep-idle start and the last notice time are kept in `runtime/idle-throttle/state`, so restarting the throttle neither resets the weekly clock nor sends a notice early. A connection ends the deep-idle stretch; the next one starts its own week. Notices go through a command with the arguments of the host's `post` mail tool: `NOTIFY_CMD to <NOTIFY_TO> --as dune_awakening_server --subject … --body … --yes`. With no `NOTIFY_TO` the notice is only written to the log. The world's tools run inside `nix develop` with the project's own PATH, so give `NOTIFY_CMD` as an absolute path (for example the output of `command -v post`).
+
+**Settings** go in `world.conf` (read at every `dune-awakening start`, so the heal timer or a restart of the component applies them); an environment variable `DUNE_<key>` wins over the file. Invalid values stop `start` with a message naming the setting.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `IDLE_THROTTLE` | `1` | `0` leaves the rate alone (connections are still logged, and a lowered rate is restored) |
+| `ACTIVE_FPS` | `20` | the rate while anyone is connected |
+| `IDLE_FPS` / `IDLE_AFTER` | `5` / `300` | idle tier: rate, and seconds with nobody connected before it |
+| `DEEP_IDLE_FPS` / `DEEP_IDLE_AFTER` | `1` / `86400` | deep-idle tier: rate, and seconds with nobody connected before it |
+| `IDLE_POLL` / `DEEP_IDLE_POLL` | `10` / `30` | seconds between checks, and between checks in deep idle |
+| `DEEP_IDLE_NOTICE` | `604800` | seconds between deep-idle notices; `0` sends none |
+| `NOTIFY_TO` | (none) | recipient of the notices |
+| `NOTIFY_CMD` | `post` | notifier command (absolute path recommended) |
+
+Rates are whole numbers of at least 1 (the engine takes 0 as unlimited), and the tiers may not raise the rate. `libexec/dune-idle-throttle stop` then `dune-awakening start` applies changed settings to a running world.
 
 ## Backups and retention
 

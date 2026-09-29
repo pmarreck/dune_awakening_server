@@ -7,3 +7,16 @@ WORLD_REGION=North\ America
 # Optional: the address players connect to (default: the source address of this host's default route).
 # Use your Tailscale address (tailscale ip -4) when friends join over Tailscale.
 #EXTERNAL_ADDRESS=100.x.y.z
+# Optional: idle frame-rate throttle (docs/operations.md, "Idle frame-rate throttle"). Defaults shown.
+#IDLE_THROTTLE=1
+#ACTIVE_FPS=20
+#IDLE_FPS=5
+#IDLE_AFTER=300
+#DEEP_IDLE_FPS=1
+#DEEP_IDLE_AFTER=86400
+#IDLE_POLL=10
+#DEEP_IDLE_POLL=30
+#DEEP_IDLE_NOTICE=604800
+# Who gets the weekly "still up" notice in deep idle, and the post-compatible command that sends it (absolute path).
+#NOTIFY_TO=someone
+#NOTIFY_CMD=/path/to/post

@@ -9,7 +9,7 @@ fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 work=$(mktemp -d "${TMPDIR:-/tmp}/dune-world-cli.XXXXXX") || exit 1
 trap 'rm -r -- "$work"' EXIT
 export DUNE_CONFIG_DIR="$work/config dir" DUNE_STATE_DIR="$work/state" DUNE_UNPACKED_DIR="$work/unpacked"
-unset DUNE_EXTERNAL_ADDRESS
+unset DUNE_EXTERNAL_ADDRESS DUNE_IDLE_FPS DUNE_DEEP_IDLE_POLL DUNE_NOTIFY_TO DUNE_IDLE_THROTTLE
 mkdir -p -m 700 "$DUNE_CONFIG_DIR"
 printf 'WORLD_UNIQUE_NAME=sh-abc-qwerty\nWORLD_DISPLAY_NAME=%q\nWORLD_REGION=%q\n' "My World" "North America" > "$DUNE_CONFIG_DIR/world.conf"
 printf 'token\n' > "$DUNE_CONFIG_DIR/fls_secret"
@@ -52,11 +52,12 @@ rm -r -- "$DUNE_CONFIG_DIR/UserSettings" "$DUNE_CONFIG_DIR/join_password.sample"
 # Orchestration against fake components that log each call.
 fake="$work/fake bin"
 mkdir -p "$fake"
-for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server gm-bridge; do
+for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server gm-bridge idle-throttle; do
 	cat > "$fake/dune-$c" <<EOF
 #!$BASH
 printf '%s %s|%s\n' "$c" "\$*" "\${DUNE_PARTITION_INDEX:-}:\${DUNE_EXTERNAL_ADDRESS:-}" >> "$work/calls"
 [ "$c" = world-partitions ] && echo 7
+[ "$c \$1" = "idle-throttle start" ] && printf '%s\n' "\${DUNE_IDLE_FPS:-}|\${DUNE_DEEP_IDLE_POLL:-}|\${DUNE_NOTIFY_TO:-}|\${DUNE_IDLE_THROTTLE:-}" > "$work/idle-env"
 [ "\$1" = status ] && exit 1
 [ "$c \$*" = "\${FAIL_AT:-}" ] && exit 1
 exit 0
@@ -81,10 +82,19 @@ s=$(PATH="$work/sysbin:$PATH" world status --json 2>/dev/null | jq -c '.server |
 : > "$work/calls"
 out=$(DUNE_EXTERNAL_ADDRESS=10.9.8.7 world start 2>&1) || fail "start with healthy fakes failed: $out"
 got=$(cut -d'|' -f1 "$work/calls" | paste -sd, -)
-[ "$got" = "postgres init,postgres start,db-setup ,world-partitions ,rabbitmq init admin,rabbitmq start admin,rabbitmq init game,rabbitmq start game,textrouter status,dotnet-prepare $DUNE_UNPACKED_DIR/server-text-router/rootfs $DUNE_STATE_DIR/textrouter-root Tools/Battlegroups/TextRouter/TextRouter TextRouter,textrouter start,director status,dotnet-prepare $DUNE_UNPACKED_DIR/server-bg-director/rootfs $DUNE_STATE_DIR/director-root Tools/Battlegroups/Director/BattlegroupDirector Director,director start,gateway start,server start,gm-bridge start" ] ||
+[ "$got" = "postgres init,postgres start,db-setup ,world-partitions ,rabbitmq init admin,rabbitmq start admin,rabbitmq init game,rabbitmq start game,textrouter status,dotnet-prepare $DUNE_UNPACKED_DIR/server-text-router/rootfs $DUNE_STATE_DIR/textrouter-root Tools/Battlegroups/TextRouter/TextRouter TextRouter,textrouter start,director status,dotnet-prepare $DUNE_UNPACKED_DIR/server-bg-director/rootfs $DUNE_STATE_DIR/director-root Tools/Battlegroups/Director/BattlegroupDirector Director,director start,gateway start,server start,gm-bridge start,idle-throttle start" ] ||
 	fail "start order wrong: $got"
 [ "$(grep '^server start' "$work/calls" | cut -d'|' -f2)" = 7:10.9.8.7 ] || fail "server not given partition 7 and address: $(grep '^server' "$work/calls")"
 [ "$(readlink "$DUNE_STATE_DIR/secrets/fls_token")" = "$DUNE_CONFIG_DIR/fls_secret" ] || fail "fls token not linked into secrets"
+# Idle-throttle settings: world.conf keys become DUNE_<key> for the components; the environment wins over world.conf.
+[ "$(cat "$work/idle-env" 2>/dev/null)" = "|||" ] || fail "idle settings invented when world.conf has none: $(cat "$work/idle-env" 2>/dev/null)"
+cp "$DUNE_CONFIG_DIR/world.conf" "$work/world.conf.bak"
+printf 'IDLE_FPS=3\nDEEP_IDLE_POLL=45\nNOTIFY_TO=%q\nIDLE_THROTTLE=0\n' "some one" >> "$DUNE_CONFIG_DIR/world.conf"
+world start >/dev/null 2>&1
+[ "$(cat "$work/idle-env" 2>/dev/null)" = "3|45|some one|0" ] || fail "world.conf idle settings not passed on: $(cat "$work/idle-env" 2>/dev/null)"
+DUNE_IDLE_FPS=4 DUNE_IDLE_THROTTLE=1 world start >/dev/null 2>&1
+[ "$(cat "$work/idle-env" 2>/dev/null)" = "4|45|some one|1" ] || fail "environment does not win over world.conf: $(cat "$work/idle-env" 2>/dev/null)"
+cp "$work/world.conf.bak" "$DUNE_CONFIG_DIR/world.conf"
 
 : > "$work/calls"
 out=$(FAIL_AT="rabbitmq start admin" world start 2>&1); [ $? -eq 1 ] || fail "start did not fail when a component failed"
@@ -142,7 +152,7 @@ dirs() { printf '%s|%s|%s|%s' "$2/dune_awakening_server" "$1/dune_awakening_serv
 world stop >/dev/null 2>&1 || fail "stop failed"
 # (the players-online guard first asks dune-character; only component stops count for the order)
 got=$(grep -v '^dune-character ' "$work/calls" | cut -d'|' -f1 | paste -sd, -)
-[ "$got" = "gm-bridge stop,server stop,gateway stop,director stop,textrouter stop,rabbitmq stop game,rabbitmq stop admin,postgres stop" ] || fail "stop order wrong: $got"
+[ "$got" = "idle-throttle stop,gm-bridge stop,server stop,gateway stop,director stop,textrouter stop,rabbitmq stop game,rabbitmq stop admin,postgres stop" ] || fail "stop order wrong: $got"
 
 # Subcommand tools get the world identity too (doctor probes components that need it), when world.conf exists.
 printf '#!%s\nprintf "%%s %%s\\n" "${DUNE_WORLD_NAME:-unset}" "${DUNE_PARTITION_INDEX:-unset}" > "%s"\n' "$BASH" "$work/wname" > "$fake/dune-doctor"; chmod +x "$fake/dune-doctor"
