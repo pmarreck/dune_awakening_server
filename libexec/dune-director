@@ -61,6 +61,9 @@ cmd_start() {
 	(
 		cd "$app_dir" || exit 1
 		export ASPNETCORE_URLS="http://127.0.0.1:$DUNE_DIRECTOR_PORT" DOTNET_RUNNING_IN_CONTAINER=false
+		# No .NET diagnostics endpoint: its Unix socket lets any process of this user attach a debugger to an app
+		# whose memory holds the database password (docs/hardening.md).
+		export DOTNET_EnableDiagnostics=0
 		export Database__address=127.0.0.1 Database__port="$DUNE_PG_PORT" Database__user=dune Database__password="$dune_pw"
 		export RMQ_HTTP_TOKEN_AUTH_SECRET="$(cat "$DUNE_SECRETS_DIR/rmq_http_token_auth_secret")"
 		export BATTLEGROUP_DISPLAY_NAME="$DUNE_WORLD_NAME" OPT_SERVERNAME="$DUNE_WORLD_NAME"

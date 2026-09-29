@@ -59,6 +59,9 @@ cmd_start() {
 	(
 		cd "$app_dir" || exit 1
 		export ASPNETCORE_URLS="http://127.0.0.1:$DUNE_TEXTROUTER_PORT" DOTNET_RUNNING_IN_CONTAINER=false
+		# No .NET diagnostics endpoint: its Unix socket lets any process of this user attach a debugger to an app
+		# whose memory holds the database password (docs/hardening.md).
+		export DOTNET_EnableDiagnostics=0
 		export DuneDatabaseInterfacePSQL_DatabaseHost=127.0.0.1 DuneDatabaseInterfacePSQL_DatabasePort="$DUNE_PG_PORT"
 		export DuneDatabaseInterfacePSQL_DatabaseUser=dune DuneDatabaseInterfacePSQL_DatabasePassword="$dune_pw"
 		export DuneDatabaseInterfacePSQL_DatabaseName="$db"

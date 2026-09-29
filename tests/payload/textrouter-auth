@@ -36,6 +36,11 @@ log="$DUNE_STATE_DIR/textrouter/textrouter.log"
 grep -q "Connecting to database: 'dune_sb_1_5_3_0'" "$log" || fail "TextRouter did not use the payload-derived DB name"
 
 [ "$(curl -s -m 5 -X POST "http://$DUNE_RMQ_AUTH_ADDRESS/v0/auth/user" -d 'username=nobody&password=x')" = deny ] || fail "unknown user was not denied"
+# The .NET runtime's diagnostics endpoint (a Unix socket any process of the same user can attach a debugger to, in a
+# process whose memory holds the database password) stays off: no dotnet-diagnostic-<pid>-* socket anywhere.
+tr_pid=$(cat "$DUNE_STATE_DIR/textrouter/pid" 2>/dev/null)
+diag=$(find "${TMPDIR:-/tmp}" /tmp -maxdepth 2 -name "dotnet-diagnostic-${tr_pid:-none}-*" 2>/dev/null | head -1)
+[ -z "$diag" ] || fail "TextRouter opened a .NET diagnostics socket: $diag"
 
 conns=""
 for _ in $(seq 1 60); do
