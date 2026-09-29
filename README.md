@@ -99,6 +99,7 @@ In a clone you push from, run `git config core.hooksPath .githooks` once: the pr
 - [docs/operations.md](docs/operations.md): day-to-day operation, characters, gameplay settings
 - [docs/admin.md](docs/admin.md): administering the world in one place: host commands, moving and messaging players, the break timeout, in-game chat commands for trusted players (the GM bridge), and the game's in-game GM system
 - [docs/postgres-parity.md](docs/postgres-parity.md): Funcom's PostgreSQL fork vs nixpkgs PostgreSQL, and the locale match
+- [docs/hardening.md](docs/hardening.md): measured runtime requirements of every component (files, network, JIT/W^X, capabilities) and the systemd sandboxing directives they allow
 - [docs/acquisition.md](docs/acquisition.md): the Steam payload and the Funcom token
 - [docs/readiness.md](docs/readiness.md): evidence from the first bring-up
 - [docs/research/](docs/research/): Funcom appliance wiring, image internals, 1.5 compatibility

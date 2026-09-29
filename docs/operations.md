@@ -77,6 +77,10 @@ Runtime state: `~/.local/share/dune_awakening_server/runtime/` (0700). Logs, all
 | 18082/tcp | Director HTTP | 127.0.0.1 only |
 | 7777/udp | game traffic (Survival_1) | clients |
 | 7888/udp | IGW server-to-server | internal |
+| 10000/tcp | map server ServerStatus HTTP listener | 127.0.0.1 only |
+| 4369/tcp | epmd (Erlang port mapper, shared by both brokers) | **all interfaces** (see [hardening.md](hardening.md)) |
+| 25672/tcp, 25673/tcp | admin and game RabbitMQ Erlang distribution | **all interfaces**; cookie-protected |
+| 35672/tcp | each `rabbitmqctl` run (dune-live, GM bridge, idle throttle), while it runs | **all interfaces** |
 
 Player ingress (LAN or public) is opened by the host administrator. Nothing in this project changes the firewall.
 
