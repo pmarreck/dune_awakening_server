@@ -63,6 +63,12 @@ broker_env() {
 	export RABBITMQ_PID_FILE="$instance/pid"
 	export RABBITMQ_DIST_PORT=$((DUNE_RMQ_DIST_BASE + dist_offset))
 	export ELIXIR_ERL_OPTIONS="+fnu"
+	# Erlang's own ports stay on loopback: epmd and each node's distribution listener (the broker's and the short-lived
+	# one every rabbitmqctl run opens) accept anyone who holds the cookie, and that is full control of the broker.
+	# Their defaults are every interface, which Tailscale peers could reach. Only the AMQP listeners face the network.
+	export ERL_EPMD_ADDRESS=127.0.0.1
+	export RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS="-kernel inet_dist_use_interface {127,0,0,1}"
+	export RABBITMQ_CTL_ERL_ARGS="-kernel inet_dist_use_interface {127,0,0,1}"
 }
 
 # The game broker also holds the GM bridge's account in its internal database, created at boot from this file (0600),

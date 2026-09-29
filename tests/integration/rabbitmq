@@ -75,6 +75,13 @@ libexec/dune-rabbitmq ctl admin list_vhosts 2>/dev/null | grep -qx idempotence-m
 # --quick status (process alive + distribution port listening, no Erlang VM boot) agrees with the full check.
 mkdir -p "$work/noctl"; for t in rabbitmqctl rabbitmq-diagnostics; do printf '#!%s\nexit 1\n' "$BASH" > "$work/noctl/$t"; chmod +x "$work/noctl/$t"; done
 for broker in admin game; do PATH="$work/noctl:$PATH" libexec/dune-rabbitmq status "$broker" --quick || fail "quick status says running $broker is down (or used rabbitmqctl)"; done
+# Erlang's own ports (epmd and each node's distribution port, which grant full control to anyone holding the cookie)
+# listen on loopback only; only the AMQP listeners face the network.
+for port in "$ERL_EPMD_PORT" "$DUNE_RMQ_DIST_BASE" "$((DUNE_RMQ_DIST_BASE + 1))"; do
+	addrs=$(ss -Htln "sport = :$port" | awk '{print $4}' | sed 's/:[0-9]*$//' | sort -u | paste -sd' ' -)
+	[ -n "$addrs" ] || fail "nothing listening on Erlang port $port"
+	for a in $addrs; do case "$a" in 127.0.0.1|'[::1]') ;; *) fail "Erlang port $port listens on $a, not loopback" ;; esac; done
+done
 
 # Game broker speaks TLS on its port; admin broker does not.
 echo | timeout 10 openssl s_client -connect "127.0.0.1:$DUNE_RMQ_GAME_PORT" >"$work/tls-game.out" 2>&1
