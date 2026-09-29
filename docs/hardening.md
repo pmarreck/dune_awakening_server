@@ -79,7 +79,7 @@ Each entry lists what was observed; the candidate directives follow it. Directiv
 
 - **Process:** `epmd -daemon` from the Erlang store path, started by the first broker; parent is the user manager, cgroup `dune-world.service`, cwd `/` [M]. Shared by both brokers and every `rabbitmqctl`.
 - **Writes:** nothing but `/dev/null` [T].
-- **Network:** listens on TCP `0.0.0.0:4369` and `[::]:4369` [M][T]. Families `AF_INET`, `AF_INET6` [T].
+- **Network:** listened on TCP `0.0.0.0:4369` and `[::]:4369` [M][T] until 2026-09-29; now `127.0.0.1:4369` and `[::1]:4369` (`ERL_EPMD_ADDRESS`) [M]. Families `AF_INET`, `AF_INET6` [T].
 - **Special:** binding it to loopback (`ERL_EPMD_ADDRESS=127.0.0.1`) would close the widest listener [I: not tried].
 - **Candidate:** as postgres, with no writable paths at all, `RestrictAddressFamilies=AF_INET AF_INET6`, `MemoryDenyWriteExecute=yes` [I: epmd is C without a JIT], `IPAddressAllow=localhost` *(system only)*. It should become its own unit, or be started with the admin broker's, so that it stops being a stray child of whichever unit ran first.
 
