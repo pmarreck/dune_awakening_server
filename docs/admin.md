@@ -106,7 +106,7 @@ How to repeat such an experiment: RabbitMQ's firehose (`dune-rabbitmq ctl game t
 
 ### Inventory slots cannot be raised (tried 2026-09-28)
 
-The number of inventory slots is not adjustable. The server's 46 custom settings (`UserServerCustomSettings`) include `InventoryVolumeMultiplier`, which makes each slot hold more, but nothing for the slot count. The database does store a slot count per inventory (`dune.inventories.max_item_count`, 35 for a player's main backpack), but it is not authoritative: with the player offline, raising it from 35 to 50 changed nothing in game (still 35 slots), and the server wrote 35 back when the player logged in. The count comes from the game's own data.
+The number of inventory slots is not adjustable. The server's 46 custom settings (`UserServerCustomSettings`) include `InventoryVolumeMultiplier`, which makes each slot hold more, but nothing for the slot count. The database does store a slot count per inventory (`dune.inventories.max_item_count`, 35 for a player's main backpack), but it is not authoritative: with the player offline, raising it from 35 to 50 changed nothing in game (still 35 slots), and the server wrote 35 back when the player logged in (editing it while the player is online does nothing either: the server keeps the inventory in memory and only writes the row). The count comes from the game's own data, and the game has its own way to raise it: a progression keystone, `KEYSTONE_INVENTORYSLOTINCREASE` in `ST_Localization_Progression` ("Increases inventory size by 1 row."), and the tech tree shows an "Inventory Slot Capacity" entry (`UI/TechTreeItem_InventorySlotCapacity`). Which tree and level unlock it was not checked.
 
 ### Timeout (a break without logging off)
 
