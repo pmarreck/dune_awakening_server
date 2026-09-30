@@ -10,6 +10,26 @@ Measured 2026-09-29, 13:58 to 14:25 EDT, on the live world (game build 1.5.3.4, 
 - **[C]** read from this project's code
 - **[I]** inferred, not measured; each one names the test that would settle it
 
+## Threat model and where to stop
+
+Deployments differ. The reference deployment is a private world reached only over a tailnet by two trusted players; others will run this repository with the game ports open to the internet. The committed defaults therefore aim at the exposed case wherever that costs little and breaks nothing in the private one.
+
+Exposure, most to least:
+
+1. **Map server**: game traffic from every client, which on a public host means the internet. It is the largest surface and closed source, so only containment is possible.
+2. **Game broker** (TLS AMQP on 31982): network-facing; Funcom's TextRouter decides who may log in.
+3. **TextRouter, Director, Gateway, postgres**: loopback only, but they hold the database password, the broker secrets and the FLS token (finding 4).
+4. **This project's LuaJIT tools**: only the GM bridge reads untrusted input, and only chat from players who have already logged in.
+
+The stopping rule: take a hardening step when it narrows one of the first three at a low maintenance cost. Stop when the next step would protect a lower-ranked component better than the higher ones are already protected, or when it costs more in breakage than it removes in realistic risk.
+
+Applied as of 2026-09-30:
+
+- **Taken:** Erlang distribution on loopback, .NET diagnostics off, LuaJIT from the MDWE-capable fork. All three are cheap and apply to every deployment.
+- **Next, and worth it:** system units per component running as a dedicated service user (findings 3, 4 and 6). It is the only step that moves the trust boundary off the operator's own uid. It is host configuration, so it is prepared in the host flake rather than here.
+- **Not a requirement here:** an in-process seccomp lockdown of LuaJIT (no new memfd after start-up, executable mappings only on the JIT's own file). Seccomp filters are inherited across `fork` and `execve`, so a lockdown installed before the GM bridge spawns `rabbitmqctl` would stop the dynamic loader of every child; it would harden the least exposed component, and an in-process JIT cannot be fully closed without compiling out of process anyway. The luajit_mdwe fork pursues it as an optional feature.
+- **A public host should add**, outside this repository: a host firewall that admits only the client-facing ports listed in `docs/operations.md`, and nothing else from the internet.
+
 ## Why the live components were not traced
 
 `kernel.yama.ptrace_scope` is 1 on this host [M], so `strace -p` cannot attach to a process that is not its own descendant, and every live component was started by the systemd user manager. Lifting that needs a sysctl change (a host change), so it was not done. The traces therefore come from test instances launched under `strace` [T], which cover postgres, db-setup, both brokers, epmd, the Erlang CLI, TextRouter startup, both LuaJIT tools, backup and update. **The map server, Director at runtime and the Gateway were not traced**: none of the suites runs them (the Director suite only prints its help), and a second map server cannot be started beside the live one. Their entries rely on [M], [C] and [I].
