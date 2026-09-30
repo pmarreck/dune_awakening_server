@@ -10,6 +10,8 @@ Run Funcom's official Dune: Awakening 1.5 self-hosted server (a "battlegroup") a
 
 This setup requires [Nix](https://nixos.org/download/). Nix pins every tool this project uses (PostgreSQL 17, RabbitMQ and Erlang, LuaJIT, steamcmd, the loaders Funcom's .NET services need) to exact versions in `flake.lock`. One `nix develop` gives you all of them at those versions, on any x86_64 Linux machine, without touching the rest of your system. The result is reproducible: the same checkout builds and tests the same way everywhere, and `nix flake check` proves it.
 
+One pin is not stock nixpkgs: LuaJIT, which runs the operator tools, is built from [luajit_mdwe](https://github.com/pmarreck/luajit_mdwe), a LuaJIT 2.1 fork whose JIT works under systemd's `MemoryDenyWriteExecute=yes` (details and the rollback in [docs/hardening.md](docs/hardening.md)).
+
 Nix is what made the rest of Funcom's stack unnecessary. Funcom's supported path is a Windows Pro host running Hyper-V, which runs an Alpine Linux appliance, which runs Kubernetes, which runs Docker containers. Those layers exist to deliver the right dependency versions to Funcom's binaries. Nix delivers the same dependencies directly, so the binaries run as plain processes and setup comes down to a few commands.
 
 ## If Nix looks intimidating

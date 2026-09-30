@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Host tier (needs the systemd user manager): the dev shell's luajit is the MDWE-capable fork with memfd code remapping
+# on by default, so our LuaJIT tools compile traces under MemoryDenyWriteExecute=yes. Stock LuaJIT panics there as soon
+# as a trace compiles. The probe also proves the directive is really in force (a W^X mprotect is refused) and that it
+# is not refused outside the unit, so a pass cannot come from a unit that silently lacks the directive.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+# The test runner's environment may lack the user bus address; the user manager's socket is at the standard place.
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+luajit=$(command -v luajit) || { fail "no luajit in PATH"; exit 1; }
+mdwe() { systemd-run --user --wait --pipe --collect --quiet -p MemoryDenyWriteExecute=yes --working-directory="$PWD" "$luajit" "$@"; }
+field() { sed -n "s/^$1=//p" <<<"$2"; }
+
+# Control: outside the unit W^X is allowed, and the probe itself runs.
+out=$("$luajit" tests/lib/mdwe_probe.lua 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$(field done "$out")" = true ] || fail "probe failed without MDWE (exit $rc): $out"
+[ "$(field wx_denied "$out")" = false ] || fail "W^X probe reports denial outside the unit: $out"
+
+out=$(mdwe tests/lib/mdwe_probe.lua 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$(field done "$out")" = true ] || fail "probe failed under MemoryDenyWriteExecute=yes (exit $rc): $out"
+[ "$(field wx_denied "$out")" = true ] || fail "MemoryDenyWriteExecute was not in force in the unit: $out"
+[ "$(field jit "$out")" = true ] || fail "JIT is off under MDWE: $out"
+[ "$(field mcode_security "$out")" = 2 ] || fail "luajit is not built with LUAJIT_SECURITY_MCODE=2: $out"
+[ "$(field mcode_rx "$out")" -gt 0 ] 2>/dev/null || fail "no r-xp /memfd:luajit-mcode mapping, so no trace ran from remapped code: $out"
+
+# Our tools' Lua libraries, through their unit tests, under the directive.
+for t in amqp gm_bridge idle_throttle items ue_assets; do
+	out=$(mdwe "tests/unit/$t.lua" 2>&1); rc=$?
+	[ "$rc" -eq 0 ] || fail "tests/unit/$t.lua under MemoryDenyWriteExecute=yes exited $rc: $(tail -5 <<<"$out")"
+done
+exit "$failures"

@@ -11,4 +11,17 @@ for engine in docker docker-compose podman; do
 done
 [ "$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)" = 3.12 ] || fail "python3 is not 3.12 (Funcom bytecode requires it)"
 python3 -c 'import psycopg2, dateutil, debugpy' 2>/dev/null || fail "python3 lacks psycopg2/dateutil/debugpy"
+# luajit is the MDWE-capable fork with memfd code remapping on by default, and every Lua C module in the shell loads in it.
+out=$(luajit -e 'for _, m in ipairs({ "cjson", "cjson.safe", "socket.core", "mime.core", "lfs", "lpeg", "system.core", "term.core", "luv" }) do
+	require(m) end print(jit.security and jit.security("mcode"))' 2>&1)
+[ "$out" = 2 ] || fail "luajit is not the fork built with LUAJIT_SECURITY_MCODE=2, or a C module failed to load: $out"
+# Classifier over the Lua runtime closure: exactly one LuaJIT interpreter, the fork, so no module or wrapper was built
+# against (or runs under) another LuaJIT build. DUNE_LUAJIT_CLOSURE is the closure's store-path list, set by the flake.
+if [ -r "${DUNE_LUAJIT_CLOSURE:-}" ]; then
+	interpreters=$(grep -E -- '-luajit(-mdwe)?-2\.1\.[0-9]+$' "$DUNE_LUAJIT_CLOSURE")
+	[ "$(grep -c . <<<"$interpreters")" -eq 1 ] && grep -q -- '-luajit-mdwe-' <<<"$interpreters" ||
+		fail "Lua runtime closure should hold exactly the fork's LuaJIT, found: $(tr '\n' ' ' <<<"$interpreters")"
+else
+	fail "DUNE_LUAJIT_CLOSURE is not a readable store-path list: '${DUNE_LUAJIT_CLOSURE:-}'"
+fi
 exit "$failures"

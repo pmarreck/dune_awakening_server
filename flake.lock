@@ -52,6 +52,23 @@
         "type": "github"
       }
     },
+    "luajit-mdwe": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790799800,
+        "narHash": "sha256-Ao0AQXIJQS67FP71dL8Gqfdq0s0VaN/Zjvf2FaJVlA8=",
+        "owner": "pmarreck",
+        "repo": "luajit_mdwe",
+        "rev": "171e315503e9cedcc44afdf2ab03dd569504cb0a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pmarreck",
+        "repo": "luajit_mdwe",
+        "rev": "171e315503e9cedcc44afdf2ab03dd569504cb0a",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1779911860,
@@ -141,6 +158,7 @@
     },
     "root": {
       "inputs": {
+        "luajit-mdwe": "luajit-mdwe",
         "nixpkgs": "nixpkgs",
         "random": "random",
         "romantic_collation": "romantic_collation"

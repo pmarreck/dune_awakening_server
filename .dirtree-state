@@ -65,6 +65,7 @@ annotate=[
 	tests/integration/idle-throttle = dune-idle-throttle against fake dune-live/ss/notifier with --virtual-clock: tiers, retries, notices across restarts, stop restore, lifecycle
 	tests/integration/items-tool = CLI tests for dune-items: refresh via --legacy and a fake retoc, find, paths with spaces
 	tests/integration/live = dune-live world/character groups against a synthetic DB and fake broker/backup
+	tests/integration/luajit-mdwe = Host tier: fork LuaJIT JITs under systemd MemoryDenyWriteExecute=yes (memfd mcode mappings; tool lib unit tests)
 	tests/integration/postgres = Lifecycle, auth, and loopback test for libexec/dune-postgres
 	tests/integration/rabbitmq = Host-tier test: both brokers, TLS, HTTP auth path, fail-closed
 	tests/integration/server-config = dune-server configure: private ini carries ServerCommandsAuthToken + NotificationSystem cvar, token stable, 0600
@@ -77,6 +78,7 @@ annotate=[
 	tests/integration/world-status = status --json shape with everything down (admin page contract)
 	tests/lib/amqp_probe.lua = Test AMQP probe: declare/bind/consume as a given broker user
 	tests/lib/chat.bash = Test helpers: declare exchanges, publish TextChat with a user_id into the game broker
+	tests/lib/mdwe_probe.lua = LuaJIT probe: traces, cjson, LuaSocket, ffi.C, FFI callback; reports W^X denial, mcode mode, memfd r-x mappings
 	tests/lib/ports.bash = pick_port_base: free port block below Int16 limit and ephemeral range
 	tests/lib/ue_fixture.lua = Writes synthetic legacy .uasset/.uexp item and string tables for tests (no Funcom content)
 	tests/payload/character-transfer = dune-character export/validate/import against the real Funcom schema (login_account fixture, dry-run validation, backup round trip)
