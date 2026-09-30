@@ -68,7 +68,9 @@ broker_env() {
 	# Their defaults are every interface, which Tailscale peers could reach. Only the AMQP listeners face the network.
 	export ERL_EPMD_ADDRESS=127.0.0.1
 	export RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS="-kernel inet_dist_use_interface {127,0,0,1}"
-	export RABBITMQ_CTL_ERL_ARGS="-kernel inet_dist_use_interface {127,0,0,1}"
+	# The CLI VM gets one scheduler of each kind: by default Erlang starts one per core and they spin, so on a 128-core
+	# host each rabbitmqctl run cost about 24 s of CPU for under a second of work (0.6 s with these flags, measured).
+	export RABBITMQ_CTL_ERL_ARGS="-kernel inet_dist_use_interface {127,0,0,1} +S 1:1 +SDcpu 1:1 +SDio 1 +A 1 +sbwt none +sbwtdcpu none +sbwtdio none"
 }
 
 # The game broker also holds the GM bridge's account in its internal database, created at boot from this file (0600),
@@ -119,6 +121,9 @@ cmd_init() {
 
 cmd_start() {
 	[ -s "$RABBITMQ_CONFIG_FILE" ] || die "broker $1 not initialized; run init first"
+	# The cheap check answers the common case (the heal timer, every 5 minutes, on a running broker) without an Erlang
+	# VM. A "down" from it is confirmed by the node itself, because what follows deletes the node's data directory.
+	cmd_quick_status && return 0
 	cmd_status && return 0
 	[ -d "$RABBITMQ_MNESIA_BASE" ] && mv "$RABBITMQ_MNESIA_BASE" "$RABBITMQ_MNESIA_BASE.old.$$" && rm -r -- "$RABBITMQ_MNESIA_BASE.old.$$"
 	mkdir -p "$RABBITMQ_LOG_BASE" || die "cannot create $RABBITMQ_LOG_BASE"
@@ -140,7 +145,7 @@ cmd_start() {
 cmd_stop() { cmd_status || return 0; timeout 60 rabbitmqctl -q -n "$RABBITMQ_NODENAME" stop >/dev/null 2>&1; }
 cmd_status() { rabbitmqctl -q -n "$RABBITMQ_NODENAME" status >/dev/null 2>&1; }
 # Cheap liveness for frequent polling (admin page): node process alive and its distribution port accepting
-# connections, without booting an Erlang VM for rabbitmqctl (~1 s). start/stop keep the full check.
+# connections, without booting an Erlang VM for rabbitmqctl. start trusts it only for "up"; stop keeps the full check.
 cmd_quick_status() {
 	local pid
 	pid=$(cat "$RABBITMQ_PID_FILE" 2>/dev/null) && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null &&

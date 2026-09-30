@@ -71,6 +71,28 @@ out=$(libexec/dune-rabbitmq start admin 2>&1) || fail "start while already runni
 [ "$(libexec/dune-rabbitmq ctl admin eval "os:getpid()." 2>/dev/null)" = "$pid_before" ] || fail "second start replaced the running admin node"
 libexec/dune-rabbitmq ctl admin list_vhosts 2>/dev/null | grep -qx idempotence-marker || fail "second start wiped the running node's data"
 [ -d "$DUNE_STATE_DIR/rabbitmq-admin/mnesia" ] || fail "second start deleted the running node's data directory"
+# The heal timer runs start every 5 minutes. Each rabbitmqctl call boots an Erlang VM (about 24 s of CPU on a 128-core
+# host), so start on a running broker must answer from the cheap check and run no rabbitmqctl at all.
+real_ctl=$(command -v rabbitmqctl)
+mkdir -p "$work/logctl"; ctl_log="$work/ctl.log"; : > "$ctl_log"
+printf '#!%s\nprintf "%%s|%%s\\n" "$*" "$RABBITMQ_CTL_ERL_ARGS" >> %q\nexec %q "$@"\n' "$BASH" "$ctl_log" "$real_ctl" > "$work/logctl/rabbitmqctl"
+chmod +x "$work/logctl/rabbitmqctl"
+for broker in admin game; do
+	out=$(PATH="$work/logctl:$PATH" libexec/dune-rabbitmq start "$broker" 2>&1) || fail "start on running $broker: $out"
+done
+[ -s "$ctl_log" ] && fail "start on a running broker booted rabbitmqctl: $(cut -d'|' -f1 "$ctl_log" | paste -sd';' -)"
+# When the cheap check says down (here: pid file gone) start must confirm with the node itself before it deletes
+# anything, so a stale or missing pid file never wipes a running broker.
+pid_file="$DUNE_STATE_DIR/rabbitmq-admin/pid"
+mv "$pid_file" "$work/pid.saved" 2>/dev/null || fail "admin broker has no pid file"
+out=$(libexec/dune-rabbitmq start admin 2>&1) || fail "start with a missing pid file on a running node: $out"
+mv "$work/pid.saved" "$pid_file" 2>/dev/null
+[ "$(libexec/dune-rabbitmq ctl admin eval "os:getpid()." 2>/dev/null)" = "$pid_before" ] || fail "missing pid file made start replace the running node"
+libexec/dune-rabbitmq ctl admin list_vhosts 2>/dev/null | grep -qx idempotence-marker || fail "missing pid file made start wipe the running node's data"
+# Every rabbitmqctl VM (dune-live, the GM bridge, the idle throttle, stop) runs with one scheduler of each kind: with the
+# default of one per core they spin 128 threads on this host for a sub-second command.
+: > "$ctl_log"; PATH="$work/logctl:$PATH" libexec/dune-rabbitmq ctl admin list_vhosts >/dev/null 2>&1
+grep -q -- '+S 1:1' "$ctl_log" && grep -q -- '+SDcpu 1:1' "$ctl_log" || fail "rabbitmqctl VM not limited to one scheduler: $(cut -d'|' -f2 "$ctl_log")"
 
 # --quick status (process alive + distribution port listening, no Erlang VM boot) agrees with the full check.
 mkdir -p "$work/noctl"; for t in rabbitmqctl rabbitmq-diagnostics; do printf '#!%s\nexit 1\n' "$BASH" > "$work/noctl/$t"; chmod +x "$work/noctl/$t"; done
