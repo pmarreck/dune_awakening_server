@@ -22,10 +22,10 @@ You do not need to learn Nix to use this. Everything runs through a few scripts 
 
 Funcom's stated requirements for a self-hosted battlegroup ([self-hosting requirements FAQ](https://funcom.helpshift.com/hc/en/4-dune-awakening/faq/84-self-hosting-requirements-faq/)):
 
-- **Memory:** 20 GB, "depending on how many servers the battlegroup will have". This project runs one map (Hagga Basin, `Survival_1`). Measured: about 10.4 GiB idle for the whole stack, and about 9.6 GiB for the map server with one player (capped at 20 GiB, no swap).
+- **Memory:** 20 GB, "depending on how many servers the battlegroup will have". Hagga Basin (`Survival_1`) always runs; the other maps (Arrakeen, Harko Village, the Overmap, Deep Desert, story and DLC maps) start when a player travels there and stop when nobody has been on them for 15 minutes. Measured: about 10.4 GiB idle for the whole stack, about 9.6 GiB for `Survival_1` with one player (capped at 20 GiB, no swap), and about 1 GiB for Arrakeen with nobody on it (isolated test boot).
 - **CPU:** Intel Core i5-8400 / AMD Ryzen 5 1600 class, with AVX2.
 - **Storage:** 100 GB on SSD. The Steam download is about 5.2 GB, and the unpacked images take a similar amount again.
-- **Ports:** Funcom lists 7777–7810 UDP for game servers and 31982 TCP for RabbitMQ (RMQ). One map uses UDP 7777 (players) and 7888 (server-to-server, internal); the game broker listens on TCP 31982 with TLS.
+- **Ports:** Funcom lists 7777–7810 UDP for game servers and 31982 TCP for RabbitMQ (RMQ). `Survival_1` uses UDP 7777 (players) and 7888 (server-to-server, internal); each other map its own pair (Arrakeen 7779 and 7890; the list is in [docs/operations.md](docs/operations.md#maps)); the game broker listens on TCP 31982 with TLS.
 - **Token:** a self-host token from Funcom's account page, https://account.duneawakening.com/. The token this project was developed with expires one year after it was issued.
 - **Client and server builds must match exactly.** When Steam updates the game, update the server the same day (`dune-awakening update apply`).
 
@@ -60,7 +60,7 @@ bin/dune-awakening start
 bin/dune-awakening status
 ```
 
-Leftover `*.sample` / `*.default` files in the config directory make `dune-awakening` print a yellow warning (silence it with `--no-warn` or `DUNE_NO_WARNINGS=1`). Open UDP 7777 and TCP 31982 in your firewall for the players' network. For friends outside your LAN, [Tailscale node sharing](https://tailscale.com/kb/1084/sharing) works well: share just the server machine with their own Tailscale account, and set `EXTERNAL_ADDRESS` in `world.conf` to the server's Tailscale address (`tailscale ip -4`). Tailscale Funnel cannot work, because it carries TCP only.
+Leftover `*.sample` / `*.default` files in the config directory make `dune-awakening` print a yellow warning (silence it with `--no-warn` or `DUNE_NO_WARNINGS=1`). Open UDP 7777 and TCP 31982 in your firewall for the players' network, plus UDP 7778–7808 for the other maps. For friends outside your LAN, [Tailscale node sharing](https://tailscale.com/kb/1084/sharing) works well: share just the server machine with their own Tailscale account, and set `EXTERNAL_ADDRESS` in `world.conf` to the server's Tailscale address (`tailscale ip -4`). Tailscale Funnel cannot work, because it carries TCP only.
 
 ## The `dune-awakening` command
 
@@ -68,7 +68,7 @@ Everything runs through one command, `bin/dune-awakening`. It works from any dir
 
 | Subcommand | Purpose and options |
 |---|---|
-| `start`, `stop`, `restart` | Bring the whole world up in dependency order (database, schema, brokers, Funcom services, map server, chat-command bridge, idle frame-rate throttle), or down in reverse |
+| `start`, `stop`, `restart` | Bring the whole world up in dependency order (database, schema, brokers, Funcom services, map servers, map scaler, chat-command bridge, idle frame-rate throttle), or down in reverse |
 | `doctor [--json]` | Health check of the setup: permissions, secrets, leftover templates, default passwords, token expiry, components, database logins, backups |
 | `status [--json] [--watch SECS]` | One line per component; `--json` adds world identity, characters online, map-server memory and CPU (for admin pages) |
 | `world …` | Whole-world live commands: `say`, `timeout on/off` (a break for everyone: no damage, sandworms or storms), `kick-all`, `exec`, `cvar` (read or set-and-verify a console variable), `partitions`, `raw` |
@@ -81,7 +81,7 @@ Everything runs through one command, `bin/dune-awakening`. It works from any dir
 
 `dune-awakening <subcommand> --help` lists each subcommand's options.
 
-**Components** live in `libexec/`. `dune-awakening` calls them; you rarely run them directly. Each manages one piece of Funcom's stack: `dune-server` (the map server, Funcom's Unreal binary), `dune-postgres` (database cluster), `dune-db-setup` (Funcom's schema installer), `dune-world-partitions`, `dune-rabbitmq` (admin and game message brokers), `dune-textrouter`, `dune-director` and `dune-gateway` (Funcom's broker authentication, director and gateway services), `dune-gm-bridge` (in-game `&` chat commands for players listed in `gm_bridge.conf`; see [docs/admin.md](docs/admin.md#in-game-chat-commands-the-gm-bridge)), `dune-idle-throttle` (lowers the map server's frame rate while nobody is connected, 5 fps after 5 minutes and 1 fps after a day, to save CPU; see [docs/operations.md](docs/operations.md#idle-frame-rate-throttle)), plus setup helpers `dune-dotnet-prepare`, `dune-unpack` and `dune-usersettings`. The subcommand tools (`dune-live` for live `world` and `character` commands, `dune-update`, `dune-backup`, `dune-character`, `dune-world-init`, `dune-units`, `dune-items`) live there too. `data/items.tsv` is the hand-written list of item names for `&give`.
+**Components** live in `libexec/`. `dune-awakening` calls them; you rarely run them directly. Each manages one piece of Funcom's stack: `dune-server` (a map server, Funcom's Unreal binary; `DUNE_MAP` picks the map from `data/maps.tsv`), `dune-map-scaler` (starts a map when a player travels there and stops it once nobody has been on it for a while, standing in for Funcom's Kubernetes operator; see [docs/operations.md](docs/operations.md#maps)), `dune-postgres` (database cluster), `dune-db-setup` (Funcom's schema installer), `dune-world-partitions`, `dune-rabbitmq` (admin and game message brokers), `dune-textrouter`, `dune-director` and `dune-gateway` (Funcom's broker authentication, director and gateway services), `dune-gm-bridge` (in-game `&` chat commands for players listed in `gm_bridge.conf`; see [docs/admin.md](docs/admin.md#in-game-chat-commands-the-gm-bridge)), `dune-idle-throttle` (lowers the map server's frame rate while nobody is connected, 5 fps after 5 minutes and 1 fps after a day, to save CPU; see [docs/operations.md](docs/operations.md#idle-frame-rate-throttle)), plus setup helpers `dune-dotnet-prepare`, `dune-unpack` and `dune-usersettings`. The subcommand tools (`dune-live` for live `world` and `character` commands, `dune-update`, `dune-backup`, `dune-character`, `dune-world-init`, `dune-units`, `dune-items`) live there too. `data/items.tsv` is the hand-written list of item names for `&give`, and `data/maps.tsv` the list of maps the world can run (ports, memory caps, level paths).
 
 Gameplay settings (XP, harvest yield, crafting time, death penalties, sandstorm damage and more) go in override files under `~/.config/dune_awakening_server/UserSettings/`; see [docs/operations.md](docs/operations.md#gameplay-settings). Funcom's guide describes the same `UserSettings` files for its VM.
 

@@ -36,7 +36,7 @@ Correction: the DASH "post-1.5 schema" note dates from 2026-07-17, before 1.5 [F
 | RabbitMQ admin | Alpine | 3.13.7, OTP 26.2.5.16, management + prometheus plugins | Internal service bus, plain AMQP |
 | RabbitMQ game | same | same | TLS-only AMQPS 5672, published as TCP 31982; game clients connect here |
 
-Funcom runs 35 map server sets. Only `Survival_1` (12Gi limit) and `Overmap` (2Gi) are always on. Director starts the other 33 on demand through Kubernetes [F, funcom-appliance-wiring].
+Funcom runs 35 map server sets. Only `Survival_1` (12Gi limit) and `Overmap` (2Gi) are always on. Director starts the other 33 on demand through Kubernetes [F, funcom-appliance-wiring]. Here `dune-map-scaler` stands in for that (see [Map scaling](#map-scaling)).
 
 ## Connection graph
 
@@ -49,7 +49,7 @@ Director, TextRouter, Gateway, servers ──AMQP──▶ admin RabbitMQ ──
 Director, Gateway, db-utils ──▶ Postgres
 ```
 
-Required external ingress for a one-map world: UDP 7777 and TCP 31982 [F, DASH README; Funcom template]. UDP 7888 is internal IGW. It may matter for the server-browser ping [I].
+Required external ingress for a one-map world: UDP 7777 and TCP 31982 [F, DASH README; Funcom template]. Each other map adds its own game port, UDP 7776 + its slot (7778–7808) [F, `data/maps.tsv`; the isolated Arrakeen boot bound 7779]. UDP 7888 is internal IGW. It may matter for the server-browser ping [I].
 
 ## Where the runtime settings come from
 
@@ -75,10 +75,24 @@ Ranked from least to most risk.
 | 7 | Director, TextRouter | `libexec/dune-dotnet-prepare`: copy, patchelf interpreter to nixpkgs musl, `netcoredeps` symlink to the flake's musl libc/libstdc++/libgcc_s/zlib/ICU 76/OpenSSL 3 (the apps' RUNPATH is `$ORIGIN/netcoredeps`) | **runs** 2026-09-24: both print their CLI help natively (tests/payload/dotnet-apps). ICU 76 vs the image's ICU and `libAuthbuffer.so` still unproven under real load |
 | 8 | Director without Kubernetes | runs natively (same prepare path as TextRouter); IGWO/Kubernetes client logs an error and continues | **runs to FLS** 2026-09-24: connects to DB (derives `dune_sb_1_5_3_0` itself), mints broker credentials, then stops at `Failed to load FLS Environment Auth Codes` with no token. Blocked only on the operator's FLS token |
 | 9 | Game server | patchelf interpreter to nixpkgs glibc 2.42 `ld-linux-x86-64.so.2` and add-rpath gcc `libgcc_s`; replace `run.sh` with a unit supplying the flags | **links** 2026-09-24: all NEEDED libs resolve (LD_TRACE_LOADED_OBJECTS on a patched copy; binary needs GLIBC ≤ 2.27 symbols). [GAP] 1.5 flag set, `Saved/` layout, dlopen'd plugins (Oodle etc.) |
-| 10 | Map scaling | none: `Survival_1` always on, `Overmap` only if login or first travel needs it | [GAP] confirm Director does not fail when it cannot scale other maps |
+| 10 | Map scaling | `dune-map-scaler` starts a map server when Director logs travel demand for it and stops it after `MAP_IDLE_AFTER` with nobody on it; `MAPS_ALWAYS_ON` keeps chosen maps up; `Survival_1` always on | **built** 2026-10-01; one map boot and the scaler's start/stop cycle verified in isolation; live travel not yet verified (see [Map scaling](#map-scaling)) |
 | 11 | Updates | the watcher detects a new buildid, then: download, re-unpack into a new versioned directory, run the db-utils update, restart units; roll back by switching to the previous directory and restoring the pre-update DB dump | design; the DB migration is one-way, so a backup before every update is mandatory |
 
 Proprietary files stay in `~/.local/share/dune_awakening_server/` (payload, `unpacked/`). The flake references them by path at runtime and never copies them into the Nix store or Git.
+
+## Map scaling
+
+Decided 2026-10-01 after travel to Arrakeen hung on "Connecting to Arrakeen" (2026-10-01 00:11 EDT). Operator steps and settings are in [operations.md](operations.md#maps).
+
+**What was missing [F].** The world database held one partition (`Survival_1`, dimension 0), and only that map server ran. The traveling player's map server logged `Travel was initiated without specifying Destination.Location or Destination.Dimension, so the target partition id cannot be set. Continuing travel.` and, 98 s later, `RequestTravelInternal: Bgd Travel Failed! Error:5`. Director logged nothing about the request: no `Received travel request` line for `SH_Arrakeen` and no queue for it. Funcom's appliance writes all 35 partitions at world creation (world template `worldPartitions`) and runs Survival_1 and Overmap; Kubernetes starts the others when Director asks.
+
+**How Funcom scales [F, research/funcom-appliance-wiring.md §1.2, §7.6; Director strings].** Every non-default set has `replicas: 0` and `dedicatedScaling: true`; Director (KubernetesClient embedded; strings `Download IGWO server set scales`, `ServerSetScale`, `PowerOffPartition`) patches `ServerSetScale` resources and the operator turns them into pods. Without Kubernetes, Director logs `Missing required environment variable for IGWO` at start and continues; its scale requests have nowhere to go. A map server finds its partition itself: `-PartitionIndex` is only a preference, and `load_world_partition(map, server_id, dimension, preferred_id)` assigns any partition of that map whose current owner is not in `active_server_ids` (servers holding a database connection). The server then reports itself in `farm_state` (game and IGW address, ready, alive, players), which Director and Gateway read. So nothing has to register a new server with Director: the server does it.
+
+**Design.** One map server per map, each namespaced: run directory `runtime/server-<map>/` (pid, console log, `Saved/`, HOME), systemd scope `dune-server-<world>-<map>`, memory cap, and fixed ports from Funcom's slot (game 7776 + slot, IGW 7887 + slot), as Funcom's "next port in sequence" scheme and DASH's all-maps layout do. Survival_1 keeps its exact launch line. Level paths come from the server's own allowed list (`DefaultGame.ini` `m_AllowedAutomatedCommandLineLevels`); `tests/payload/maps-table` checks `data/maps.tsv` against that list, Director's `[InstancingModes]` and Funcom's world template. Demand comes from Director's log, as DASH's production autoscaler reads it (`admin/admin_panel.py` `parse_director_travel_demand`): `Received travel request for N player(s) to MAP` (written at once) and `Processing travel queue for [ClassicalInstancing group] MAP (… num N)` (Director summarizes repeats once a minute). Presence comes from `farm_state.connected_players` of servers in `active_server_ids`. On-demand was chosen over always-on because it costs nothing until someone travels, and an isolated Arrakeen boot was ready in about 10 s, well inside Director's 300 s travel-request lifetime. `MAPS_ALWAYS_ON` is the fallback if live travel shows that Director does not wait for a starting server.
+
+**Verified (isolated stack: own PostgreSQL, brokers and TextRouter on free ports, no FLS token, loopback address, 2026-10-01).** `dune-server` with `DUNE_MAP=SH_Arrakeen` loaded `/Game/Dune/Maps/SocialHubs/Arrakeen/SH_Arrakeen.SH_Arrakeen` in 0.8 s, bound UDP 7779 and 7890, took ServerStatus port 10001 when 10000 was busy, claimed its partition (`farm_state` ready and alive, game port 7779) and became farm leader about 10 s after launch, at about 0.9 GiB (scope `MemoryCurrent`). `dune-server stop` ended it in 2 s; a restart got a new server id and claimed the same partition (the old `farm_state` row stays, marked alive, but leaves `active_server_ids`). The real `dune-map-scaler`, fed a `Received travel request … SH_Arrakeen` line, started it through `dune-world-partitions` and `dune-server`, counted its players with `psql` and stopped it 61 s later with `MAP_IDLE_AFTER=60`.
+
+**Inferred, to verify live [I].** That Director, once the partition exists, logs the travel request and queues the player while the server starts, then routes the player to it (DASH's production behavior; on this world Director said nothing while no partition existed). That a client reaches the new map on its own UDP port (the host firewall currently allows 7777 only). That the Overmap is what an ornithopter flight out of Hagga Basin uses. The three `CB_Arrakis_*` rooms are not served (no level path is known).
 
 ## Open questions to settle before writing Nix
 

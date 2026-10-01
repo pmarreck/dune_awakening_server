@@ -22,7 +22,7 @@ The client and server must be on the **same build**. When Steam updates the Dune
 `bin/dune-awakening` (LuaJIT) resolves its own real path to find this checkout's flake, and re-executes itself inside `nix develop` on it when needed, so it works from any cwd once `bin/` is on PATH (or through a symlink).
 
 ```bash
-dune-awakening start          # postgres → schema → partition → RabbitMQ admin/game → TextRouter → Director → Gateway → Survival_1 → GM bridge → idle throttle
+dune-awakening start          # postgres → schema → partition → RabbitMQ admin/game → TextRouter → Director → Gateway → Survival_1 → always-on maps → map scaler → GM bridge → idle throttle
 dune-awakening status         # one line per component, ● up / ○ down; exit 0 only if all are up
 dune-awakening status --json  # plus world identity, external address, flake path, map-server uptime and memory vs cap (admin page)
 dune-awakening stop           # reverse order; refuses while characters are online (--force overrides)
@@ -59,7 +59,8 @@ Runtime state: `~/.local/share/dune_awakening_server/runtime/` (0700). Logs, all
 | TextRouter | `runtime/textrouter/textrouter.log` (**contains credentials**) |
 | Director | `runtime/director/director.log` (**contains credentials**) |
 | Gateway | `runtime/gateway/gateway-console.log`, `runtime/gateway/root/Tools/Battlegroups/GatewayService/logs/` |
-| Map server | `runtime/server/server-console.log`, `runtime/server/Saved/Logs/` |
+| Map server | `runtime/server/server-console.log`, `runtime/server/Saved/Logs/` (Survival_1); `runtime/server-<map>/…` for every other map |
+| Map scaler | `runtime/map-scaler/map-scaler.log` (travel demand per map, starts, stops, players arriving and leaving) |
 | GM bridge | `runtime/gm-bridge/gm-bridge.log` (only `&` chat commands, never other chat) |
 | Idle throttle | `runtime/idle-throttle/idle-throttle.log` (rate changes, first and last connection, notices); its state in `runtime/idle-throttle/state` |
 
@@ -76,8 +77,10 @@ Runtime state: `~/.local/share/dune_awakening_server/runtime/` (0700). Logs, all
 | 18081/tcp | TextRouter auth API | 127.0.0.1 only |
 | 18082/tcp | Director HTTP | 127.0.0.1 only |
 | 7777/udp | game traffic (Survival_1) | clients |
-| 7888/udp | IGW server-to-server | internal |
-| 10000/tcp | map server ServerStatus HTTP listener | 127.0.0.1 only |
+| 7778–7808/udp | game traffic of the other maps (7776 + the map's slot, see [Maps](#maps)) | clients, while that map runs |
+| 7888/udp | IGW server-to-server (Survival_1) | internal |
+| 7889–7919/udp | IGW of the other maps (7887 + slot) | internal (map servers reach each other on this host) |
+| 10000/tcp, 10001+/tcp | map servers' ServerStatus HTTP listener (each takes the next free port from 10000) | 127.0.0.1 only |
 | 4369/tcp | epmd (Erlang port mapper, shared by both brokers) | **all interfaces** (see [hardening.md](hardening.md)) |
 | 25672/tcp, 25673/tcp | admin and game RabbitMQ Erlang distribution | **all interfaces**; cookie-protected |
 | 35672/tcp | each `rabbitmqctl` run (dune-live, GM bridge, idle throttle), while it runs | **all interfaces** |
@@ -153,12 +156,57 @@ The sandstorm structs come from the server's `DuneSandbox/Config/DefaultGame.ini
  "external_address": "100.64.0.10", "flake": "/path/to/checkout",
  "components": [{"name": "postgres", "up": true}, {"name": "rabbitmq-admin", "up": true}, {"name": "rabbitmq-game", "up": true},
                 {"name": "textrouter", "up": true}, {"name": "director", "up": true}, {"name": "gateway", "up": true}, {"name": "server", "up": true},
-                {"name": "gm-bridge", "up": true}, {"name": "idle-throttle", "up": true}],
+                {"name": "map-scaler", "up": true}, {"name": "gm-bridge", "up": true}, {"name": "idle-throttle", "up": true}],
  "characters": {"stored": 1, "online": 1},
- "server": {"uptime_seconds": 2107, "memory_bytes": 10231160832, "memory_max_bytes": 21474836480, "cpu_seconds": 905.18}}
+ "server": {"uptime_seconds": 2107, "memory_bytes": 10231160832, "memory_max_bytes": 21474836480, "cpu_seconds": 905.18},
+ "maps": [{"name": "Overmap", "mode": "on-demand", "up": false, "game_port": 7778, "igw_port": 7889, "uptime_seconds": null,
+           "memory_bytes": null, "memory_max_bytes": null, "cpu_seconds": null},
+          {"name": "SH_Arrakeen", "mode": "on-demand", "up": true, "game_port": 7779, "igw_port": 7890, "uptime_seconds": 312,
+           "memory_bytes": 937824256, "memory_max_bytes": 4294967296, "cpu_seconds": 41.2}, …]}
 ```
 
-`characters` is null when the database is unreachable; `server` fields are null when the map server is down. CPU % = Δ`cpu_seconds` / Δwall-clock × 100 (per core). RabbitMQ is probed with `dune-rabbitmq status BROKER --quick` (process alive + distribution port), because the full check boots an Erlang VM (~1 s).
+`characters` is null when the database is unreachable; `server` (Survival_1) fields are null when the map server is down. `maps` lists every other map the world serves, with the same fields per map; `up` (the whole world) counts an always-on map that is down, never a stopped on-demand map. CPU % = Δ`cpu_seconds` / Δwall-clock × 100 (per core). RabbitMQ is probed with `dune-rabbitmq status BROKER --quick` (process alive + distribution port), because the full check boots an Erlang VM (~1 s).
+
+## Maps
+
+Hagga Basin (`Survival_1`) is the world's home map and always runs. Every other map Funcom's appliance can run is a separate map server: the Overmap (the world map you fly into when leaving Hagga Basin), the social hubs Arrakeen and Harko Village, Deep Desert, and the story, dungeon and DLC maps. In Funcom's appliance, Kubernetes starts those servers when Director asks for one. Here `dune-map-scaler` does that job: it starts a map when a player travels there and stops it once nobody has been on it for a while.
+
+**How it works.** At `start`, `dune-world-partitions` gives every served map its database partition (one row in `world_partition`, dimension 0; existing rows are kept). When a player asks to travel, Director logs the request (`Received travel request for 1 player(s) to SH_Arrakeen …`) and, while the map has no server, keeps the player queued (`Processing travel queue for … SH_Arrakeen (… num: 1)`) for up to `TravelRequestExpirationTimeSeconds` (300 s in Funcom's Director config). The scaler reads Director's log every `MAP_POLL` seconds, starts the map's server with its partition, and Director routes the waiting player once the server registers. That Director queues the player while the server starts is inferred from DASH, which scales maps from the same log lines in production; it was not yet observed on this world (see [architecture.md](architecture.md#map-scaling)). An isolated test boot of Arrakeen loaded the map, bound its ports and claimed its partition about 10 s after launch. The scaler stops a map once nobody has been on it (the players its server reports in `farm_state`) for `MAP_IDLE_AFTER` seconds, counted from its start, the last travel request for it or the last player seen on it, whichever is latest. It never stops a map while the database cannot say who is on it, never touches `Survival_1` or an always-on map, and never copies a line of Director's log (it holds credentials) into its own log.
+
+**Settings** go in `world.conf` (read at every `dune-awakening start`); an environment variable `DUNE_<key>` wins over the file. Invalid values stop `start` with a message naming the setting.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `MAPS` | `all` | maps served on demand besides `Survival_1`: `all`, `none`, or names from `data/maps.tsv` separated by spaces |
+| `MAPS_ALWAYS_ON` | (none) | maps started with the world, right after `Survival_1`, and never stopped by the scaler (names) |
+| `MAP_SCALER` | `1` | `0` stops starting and stopping maps on demand (travel requests are still logged); always-on maps still run |
+| `MAP_IDLE_AFTER` | `900` | seconds with nobody on an on-demand map before it stops (at least 60) |
+| `MAP_POLL` | `5` | seconds between checks of Director's log |
+
+Examples: `MAPS="SH_Arrakeen SH_HarkoVillage Overmap"` serves only those three on demand. `MAPS_ALWAYS_ON="SH_Arrakeen"` keeps Arrakeen up permanently (no wait on the first trip, about 1 GiB more in use). `MAPS=none` goes back to Hagga Basin alone. Removing a map from `MAPS` leaves its partition row in the database (harmless; Director ignores a partition without a server) and stops its server at the next `dune-awakening stop`.
+
+**The maps** (`data/maps.tsv`, from Funcom's own world template and the server's `DefaultGame.ini`). The slot is Funcom's partition id; game port = 7776 + slot, IGW port = 7887 + slot. The memory cap of each map's systemd scope is twice Funcom's Kubernetes limit (Survival_1 keeps its 20 GiB).
+
+| Slot | Map | What it is | Game / IGW UDP | Memory cap |
+|---|---|---|---|---|
+| 1 | Survival_1 | Hagga Basin (always on) | 7777 / 7888 | 20G |
+| 2 | Overmap | the world map between regions | 7778 / 7889 | 4G |
+| 3 | SH_Arrakeen | Arrakeen social hub | 7779 / 7890 | 4G |
+| 4 | SH_HarkoVillage | Harko Village social hub | 7780 / 7891 | 4G |
+| 8 | DeepDesert_1 | Deep Desert | 7784 / 7895 | 30G |
+| 5–7, 9–32 | story, dungeon, ecolab, overland and DLC maps | instanced content | 7776 + slot / 7887 + slot | 4–12G |
+
+Funcom's slots 33–35 (`CB_Arrakis_Generic_Sietch_Room`, `CB_Arrakis_Story_Paranoid_PrayerRoom`, `CB_Arrakis_Story_Glutton_DiningRoom`) are not served: the server's list of command-line levels has no path for them. DLC maps need the DLC on the player's account, as in Funcom's appliance.
+
+**Memory.** With `MAPS=all` nothing extra runs until someone travels. Each running map adds its own use (Arrakeen about 1 GiB idle in the isolated test; Funcom's limits suggest 2–3 GiB for most maps and up to 15 GiB for Deep Desert), bounded by its cap. Two players can have at most a few maps up at once.
+
+**Firewall.** Players reach each map on its own game port, so the host firewall must allow UDP 7778–7808 from the players' network as well as 7777 (or only the ports of the maps in `MAPS`). The IGW ports stay internal: map servers on this host reach each other's IGW ports locally. Nothing in this project changes the firewall.
+
+**With several maps running:**
+
+- **Idle throttle:** frame-rate changes go through the server-command channel, which every map server receives, so all running maps follow the same rate; the read-back checks `Survival_1`'s log. A player on any map holds a broker connection, so nobody's map is slowed while anyone is connected.
+- **GM bridge and `dune-awakening world` / `character` commands:** they publish on the same shared channel; a command for one player is acted on by the map server that player is on [I]. `world cvar` reads its answer from `Survival_1`'s log only.
+- **Backups:** `backup restore` refuses while any map server runs.
 
 ## Live-world commands and in-game GM
 

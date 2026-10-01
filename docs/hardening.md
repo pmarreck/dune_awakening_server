@@ -177,6 +177,11 @@ Each entry lists what was observed; the candidate directives follow it. Directiv
 - **Special:** LuaJIT (as the bridge). `ss` without `-p` does not read other processes' `/proc/<pid>/fd` [C]; the test tier's own `ss -p` port checks do [T].
 - **Candidate:** the GM bridge's set with `ReadWritePaths=$STATE/idle-throttle`, `PrivateNetwork=no`, and `AF_NETLINK` required.
 
+### Other map servers and the map scaler (added 2026-10-01, not measured on the live world)
+
+- **Other map servers:** the Survival_1 profile above, per map: run directory `$STATE/server-<map>/`, scope `dune-server-<world>-<map>.scope` with the map's cap from `data/maps.tsv`, UDP game port 7776 + slot and IGW port 7887 + slot on the `-MultiHome` address, ServerStatus on the next free TCP port from 10000 on loopback (an isolated Arrakeen boot took 10001) [C][T].
+- **Map scaler process:** `luajit libexec/dune-map-scaler`, cwd the checkout [C]. **Writes:** `$STATE/map-scaler/{map-scaler.log,pid}`; through `dune-world-partitions` and `dune-server`, the database partitions and everything a map server writes [C]. **Reads:** `$STATE/director/director.log` (it holds credentials: the scaler keeps only map names and counts from it), `$STATE/server*/pid`, `$SECRETS/postgres_dune_password`, `$STATE/db-utils/DuneSandbox/Config/perforce-keywords.json`, `$CHECKOUT/data/maps.tsv` [C]. **Network:** `psql` to postgres on loopback every `MAP_POLL` seconds while an on-demand map runs [C]. **Special:** it starts map servers, so it needs the user bus for `systemd-run --user --scope` (`XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`) and everything `dune-server start` needs [C].
+
 ### Timer and world jobs (not running at measurement time)
 
 From the rendered units (`libexec/dune-units`), their code, the journal and the test traces:
