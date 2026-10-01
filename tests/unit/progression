@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# libexec/lib/progression.lua: the game's level curve (data/levels.tsv) as XP totals per level, and XP amounts
+# corrected for the world's GlobalXpMultiplier.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+exec luajit tests/unit/progression.lua

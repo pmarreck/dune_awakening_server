@@ -34,7 +34,19 @@ long write(int fd, const void *buf, unsigned long n);
 int close(int fd);
 int mkdir(const char *path, int mode);
 int execvp(const char *file, char *const argv[]);
+char *realpath(const char *path, char *resolved);
+void free(void *p);
 ]]
+
+local function self_path()
+	local r = ffi.C.realpath(arg[0], nil)
+	if r == nil then return arg[0] end
+	local s = ffi.string(r); ffi.C.free(r)
+	return s
+end
+local DIR = self_path():match("^(.*)/[^/]*$") or "."
+package.path = DIR .. "/lib/?.lua;" .. package.path
+local progression = require("progression")
 
 local PGRES_COMMAND_OK, PGRES_TUPLES_OK, CONNECTION_OK = 1, 2, 0
 local O_WRONLY, O_CREAT, O_EXCL = 1, 64, 128
@@ -75,6 +87,15 @@ Records (edits need the account offline):
   import <file>               Validate, back up the account as an export, then import through the server's own
                               character_transfer_import (replaces the account's character; names re-encrypted)
 
+XP (sent through dune-live's AwardXP; the server multiplies what it receives by the world's GlobalXpMultiplier, so
+these divide by it first, read from Saved/UserSettings/UserServerCustomSettings.ini, else
+$DUNE_CONFIG_DIR/UserSettings/, else 1):
+  xp <player> AMOUNT [CATEGORY]  The player receives about AMOUNT XP (sent rounded to the nearest whole number);
+                              CATEGORY is Combat (default), Crafting, Gathering, Exploration or Sabotage
+  level <player> N            Raise an online character to level N (1-200): sends the XP from their TotalXPEarned
+                              to the game's total for level N (data/levels.tsv), rounded up. A level cannot be
+                              lowered: XP cannot be removed
+
 Live (online or offline is detected; handled by dune-live, see `dune-live --help` for details):
   move <player> [to] <target>  Bring a player to another (online: the game's TeleportToPlayer; offline: onto the
                               target's last saved spot, after a backup)
@@ -84,7 +105,6 @@ Live (online or offline is detected; handled by dune-live, see `dune-live --help
   kick <player>               Disconnect a player
   water <player> AMOUNT       Fill the player's water containers
   give <player> ITEM [COUNT]  Put an item into the player's inventory, e.g. HarkAr2 (Karpov 38), Ammo (light darts)
-  xp <player> AMOUNT [CATEGORY]  Award XP (Combat, Crafting, Gathering, Exploration, Sabotage)
   whisper <player> <message> [--from NAME]  Private chat line to an online player
   worm <player>               Send a nearby sandworm at the player (experimental)
   whois <FLS id>              Character name of an account id (read-only)
@@ -99,7 +119,8 @@ Options:
   -h, --help          This help
   --                  End of options
 
-Environment: DUNE_STATE_DIR, DUNE_CHARACTER_BACKUP_DIR (default $DUNE_STATE_DIR/char-backups), DUNE_LIBPQ.
+Environment: DUNE_STATE_DIR, DUNE_CONFIG_DIR, DUNE_CHARACTER_BACKUP_DIR (default $DUNE_STATE_DIR/char-backups),
+DUNE_COMPONENTS_DIR (where dune-live is), DUNE_LIBPQ.
 ]]
 
 local function arch_name()
@@ -592,9 +613,106 @@ local function cmd_import(opts, db, schema, path)
 	else io.stdout:write(string.format("%s imported%s\n", info.character_name, backup and (" (backup " .. backup .. ")") or "")) end
 end
 
+-- XP and levels ------------------------------------------------------------------------------------------------
+-- The server's AwardXP multiplies the amount by the world's GlobalXpMultiplier (measured 2026-09-30: 4150 sent at x1.5
+-- added 6225), so xp and level divide by it before dune-live sends. Arithmetic lives in lib/progression.lua.
+
+local XP_CATEGORIES = { Combat = true, Crafting = true, Gathering = true, Exploration = true, Sabotage = true }
+local XP_MAX = 10000000
+local SETTINGS_FILE = "UserServerCustomSettings.ini"
+
+local function config_root()
+	local dir = os.getenv("DUNE_CONFIG_DIR")
+	if dir then return dir end
+	local xdg = os.getenv("XDG_CONFIG_HOME")
+	if not (xdg and xdg:sub(1, 1) == "/") then xdg = (os.getenv("HOME") or "") .. "/.config" end
+	return xdg .. "/dune_awakening_server"
+end
+
+-- The world's GlobalXpMultiplier and the file it came from (nil when no settings file exists). The copy the map
+-- server was started with (Saved/UserSettings, deployed by dune-usersettings) wins over the operator's override,
+-- which takes effect only at the next start. A file without the key means the server's default, 1.
+local function xp_multiplier(opts)
+	for _, path in ipairs({ opts.server_root .. "/DuneSandbox/Saved/UserSettings/" .. SETTINGS_FILE, config_root() .. "/UserSettings/" .. SETTINGS_FILE }) do
+		local text = read_file(path)
+		if text then
+			local m, err = progression.multiplier(text)
+			if err then die(EXIT_ERR, "%s: %s", path, err) end
+			if m == 0 then die(EXIT_ERR, "GlobalXpMultiplier is 0 in %s: this world awards no XP", path) end
+			return m or 1, path
+		end
+	end
+	return 1, nil
+end
+
+local function load_levels()
+	local path = DIR .. "/../data/levels.tsv"
+	local curves, errors = progression.parse_curves(read_file(path) or die(EXIT_ERR, "cannot read %s", path))
+	if #errors > 0 or not curves.XPNeeded then die(EXIT_ERR, "%s: %s", path, errors[1] or "no XPNeeded curve") end
+	return progression.levels(curves)
+end
+
+-- A number for people: whole numbers as is, others with up to two decimals.
+local function num_text(x)
+	if x == math.floor(x) then return string.format("%d", x) end
+	return (string.format("%.2f", x):gsub("0+$", ""))
+end
+
+local function shell_quote(s) return "'" .. tostring(s):gsub("'", "'\\''") .. "'" end
+
+-- Send XP through dune-live (stderr passes through, so its own error reaches the user); exits on failure.
+local function send_xp(player, amount, category)
+	local live = (os.getenv("DUNE_COMPONENTS_DIR") or DIR) .. "/dune-live"
+	local cmd = table.concat({ shell_quote(live), "character", "xp", shell_quote(player), tostring(amount), shell_quote(category) }, " ")
+	local p = io.popen(cmd .. " </dev/null >/dev/null; printf '%d' $?")
+	local status = p:read("*a"); p:close()
+	if status ~= "0" then os.exit(EXIT_ERR) end
+end
+
+local function cmd_xp(opts, player, amount, category)
+	local m, source = xp_multiplier(opts)
+	local sent = progression.to_send(amount, m, "nearest")
+	send_xp(player, sent, category)
+	if opts.json then
+		io.stdout:write(cjson.encode({ character = player, requested = amount, multiplier = m, multiplier_source = source or cjson.null,
+			sent = sent, expected = sent * m, category = category }), "\n")
+	else
+		io.stdout:write(string.format("%s: sent %d %s XP (x%s = %s, the world's GlobalXpMultiplier)\n", player, sent, category,
+			num_text(m), num_text(sent * m)))
+	end
+end
+
+-- Raise a character to level N: the game's XP total for N minus TotalXPEarned, sent rounded up so the player reaches
+-- the threshold. The database value can trail the server's own while the player is online (the server saves it), so
+-- the player may land a little past the threshold, never short of it.
+local function cmd_level(opts, db, schema, levels, ref, target)
+	local c = find_character(db, schema, ref)
+	if c.xp_total == cjson.null then die(EXIT_ERR, "character %s has no XP record (FLevelComponent.TotalXPEarned)", c.name) end
+	if not c.online then die(EXIT_ERR, "character %s is not online; XP can only be awarded to a player in the world", c.name) end
+	local cur = progression.level_of(levels, c.xp_total)
+	if target < cur.level then
+		die(EXIT_ERR, "%s is level %d (%d XP); a level cannot be lowered, because XP cannot be removed, only awarded", c.name, cur.level, c.xp_total)
+	end
+	local total = levels.total[target]
+	local needed = target == cur.level and 0 or math.ceil(total - c.xp_total)
+	local m, source = xp_multiplier(opts)
+	local sent = needed > 0 and progression.to_send(needed, m, "up") or 0
+	if sent > 0 then send_xp(c.name, sent, "Combat") end
+	if opts.json then
+		io.stdout:write(cjson.encode({ character = c.name, xp_total = c.xp_total, level_before = cur.level, level = target,
+			xp_for_level = total, needed = needed, multiplier = m, multiplier_source = source or cjson.null, sent = sent,
+			category = "Combat" }), "\n")
+	elseif sent == 0 then
+		io.stdout:write(string.format("%s is already level %d (%d XP); nothing sent\n", c.name, cur.level, c.xp_total))
+	else
+		io.stdout:write(string.format("%s: level %d (%d XP) -> level %d at %s XP: %d more; sent %d Combat XP (x%s = %s)\n",
+			c.name, cur.level, c.xp_total, target, num_text(total), needed, sent, num_text(m), num_text(sent * m)))
+	end
+end
+
 -- Live commands belong to dune-live's character group. They are handed over with the user's arguments in order,
 -- minus this tool's own options, before any database work here.
-local LIVE = { move = true, where = true, kick = true, water = true, xp = true, whisper = true, worm = true, give = true, whois = true }
+local LIVE = { move = true, where = true, kick = true, water = true, whisper = true, worm = true, give = true, whois = true }
 local OWN_WITH_VALUE = { ["--server-root"] = true, ["-o"] = true, ["--output"] = true }
 local OWN_FLAGS = { ["--text"] = true, ["--no-color"] = true, ["--"] = true }
 
@@ -629,10 +747,20 @@ local function main(argv)
 	local cmd = table.remove(opts.positional, 1)
 	if not cmd then io.stderr:write(USAGE); os.exit(EXIT_USAGE) end
 	local want = { list = 0, show = 1, ["set-intel"] = 2, ["add-intel"] = 2, ["set-skill-points"] = 2, ["add-skill-points"] = 2,
-		export = 1, validate = 1, import = 1 }
+		export = 1, validate = 1, import = 1, xp = 2, level = 2 }
 	if want[cmd] == nil then die(EXIT_USAGE, "unknown command %s (see --help)", cmd) end
-	if #opts.positional ~= want[cmd] then die(EXIT_USAGE, "%s takes %d argument(s)", cmd, want[cmd]) end
 	local n = tonumber(opts.positional[2] or "")
+	local whole = n and n == math.floor(n) and (opts.positional[2] or ""):match("^%d+$")
+	if cmd == "xp" then
+		local category = opts.positional[3] or "Combat"
+		if #opts.positional < 2 or #opts.positional > 3 then die(EXIT_USAGE, "xp needs <player> AMOUNT [CATEGORY]") end
+		if not whole or n < 1 or n > XP_MAX then die(EXIT_USAGE, "xp needs a whole AMOUNT from 1 to %d", XP_MAX) end
+		if not XP_CATEGORIES[category] then die(EXIT_USAGE, "unknown XP category %s (Combat, Crafting, Gathering, Exploration, Sabotage)", category) end
+		return cmd_xp(opts, opts.positional[1], n, category)
+	end
+	if #opts.positional ~= want[cmd] then die(EXIT_USAGE, "%s takes %d argument(s)", cmd, want[cmd]) end
+	local levels = cmd == "level" and load_levels()
+	if levels and (not whole or n < 1 or n > levels.max) then die(EXIT_USAGE, "level needs a whole level from 1 to %d", levels.max) end
 	local limits = { ["set-intel"] = { 0, 2147483647 }, ["add-intel"] = { 1, 2147483647 },
 		["set-skill-points"] = { 0, 100000 }, ["add-skill-points"] = { 1, 100000 } }
 	local lim = limits[cmd]
@@ -649,6 +777,7 @@ local function main(argv)
 	elseif cmd == "export" then cmd_export(opts, db, schema, opts.positional[1])
 	elseif cmd == "validate" then cmd_validate(opts, db, schema, opts.positional[1])
 	elseif cmd == "import" then cmd_import(opts, db, schema, opts.positional[1])
+	elseif cmd == "level" then cmd_level(opts, db, schema, levels, opts.positional[1], n)
 	else
 		local mode, what = cmd:match("^(%a+)%-(.+)$")
 		if what == "intel" then cmd_intel(opts, db, schema, opts.positional[1], opts.positional[2], mode)

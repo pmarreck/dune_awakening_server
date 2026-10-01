@@ -21,7 +21,8 @@ dune-awakening character move <player> X Y Z [--partition LABEL|ID]
 dune-awakening character where <player>
 dune-awakening character kick <player>
 dune-awakening character water <player> 5000
-dune-awakening character xp <player> 1000 [Combat|Crafting|Gathering|Exploration|Sabotage]
+dune-awakening character xp <player> 1000 [Combat|Crafting|Gathering|Exploration|Sabotage]   # they receive about 1000
+dune-awakening character level <player> 20      # raise to level 20 (never lowers)
 dune-awakening character whisper <player> "message" [--from NAME]
 dune-awakening character give <player> ITEM [COUNT]   # e.g. give Alice HarkAr2
 dune-awakening character worm <player>          # experimental: SandwormTargetPlayer in the player's context
@@ -103,6 +104,26 @@ The format DASH documented (a spoofed sender name, `m_TimeStamp`) arrived but re
 - Proximity chat does not travel to other players over RabbitMQ: the TextRouter republishes it to `chat.proximity`, and the map server distributes it in game. Only whispers go to players' `<FLS id>_queue` directly.
 
 How to repeat such an experiment: RabbitMQ's firehose (`dune-rabbitmq ctl game trace_on`, with a queue bound to `amq.rabbitmq.trace` with `publish.#`) copies every publish, including the TextRouter's, to show what the game itself sends; turn it off (`trace_off`) and delete the queue afterwards, because it copies all chat.
+
+### XP and levels
+
+The server's `AwardXP` command multiplies what it receives by the world's `GlobalXpMultiplier` (**verified** 2026-09-30: 4150 sent at `GlobalXpMultiplier=1.5` added 6225 to `TotalXPEarned`). `dune-awakening character xp <player> AMOUNT [CATEGORY]` therefore divides AMOUNT by the multiplier and rounds to the nearest whole number, so the player receives about AMOUNT, and says what it did: `sent 2767 Combat XP (x1.5 = 4150.5, ...)`. The multiplier comes from `Saved/UserSettings/UserServerCustomSettings.ini`, the copy the map server was started with; without it, from the operator's `$DUNE_CONFIG_DIR/UserSettings/UserServerCustomSettings.ini` (which applies only at the next start); a file without the key, or no file, means 1. A multiplier of 0 (no XP at all) is refused. Whether the per-category settings (`CombatXp`, `GatheringXp`, ...) also scale `AwardXP` is not known: all were 1 when it was measured, so the tool ignores them. `dune-live character xp` sends its amount as is.
+
+`dune-awakening character level <player> N` raises an online character to level N (1 to 200): it reads their `TotalXPEarned` (the same value `character list` shows as xp), takes the game's XP total for level N, and sends the difference through the same division, rounded up so the player is never left short. `--json` reports the levels, totals and what was sent. It never lowers a level: XP can only be awarded, not removed. Two caveats. The database value can trail the server's own while the player is online (the server saves it periodically), so the player can land a little past the threshold. The XP goes in as Combat XP.
+
+Levels come from the game's curve table `SkillXPPerLevel` (`m_SkillsXPTable` in `DefaultGame.ini`), shipped as [data/levels.tsv](../data/levels.tsv) with how it was extracted. Its `XPNeeded` row has keys (level:XP) 0:0, 1:40, 2:175, 3:225, 4:300, 5:500, 7:600, 100:600, 101:650, 127:650, 128:651, then rising to 200:13126, interpolated linearly between keys (level 6 needs 550). `MaxLevel` is 200. The tool reads `XPNeeded(L)` as the XP from level L-1 to L, starting at level 0 with 0 XP, so the total for level L is `XPNeeded(1) + ... + XPNeeded(L)`:
+
+| Level | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 10 | 12 | 13 | 20 | 50 | 100 | 150 | 200 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Total XP | 40 | 215 | 440 | 740 | 1240 | 1790 | 2390 | 4190 | 5390 | 5990 | 10190 | 28190 | 58190 | 93099 | 344440 |
+
+Evidence for that reading (2026-10-01), against two others that fit the curve's shape:
+
+- A character with 5806 XP was shown in game as about two thirds through level 12. This reading gives level 12 at 69%. Starting at level 1 and not counting the level-1 key gives level 12 at 76%; counting it from level 1 (total for L = `XPNeeded(1..L-1)`) gives level 13 at 69%.
+- `SkillPointsRewarded` gives one skill point per level from 2 up. Three characters' `TotalSkillPoints` match this reading and contradict the level-13 one: 390 XP held 1 point (level 2; the other gives level 3 and 2 points), 7032 XP holds 13 (level 14), and 9289 XP holds 37, of which 20 were added with `add-skill-points` (level 18; the other gives 38).
+- `IntelPointsRewarded` pays 4 Intel at level 1 and `XPNeeded` has a key at level 0, so reaching level 1 is a step of its own.
+
+Not settled: the 76% reading differs from this one only by 40 XP per total, and only the "two thirds" observation separates them. The tool uses the larger totals, so if the other reading were right, `level` would overshoot by 40 XP and never leave a player short. A character seen in game right after `level`, or at a level boundary, would settle it.
 
 ### Inventory slots cannot be raised (tried 2026-09-28)
 

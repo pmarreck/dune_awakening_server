@@ -103,17 +103,86 @@ for c in "export Alice" "validate /dev/null" "import /dev/null"; do
 	out=$(char $c 2>&1) && fail "$c ran without transfer procedures"
 	[[ "$out" == *chema*character_transfer_export* ]] || fail "$c did not name the missing transfer procedure: $out"
 done
-# Live character commands (move, where, kick, water, xp, whisper, worm) go to dune-live's character group with the
-# user's arguments in order; this tool's own options (--server-root, -o, --text, --no-color) stay here; exit status passes.
+# Live character commands (move, where, kick, water, whisper, worm, give, whois) go to dune-live's character group with
+# the user's arguments in order; this tool's own options (--server-root, -o, --text, --no-color) stay here; exit status
+# passes. xp and level are this tool's own (below): they correct for the world's XP multiplier before dune-live sends.
 fake="$work/components"; mkdir -p "$fake"
 printf '#!%s\nprintf "%%s\\n" "$*" > "%s"\nexit 4\n' "$BASH" "$work/live-argv" > "$fake/dune-live"; chmod +x "$fake/dune-live"
-for sub in move where kick water xp whisper worm give whois; do
+for sub in move where kick water whisper worm give whois; do
 	DUNE_COMPONENTS_DIR="$fake" char "$sub" "Some One" --json --no-color x >/dev/null 2>&1; rc=$?
 	[ "$(cat "$work/live-argv" 2>/dev/null)" = "character $sub Some One --json x" ] || fail "$sub not handed to dune-live: $(cat "$work/live-argv" 2>/dev/null)"
 	[ "$rc" -eq 4 ] || fail "$sub exit status not passed through: $rc"
 	unlink "$work/live-argv" 2>/dev/null
 done
-out=$(char --help 2>&1); for sub in move where kick water xp whisper worm give whois; do [[ "$out" == *"  $sub "* ]] || fail "--help does not list $sub"; done
+out=$(char --help 2>&1); for sub in move where kick water xp level whisper worm give whois; do [[ "$out" == *"  $sub "* ]] || fail "--help does not list $sub"; done
+
+# xp: the server multiplies AwardXP by the world's GlobalXpMultiplier (measured 2026-09-30: 4150 sent at x1.5 added
+# 6225), so the tool divides first, rounding to the nearest whole amount. The multiplier is read from the settings the
+# map server was started with (Saved/UserSettings), else the operator's override in $DUNE_CONFIG_DIR/UserSettings,
+# else 1. dune-live is a fake that records its arguments; nothing reaches a broker.
+cat > "$fake/dune-live" <<FAKE
+#!$BASH
+printf '%s\n' "\$*" > "$work/live-argv"
+[ -e "$work/live-fails" ] && { echo "dune-live: publish failed (is the world up?)" >&2; exit 1; }
+echo "sent AwardXP" >&2
+FAKE
+export DUNE_CONFIG_DIR="$work/config"
+deployed="$root/DuneSandbox/Saved/UserSettings"; override="$DUNE_CONFIG_DIR/UserSettings"
+mkdir -p "$deployed" "$override"
+settings() { printf '[/Script/DuneSandbox.UserServerCustomSettings]\n; Possible values: 0 to 10\nGlobalXpMultiplier=%s\nCombatXp=1.000000\n' "$1"; }
+settings 1.500000 > "$deployed/UserServerCustomSettings.ini"
+settings 4.000000 > "$override/UserServerCustomSettings.ini"
+live() { unlink "$work/live-argv" 2>/dev/null; DUNE_COMPONENTS_DIR="$fake" char "$@"; }
+out=$(live xp "Some One" 4150 2>"$work/err"); rc=$?
+[ "$rc" -eq 0 ] || fail "xp failed: rc=$rc $(cat "$work/err")"
+[ "$(cat "$work/live-argv" 2>/dev/null)" = "character xp Some One 2767 Combat" ] || fail "xp at x1.5 did not send 2767: $(cat "$work/live-argv" 2>/dev/null)"
+[[ "$out" == *"sent 2767"* && "$out" == *"x1.5"* && "$out" == *4150* ]] || fail "xp output does not show what was sent and why: $out"
+json=$(live xp "Some One" 10 Gathering --json 2>"$work/err") || fail "xp --json failed: $(cat "$work/err")"
+[ "$(cat "$work/live-argv" 2>/dev/null)" = "character xp Some One 7 Gathering" ] || fail "xp category or rounding: $(cat "$work/live-argv" 2>/dev/null)"
+[ "$(jq -c '[.character, .requested, .multiplier, .sent, .category]' <<<"$json" 2>/dev/null)" = '["Some One",10,1.5,7,"Gathering"]' ] || fail "xp --json: $json"
+[ "$(jq -r .multiplier_source <<<"$json" 2>/dev/null)" = "$deployed/UserServerCustomSettings.ini" ] || fail "xp --json does not name the settings file: $json"
+unlink "$deployed/UserServerCustomSettings.ini"
+live xp "Some One" 1000 >/dev/null 2>&1 && [ "$(cat "$work/live-argv" 2>/dev/null)" = "character xp Some One 250 Combat" ] || fail "xp did not fall back to the operator override (x4): $(cat "$work/live-argv" 2>/dev/null)"
+unlink "$override/UserServerCustomSettings.ini"
+out=$(live xp "Some One" 1000 2>&1) && [ "$(cat "$work/live-argv" 2>/dev/null)" = "character xp Some One 1000 Combat" ] || fail "xp without settings did not send as is: $(cat "$work/live-argv" 2>/dev/null) $out"
+settings 0.000000 > "$deployed/UserServerCustomSettings.ini"
+out=$(live xp "Some One" 1000 2>&1); [ $? -eq 1 ] && [[ "$out" == *GlobalXpMultiplier* ]] || fail "xp with GlobalXpMultiplier 0 not refused: $out"
+settings lots > "$deployed/UserServerCustomSettings.ini"
+out=$(live xp "Some One" 1000 2>&1); [ $? -eq 1 ] && [[ "$out" == *GlobalXpMultiplier* ]] || fail "xp with an unreadable multiplier not refused: $out"
+[ -e "$work/live-argv" ] && fail "xp sent despite an unusable multiplier"
+settings 1.500000 > "$deployed/UserServerCustomSettings.ini"
+xp_bad() { live xp "$@" >/dev/null 2>&1; [ $? -eq 2 ] || fail "xp $* not a usage error"; }
+xp_bad "Some One"; xp_bad "Some One" 0; xp_bad "Some One" -5; xp_bad "Some One" 1.5; xp_bad "Some One" ten
+xp_bad "Some One" 10 Dancing; xp_bad "Some One" 10 Combat extra
+[ -e "$work/live-argv" ] && fail "an xp usage error reached dune-live"
+touch "$work/live-fails"
+out=$(live xp "Some One" 4150 2>&1); [ $? -eq 1 ] && [[ "$out" == *"publish failed"* ]] && [[ "$out" != *"sent 2767"* ]] || fail "xp did not report dune-live's failure: $out"
+unlink "$work/live-fails"
+
+# level: XP total for level N from the game's curve (data/levels.tsv; 5390 for level 12, 5990 for 13, 7190 for 15),
+# minus the character's TotalXPEarned, sent through the multiplier rounding up so the player reaches the threshold.
+# Bob is online with 5806 XP (shown in game as about two thirds through level 12, docs/admin.md "Levels").
+admin "insert into dune.fgl_entities values (-300, '{\"FLevelComponent\": [0, {\"TotalSkillPoints\": 11, \"UnspentSkillPoints\": 0, \"TotalXPEarned\": 5806}]}');
+	insert into dune.actor_fgl_entities values (20, -300, 'DuneCharacter')"
+out=$(live level Bob 13 2>"$work/err"); rc=$?
+[ "$rc" -eq 0 ] || fail "level failed: rc=$rc $(cat "$work/err")"
+[ "$(cat "$work/live-argv" 2>/dev/null)" = "character xp Bob 123 Combat" ] || fail "level 13 from 5806 XP at x1.5 did not send ceil(184 / 1.5) = 123: $(cat "$work/live-argv" 2>/dev/null)"
+[[ "$out" == *"level 12"* && "$out" == *"level 13"* && "$out" == *184* && "$out" == *"sent 123"* ]] || fail "level output: $out"
+json=$(live level Bob 15 --json 2>"$work/err") || fail "level --json failed: $(cat "$work/err")"
+[ "$(jq -c '[.character, .xp_total, .level_before, .level, .xp_for_level, .needed, .multiplier, .sent]' <<<"$json" 2>/dev/null)" = '["Bob",5806,12,15,7190,1384,1.5,923]' ] || fail "level --json: $json"
+out=$(live level Bob 12 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [[ "$out" == *already* ]] || fail "level to the current level: rc=$rc $out"
+out=$(live level Bob 5 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *"cannot be removed"* ]] || fail "lowering a level not refused with the reason: rc=$rc $out"
+[ -e "$work/live-argv" ] && fail "level sent XP while refusing"
+out=$(live level Alice 5 2>&1); [ $? -eq 1 ] && [[ "$out" == *online* ]] || fail "level for an offline character not refused: $out"
+out=$(live level DaveAlt 5 2>&1); [ $? -eq 1 ] && [[ "$out" == *XP* ]] || fail "level for a character without XP data not refused: $out"
+for bad in "Bob" "Bob 0" "Bob 201" "Bob x" "Bob 2.5" "Bob 13 extra"; do
+	# shellcheck disable=SC2086
+	live level $bad >/dev/null 2>&1; [ $? -eq 2 ] || fail "level '$bad' not a usage error"
+done
+[ -e "$work/live-argv" ] && fail "a level usage error reached dune-live"
+out=$(live level Nobody 5 2>&1); [ $? -eq 1 ] && [[ "$out" == *Nobody* ]] || fail "level for an unknown character: $out"
 
 admin "alter table dune.encrypted_player_state rename column online_status to connection_state"
 out=$(char set-intel Alice 7 2>&1) && fail "ran against a schema missing online_status"
