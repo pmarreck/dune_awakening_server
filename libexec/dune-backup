@@ -61,7 +61,15 @@ admin_pw() { cat "$DUNE_SECRETS_DIR/postgres_admin_password" 2>/dev/null || die 
 pg() { PGPASSWORD=$(admin_pw) "$@" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres; }
 sql() { pg psql -X -A -t -q -v ON_ERROR_STOP=1 -d "${2:-postgres}" -c "$1"; }
 world_dbs() { sql "select datname from pg_database where not datistemplate and datname <> 'postgres' order by 1"; }
-server_running() { local p; p=$(cat "$DUNE_STATE_DIR/server/pid" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+# The map servers running now, space-separated (server/ is Survival_1's run dir, server-<map>/ another map's).
+running_servers() {
+	local d p names=()
+	for d in "$DUNE_STATE_DIR"/server "$DUNE_STATE_DIR"/server-*; do
+		p=$(cat "$d/pid" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null || continue
+		if [ "${d##*/}" = server ]; then names+=(Survival_1); else names+=("${d##*/server-}"); fi
+	done
+	printf '%s' "${names[*]}"
+}
 backups() { find "$DUNE_BACKUP_DIR" -mindepth 2 -maxdepth 2 -name manifest.json -printf '%h\n' 2>/dev/null | grep -v '\.partial$' | collate | tac; }
 
 cmd_create() {
@@ -131,7 +139,8 @@ cmd_verify() {
 cmd_restore() {
 	need_backup
 	$yes || usage_error "restore replaces the world databases; pass --yes to confirm"
-	server_running && die "the map server is running; stop the world first (dune-awakening stop)"
+	local up; up=$(running_servers)
+	[ -n "$up" ] && die "map servers are running ($up); stop the world first (dune-awakening stop)"
 	check_sums "$target"
 	label="before restore" cmd_create >/dev/null || die "safety backup failed; nothing restored"
 	local name owner file

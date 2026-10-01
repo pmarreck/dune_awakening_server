@@ -182,7 +182,7 @@ end
 
 -- Optional world.conf settings handed to the components as DUNE_<key> (an environment variable of that name wins).
 local WORLD_SETTINGS = { "IDLE_THROTTLE", "ACTIVE_FPS", "IDLE_FPS", "IDLE_AFTER", "IDLE_POLL", "DEEP_IDLE_FPS", "DEEP_IDLE_AFTER",
-	"DEEP_IDLE_POLL", "DEEP_IDLE_NOTICE", "NOTIFY_TO", "NOTIFY_CMD" }
+	"DEEP_IDLE_POLL", "DEEP_IDLE_NOTICE", "NOTIFY_TO", "NOTIFY_CMD", "MAPS", "MAPS_ALWAYS_ON", "MAP_SCALER", "MAP_IDLE_AFTER", "MAP_POLL" }
 
 -- world.conf is written with Bash %q quoting, so let Bash read it. Each value is printed on its own line, with
 -- newlines inside a value flattened to spaces.
@@ -255,7 +255,8 @@ end
 -- Components ----------------------------------------------------------------------------------------------------
 
 local COMPONENTS = { { "postgres" }, { "rabbitmq", "admin" }, { "rabbitmq", "game" }, { "textrouter" }, { "director" }, { "gateway" }, { "server" },
-	{ "gm-bridge" }, { "idle-throttle" } }
+	{ "map-scaler" }, { "gm-bridge" }, { "idle-throttle" } }
+local HOME_MAP = "Survival_1"
 
 local function comp(dir, name, ...)
 	local parts = { q(dir .. "/dune-" .. name) }
@@ -263,10 +264,41 @@ local function comp(dir, name, ...)
 	return table.concat(parts, " ")
 end
 
+-- dune-server for one map other than Survival_1, with its partition.
+local function map_server(dir, map, action, partition)
+	return "DUNE_MAP=" .. q(map) .. (partition and (" DUNE_PARTITION_INDEX=" .. q(partition)) or "") .. " " .. comp(dir, "server", action)
+end
+
+-- The map table (data/maps.tsv) and the map settings (MAPS, MAPS_ALWAYS_ON, ...), via the scaler's own parser.
+local FLAKE
+local function map_table()
+	package.path = FLAKE .. "/libexec/lib/?.lua;" .. package.path
+	local ms = require("map_scaler")
+	local f = io.open(FLAKE .. "/data/maps.tsv"); local text = f and f:read("*a"); if f then f:close() end
+	local maps, err = ms.parse_maps(text)
+	if not maps then die(EXIT_ERR, "%s", err) end
+	return ms, maps
+end
+local function map_config()
+	local ms, maps = map_table()
+	local cfg, err = ms.parse_config(os.getenv, maps)
+	if not cfg then die(EXIT_ERR, "invalid setting: %s (world.conf key or DUNE_ environment variable)", err) end
+	return cfg, ms, maps
+end
+
+-- A map server's pid while it runs (dune-server's pid file in the map's run directory), else nil.
+local function map_pid(env, map)
+	local f = io.open(env.DUNE_STATE_DIR .. "/" .. (map == HOME_MAP and "server" or ("server-" .. map)) .. "/pid")
+	local pid = f and f:read("*l"); if f then f:close() end
+	if pid and pid:match("^%d+$") and run("kill -0 " .. pid .. " 2>/dev/null") then return pid end
+	return nil
+end
+
 local function step(what) io.stderr:write("▸ ", what, "\n") end
 
 local function cmd_start(dir, env)
 	world_env(env)
+	local maps = map_config()
 	local secrets = env.DUNE_SECRETS_DIR
 	local fls = env.DUNE_CONFIG_DIR .. "/fls_secret"
 	if not run("mkdir -p -m 700 " .. q(env.DUNE_STATE_DIR) .. " " .. q(secrets)) then die(EXIT_ERR, "cannot create state dirs") end
@@ -278,9 +310,12 @@ local function cmd_start(dir, env)
 	step("postgres"); must("postgres", run(comp(dir, "postgres", "init")) and run(comp(dir, "postgres", "start")))
 	local log = env.DUNE_STATE_DIR .. "/db-setup.log"
 	step("schema"); must("schema (see " .. log .. ")", run(comp(dir, "db-setup") .. " > " .. q(log) .. " 2>&1"))
+	-- One partition per map the world serves; their ids become each map server's -PartitionIndex.
 	step("partition")
-	local part, ok = capture(comp(dir, "world-partitions"))
-	part = part:match("(%d+)%s*$")
+	local out, ok = capture(comp(dir, "world-partitions", HOME_MAP, unpack(maps.maps)))
+	local ids = {}
+	for m, id in out:gmatch("([%w_]+) (%d+)") do ids[m] = id end
+	local part = ids[HOME_MAP]
 	must("partition", ok and part)
 	setenv("DUNE_PARTITION_INDEX", part)
 	for _, b in ipairs({ "admin", "game" }) do
@@ -299,6 +334,11 @@ local function cmd_start(dir, env)
 	end
 	step("gateway"); must("gateway", run(comp(dir, "gateway", "start")))
 	step("map server Survival_1 (partition " .. part .. ")"); must("server", run(comp(dir, "server", "start")))
+	for _, m in ipairs(maps.always_on) do
+		must("partition for " .. m, ids[m])
+		step("map server " .. m .. " (partition " .. ids[m] .. ", always on)"); must("map server " .. m, run(map_server(dir, m, "start", ids[m])))
+	end
+	step("map-scaler (starts the other maps when a player travels there)"); must("map-scaler", run(comp(dir, "map-scaler", "start")))
 	step("gm-bridge (in-game chat commands)"); must("gm-bridge", run(comp(dir, "gm-bridge", "start")))
 	step("idle-throttle (lower frame rate while nobody is connected)"); must("idle-throttle", run(comp(dir, "idle-throttle", "start")))
 end
@@ -306,9 +346,24 @@ end
 local function cmd_stop(dir, env)
 	world_env(env)
 	setenv("DUNE_PARTITION_INDEX", "0")
+	local _, maps = map_table()
 	local ok = true
 	for i = #COMPONENTS, 1, -1 do
 		local c = COMPONENTS[i]
+		-- Every other map server goes down before Survival_1, whether or not MAPS still names it.
+		if c[1] == "server" then
+			for j = #maps, 1, -1 do
+				local m = maps[j].name
+				if m ~= HOME_MAP then
+					local up = map_pid(env, m)
+					if up then step("map server " .. m) end
+					if not run(map_server(dir, m, "stop")) then
+						if not up then step("map server " .. m) end
+						ok = false
+					end
+				end
+			end
+		end
 		step(c[1] .. (c[2] and (" " .. c[2]) or ""))
 		if not run(comp(dir, c[1], "stop", c[2])) then ok = false end
 	end
@@ -321,11 +376,11 @@ local function iso_now()
 end
 
 -- Map-server uptime and memory from its memory-capped systemd user scope, when running.
-local function server_stats(env, world)
+local function server_stats(env, world, map)
+	map = map or HOME_MAP
 	local stats = {}
-	local f = io.open(env.DUNE_STATE_DIR .. "/server/pid")
-	local pid = f and f:read("*l"); if f then f:close() end
-	if not (pid and pid:match("^%d+$") and run("kill -0 " .. pid .. " 2>/dev/null")) then return stats end
+	local pid = map_pid(env, map)
+	if not pid then return stats end
 	stats.uptime_seconds = tonumber((capture("ps -o etimes= -p " .. pid)):match("%d+"))
 	-- Cumulative user+system CPU (all threads) from /proc/<pid>/stat fields 14-15; the panel diffs it for CPU %.
 	local sf = io.open("/proc/" .. pid .. "/stat")
@@ -337,7 +392,7 @@ local function server_stats(env, world)
 		local SC_CLK_TCK = 2
 		stats.cpu_seconds = (tonumber(fields[12]) + tonumber(fields[13])) / tonumber(ffi.C.sysconf(SC_CLK_TCK))
 	end
-	local unit = "dune-server-" .. world.unique:gsub("[^%w%-]", "-") .. ".scope"
+	local unit = "dune-server-" .. world.unique:gsub("[^%w%-]", "-") .. (map == HOME_MAP and "" or ("-" .. map)) .. ".scope"
 	local function prop(p) return tonumber((capture("systemctl --user show " .. q(unit) .. " -p " .. p .. " --value 2>/dev/null")):match("^(%d+)%s*$")) end
 	stats.memory_bytes, stats.memory_max_bytes = prop("MemoryCurrent"), prop("MemoryMax")
 	return stats
@@ -352,6 +407,23 @@ local function probe(dir)
 		comps[#comps + 1] = { name = c[1] .. (c[2] and ("-" .. c[2]) or ""), label = c[1] .. (c[2] and (" " .. c[2]) or ""), up = up }
 	end
 	return comps, all_up
+end
+
+-- The maps the world serves besides Survival_1: mode, ports and whether each runs. A stopped on-demand map is normal;
+-- a stopped always-on map counts as down.
+local function probe_maps(env)
+	local cfg, ms, maps = map_config()
+	local list, all_up = {}, true
+	local function add(name, mode)
+		local pid = map_pid(env, name)
+		if mode == "always-on" and not pid then all_up = false end
+		local ports = ms.ports(maps.by_name[name])
+		list[#list + 1] = { name = name, mode = mode, up = pid ~= nil, game_port = ports.game, igw_port = ports.igw }
+	end
+	local always = {}
+	for _, m in ipairs(cfg.always_on) do always[m] = true end
+	for _, m in ipairs(cfg.maps) do add(m, always[m] and "always-on" or "on-demand") end
+	return list, all_up
 end
 
 -- Names of characters online now, or nil when the database cannot say (then no one can be in the world).
@@ -380,10 +452,16 @@ local function status_json(dir, env, world, flake)
 	local cjson = require("cjson")
 	cjson.encode_escape_forward_slash(false)
 	local comps, all_up = probe(dir)
+	local maps, maps_up = probe_maps(env)
+	all_up = all_up and maps_up
 	do
 		local list = {}
 		for i, c in ipairs(comps) do list[i] = { name = c.name, up = c.up } end
 		local s = server_stats(env, world)
+		for _, m in ipairs(maps) do
+			local ms = m.up and server_stats(env, world, m.name) or {}
+			for _, k in ipairs({ "uptime_seconds", "memory_bytes", "memory_max_bytes", "cpu_seconds" }) do m[k] = ms[k] or cjson.null end
+		end
 		-- Characters stored/online, or null when the database is unreachable.
 		local characters = cjson.null
 		local out, ok = capture(comp(dir, "character", "list", "--json") .. " 2>/dev/null")
@@ -398,6 +476,7 @@ local function status_json(dir, env, world, flake)
 			world = { unique_name = world.unique, display_name = world.display, region = world.region },
 			server = { uptime_seconds = s.uptime_seconds or cjson.null, memory_bytes = s.memory_bytes or cjson.null,
 				memory_max_bytes = s.memory_max_bytes or cjson.null, cpu_seconds = s.cpu_seconds or cjson.null },
+			maps = setmetatable(maps, cjson.array_mt),
 		}), all_up
 	end
 end
@@ -422,7 +501,15 @@ local function cmd_status(opts, dir, env, flake)
 			local mark = c.up and (opts.color and "\27[32m●\27[0m" or "●") or (opts.color and "\27[2m○\27[0m" or "○")
 			io.stdout:write(string.format("%s %-16s %s\n", mark, c.label, c.up and "up" or "down"))
 		end
-		os.exit(all_up and EXIT_OK or EXIT_ERR)
+		local maps, maps_up = probe_maps(env)
+		for _, m in ipairs(maps) do
+			local mark = m.up and (opts.color and "\27[32m●\27[0m" or "●") or (opts.color and "\27[2m○\27[0m" or "○")
+			local state
+			if m.mode == "always-on" then state = m.up and "up" or "down"
+			else state = m.up and "up (on demand)" or "stopped (starts on demand)" end
+			io.stdout:write(string.format("%s %-16s %s\n", mark, m.name, state))
+		end
+		os.exit((all_up and maps_up) and EXIT_OK or EXIT_ERR)
 	end
 end
 
@@ -442,6 +529,7 @@ local function main()
 	local opts = parse_args(arg)
 	local self = self_path()
 	local flake = dirname(dirname(self))
+	FLAKE = flake
 	if not os.getenv("DUNE_GLIBC_LOADER") then reexec_in_nix(flake, self) end
 	local dir = getenv("DUNE_COMPONENTS_DIR", flake .. "/libexec")
 	local env = setup_env()

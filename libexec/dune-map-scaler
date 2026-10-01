@@ -1,0 +1,311 @@
+#!/usr/bin/env luajit
+-- dune-map-scaler: starts a map server when Director wants one and stops it once nobody has been on it for a while,
+-- standing in for Funcom's Kubernetes operator (which scales the hubs, Deep Desert and story maps from zero). Demand is
+-- read from Director's log (travel requests and queues per map); presence from farm_state.connected_players of the
+-- servers connected to the database. Logic lives in lib/map_scaler.lua (pure); this file does the I/O: the log,
+-- psql, dune-world-partitions and dune-server, pid/log files. Director's log holds credentials: no line of it is ever
+-- copied into this component's log, only the map names and counts parsed from it.
+-- Usage: dune-map-scaler start|stop|status | run [--polls N] [--virtual-clock T] [--from-start]
+local ffi = require("ffi")
+ffi.cdef [[
+char *realpath(const char *path, char *resolved);
+void free(void *p);
+int kill(int pid, int sig);
+]]
+
+local NAME, VERSION = "dune-map-scaler", "0.1.0"
+local EXIT_OK, EXIT_ERR, EXIT_USAGE = 0, 1, 2
+local STOP_WAIT_SECONDS = 15
+local EPERM = 1
+local MAX_READ = 8 * 1024 * 1024 -- bytes of new Director log read per poll; older excess is skipped
+
+local function self_path()
+	local r = ffi.C.realpath(arg[0], nil)
+	if r == nil then return arg[0] end
+	local s = ffi.string(r); ffi.C.free(r)
+	return s
+end
+local SELF = self_path()
+local DIR = SELF:match("^(.*)/[^/]*$") or "."
+package.path = DIR .. "/lib/?.lua;" .. package.path
+local ms = require("map_scaler")
+
+local USAGE = [[
+Usage: dune-map-scaler start|stop|status
+       dune-map-scaler run [--polls N] [--virtual-clock T] [--from-start]
+
+Starts a map server when Director wants one (a player travels there) and stops it once nobody has been on it for
+MAP_IDLE_AFTER seconds, counted from its start, the last travel request or the last player seen on it. Survival_1 and
+the MAPS_ALWAYS_ON maps are started by dune-awakening itself and never stopped here.
+
+Settings: world.conf keys, or DUNE_<key> environment variables, which win (defaults in parentheses):
+  MAPS (all)               maps served on demand besides Survival_1: all, none, or names from data/maps.tsv
+  MAPS_ALWAYS_ON (none)    maps started with the world and kept up (names)
+  MAP_SCALER (1)           0 = never start or stop a map on demand (demand is still logged)
+  MAP_IDLE_AFTER (900)     seconds with nobody on a map before it stops (>= 60)
+  MAP_POLL (5)             seconds between checks
+
+  start / stop / status  run in the background (component interface used by dune-awakening)
+  run                    foreground; --polls N exits after N polls, --virtual-clock T starts a simulated clock at T
+                         that advances by the poll interval without sleeping, --from-start reads Director's log from
+                         its beginning instead of its end (both for tests)
+
+Log: $DUNE_STATE_DIR/map-scaler/. Environment: DUNE_STATE_DIR, DUNE_SECRETS_DIR, DUNE_PG_PORT (15431),
+DUNE_DIRECTOR_LOG (default $DUNE_STATE_DIR/director/director.log), DUNE_SERVER_TOOL and DUNE_PARTITIONS_TOOL
+(default: dune-server and dune-world-partitions next to this tool).
+]]
+
+local function die(code, fmt, ...)
+	io.stderr:write(NAME, ": ", string.format(fmt, ...), "\n")
+	os.exit(code)
+end
+local function getenv(k, default) local v = os.getenv(k); if v == nil or v == "" then return default end; return v end
+
+local function read_file(p)
+	local f = io.open(p, "rb"); if not f then return nil end
+	local s = f:read("*a"); f:close(); return s
+end
+
+local function q(s) return "'" .. tostring(s):gsub("'", "'\\''") .. "'" end
+
+local function run_ok(cmd)
+	local a, _, c = os.execute(cmd)
+	if type(a) == "number" then return a == 0 end
+	return a == true and (c == nil or c == 0)
+end
+
+-- Run argv with extra environment assignments (each quoted, nothing shell-interpreted); returns ok and the output.
+-- `prefix` is put first verbatim (a secret read from its file inside the shell, so it never appears on a command line).
+local function capture(argv, env, prefix)
+	local parts = { prefix }
+	for k, v in pairs(env or {}) do parts[#parts + 1] = k .. "=" .. q(v) end
+	for _, a in ipairs(argv) do parts[#parts + 1] = q(a) end
+	local p = io.popen(table.concat(parts, " ") .. " 2>&1 </dev/null; printf '\\n%d' $?")
+	local out = p:read("*a"); p:close()
+	local body, code = out:match("^(.*)\n(%d+)$")
+	body = (body or out):gsub("%s+$", "")
+	if code ~= "0" and body == "" then body = "exit status " .. tostring(code) end
+	return code == "0", body
+end
+
+local function last_line(out) return ((out or ""):match("([^\n]*)$") or ""):sub(1, 200) end
+
+-- Paths -----------------------------------------------------------------------------------------------------------
+local state_dir = getenv("DUNE_STATE_DIR", "")
+local run_dir = state_dir .. "/map-scaler"
+local pid_file, log_file = run_dir .. "/pid", run_dir .. "/map-scaler.log"
+local SERVER_TOOL = getenv("DUNE_SERVER_TOOL", DIR .. "/dune-server")
+local PARTITIONS_TOOL = getenv("DUNE_PARTITIONS_TOOL", DIR .. "/dune-world-partitions")
+
+local function alive(pid)
+	pid = tonumber(pid)
+	if not pid or pid <= 0 then return false end
+	return ffi.C.kill(pid, 0) == 0 or ffi.errno() == EPERM
+end
+
+local function pid_running()
+	local pid = (read_file(pid_file) or ""):match("^(%d+)")
+	return pid and alive(pid) and pid or nil
+end
+
+local function ensure_dir() return run_ok("umask 077; mkdir -p " .. q(run_dir) .. " && chmod 700 " .. q(run_dir)) end
+
+-- Log: private file, one line per event (never one per poll).
+local log_fh
+local function log(fmt, ...)
+	if not log_fh then
+		ensure_dir()
+		run_ok("umask 077; touch " .. q(log_file) .. " && chmod 600 " .. q(log_file))
+		log_fh = io.open(log_file, "a")
+		if not log_fh then die(EXIT_ERR, "cannot write %s", log_file) end
+	end
+	log_fh:write(os.date("!%Y-%m-%dT%H:%M:%SZ"), " ", string.format(fmt, ...), "\n")
+	log_fh:flush()
+end
+
+local function load()
+	local maps, err = ms.parse_maps(read_file(DIR .. "/../data/maps.tsv"))
+	if not maps then die(EXIT_ERR, "%s", err) end
+	local cfg, cerr = ms.parse_config(os.getenv, maps)
+	if not cfg then die(EXIT_ERR, "invalid setting: %s (world.conf key or DUNE_ environment variable)", cerr) end
+	return cfg, maps
+end
+
+-- Which served maps have a live server (dune-server's pid file in the map's run directory).
+local function running_maps(cfg)
+	local r = {}
+	for _, m in ipairs(cfg.maps) do
+		local pid = (read_file(state_dir .. "/" .. ms.run_dir(m) .. "/pid") or ""):match("^(%d+)")
+		if pid and alive(pid) then r[m] = true end
+	end
+	return r
+end
+
+-- The game database, named after the payload's branch (as dune-world-partitions does).
+local function game_db()
+	local kw = read_file(state_dir .. "/db-utils/DuneSandbox/Config/perforce-keywords.json") or ""
+	local branch = kw:match("//seabass/([^/]+)/")
+	return branch and ("dune_" .. branch:gsub("[-.]", "_")) or nil
+end
+
+-- Players per map, from the servers that hold a database connection now (Funcom's active_server_ids); nil, reason
+-- when the database cannot say.
+local PLAYERS_SQL = "select map, sum(connected_players) from dune.farm_state where alive and server_id in " ..
+	"(select server_id from dune.active_server_ids) group by map"
+local function players(db)
+	if not db then return nil, "no game database name (run dune-db-setup)" end
+	local pw_file = getenv("DUNE_SECRETS_DIR", state_dir .. "/secrets") .. "/postgres_dune_password"
+	local ok, out = capture({ "psql", "-X", "-A", "-t", "-q", "-F", "\t", "-h", "127.0.0.1", "-p", getenv("DUNE_PG_PORT", "15431"),
+		"-U", "dune", "-d", db, "-c", PLAYERS_SQL }, nil, "PGPASSWORD=\"$(tr -d '\\n' < " .. q(pw_file) .. ")\"")
+	if not ok then return nil, last_line(out) end
+	local p = {}
+	for map, n in out:gmatch("([%w_]+)\t(%d+)") do p[map] = tonumber(n) end
+	return p
+end
+
+-- New complete lines of Director's log since the last read. A shorter file than before means Director started a new
+-- log: read it from its start.
+local function log_reader(path, from_start)
+	local offset, rest = nil, ""
+	return function()
+		local f = io.open(path, "rb")
+		if not f then return "" end
+		local size = f:seek("end")
+		if offset == nil then offset = from_start and 0 or size end
+		if size < offset then offset, rest = 0, "" end
+		if size - offset > MAX_READ then offset, rest = size - MAX_READ, "" end
+		f:seek("set", offset)
+		local chunk = f:read(size - offset) or ""
+		f:close()
+		offset = size
+		local done
+		done, rest = ms.complete_lines(rest .. chunk)
+		return done
+	end
+end
+
+local function start_map(map)
+	local ok, out = capture({ PARTITIONS_TOOL, map })
+	local id = ok and out:match(map .. " (%d+)")
+	if not id then return false, "no partition (" .. last_line(out) .. ")" end
+	ok, out = capture({ SERVER_TOOL, "start" }, { DUNE_MAP = map, DUNE_PARTITION_INDEX = id })
+	if not ok then return false, last_line(out) end
+	return true, id
+end
+
+local function stop_map(map)
+	return capture({ SERVER_TOOL, "stop" }, { DUNE_MAP = map, DUNE_PARTITION_INDEX = "0" })
+end
+
+-- Foreground loop: observe, decide, act; the clock is real (sleeping between polls) or virtual.
+local function cmd_run(max_polls, virtual, from_start)
+	local cfg = load()
+	local socket = (not virtual) and require("socket") or nil
+	local now = virtual or os.time()
+	local read_new = log_reader(getenv("DUNE_DIRECTOR_LOG", state_dir .. "/director/director.log"), from_start)
+	local db = game_db()
+	local function names(list) return #list > 0 and table.concat(list, " ") or "no maps" end
+	log("started: %s on demand, %s always on; idle after %d s%s", names(cfg.on_demand), names(cfg.always_on), cfg.idle_after,
+		cfg.enabled and "" or " (MAP_SCALER=0: demand is only logged)")
+	local st = ms.initial_state()
+	local blind
+	local polls = 0
+	while not max_polls or polls < max_polls do
+		polls = polls + 1
+		local demand = {}
+		for _, d in ipairs(ms.parse_demand(read_new())) do demand[d.map] = math.max(demand[d.map] or 0, d.count) end
+		local running = running_maps(cfg)
+		local p = {}
+		local any = false
+		for _, m in ipairs(cfg.on_demand) do if running[m] then any = true end end
+		if any then
+			local err
+			p, err = players(db)
+			if not p then
+				if blind ~= err then log("cannot count players (%s); no map is stopped until it works", err) end
+				blind = err
+			else blind = nil end
+		end
+		local actions, events
+		st, actions, events = ms.step(st, { demand = demand, players = p, running = running }, now, cfg)
+		for _, e in ipairs(events) do log("%s", e) end
+		for _, a in ipairs(actions) do
+			if a.action == "start" then
+				local ok, info = start_map(a.map)
+				if ok then log("started %s (partition %s)", a.map, info) else log("could not start %s: %s", a.map, info) end
+				st = ms.done(st, a, ok, now)
+			else
+				local ok, out = stop_map(a.map)
+				if ok then log("stopped %s (nobody on it for %d s)", a.map, a.idle) else log("could not stop %s: %s", a.map, last_line(out)) end
+				st = ms.done(st, a, ok, now)
+			end
+		end
+		if max_polls and polls >= max_polls then break end
+		if virtual then now = now + cfg.poll else socket.sleep(cfg.poll); now = os.time() end
+	end
+	log("stopping after %d polls", polls)
+	return EXIT_OK
+end
+
+local function cmd_start()
+	if pid_running() then return EXIT_OK end
+	load()
+	if not ensure_dir() then die(EXIT_ERR, "cannot create %s", run_dir) end
+	local cmd = "umask 077; setsid " .. q(SELF) .. " run >> " .. q(log_file) .. " 2>&1 < /dev/null & echo $! > " .. q(pid_file)
+	if not run_ok(cmd) then die(EXIT_ERR, "cannot start") end
+	return EXIT_OK
+end
+
+-- Stops the scaler only; the map servers it started keep running (dune-awakening stop stops them).
+local function cmd_stop()
+	local pid = pid_running()
+	if not pid then return EXIT_OK end
+	local socket = require("socket")
+	for _, sig in ipairs({ "TERM", "KILL" }) do
+		run_ok("kill -" .. sig .. " -- -" .. pid .. " 2>/dev/null || kill -" .. sig .. " " .. pid .. " 2>/dev/null")
+		for _ = 1, STOP_WAIT_SECONDS * 10 do
+			if not alive(pid) then
+				local f = io.open(pid_file, "w"); if f then f:close() end
+				return EXIT_OK
+			end
+			socket.sleep(0.1)
+		end
+	end
+	die(EXIT_ERR, "map scaler (pid %s) did not stop", pid)
+end
+
+local action = arg[1]
+if action == "-h" or action == "--help" then io.stdout:write(USAGE); os.exit(EXIT_OK) end
+if action == "--about" then
+	local map = { x64 = "x86_64", arm64 = "aarch64" }
+	io.stdout:write(string.format("%s %s: starts map servers on demand and stops idle ones (%s %s)\n", NAME, VERSION,
+		(jit.os or "unknown"):lower(), map[jit.arch] or jit.arch))
+	os.exit(EXIT_OK)
+end
+if action == "start" or action == "stop" or action == "status" or action == "run" then
+	if state_dir == "" then die(EXIT_ERR, "set DUNE_STATE_DIR") end
+end
+if action == "start" then os.exit(cmd_start())
+elseif action == "stop" then os.exit(cmd_stop())
+elseif action == "status" then os.exit(pid_running() and EXIT_OK or EXIT_ERR)
+elseif action == "run" then
+	local max, virtual, from_start
+	local i = 2
+	while arg[i] do
+		local v = arg[i + 1]
+		if arg[i] == "--polls" then
+			max = tonumber(v or "")
+			if not max or max < 1 or max ~= math.floor(max) then die(EXIT_USAGE, "--polls needs a whole number >= 1") end
+			i = i + 2
+		elseif arg[i] == "--virtual-clock" then
+			virtual = tonumber(v or "")
+			if not virtual or virtual < 0 or virtual ~= math.floor(virtual) then die(EXIT_USAGE, "--virtual-clock needs whole seconds >= 0") end
+			i = i + 2
+		elseif arg[i] == "--from-start" then from_start = true; i = i + 1
+		else die(EXIT_USAGE, "unknown option %s (see --help)", arg[i]) end
+	end
+	os.exit(cmd_run(max, virtual, from_start))
+else
+	io.stderr:write(USAGE)
+	os.exit(EXIT_USAGE)
+end

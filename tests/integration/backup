@@ -58,6 +58,10 @@ out=$(libexec/dune-backup restore "$b1" 2>&1); [ $? -eq 2 ] && [[ "$out" == *--y
 mkdir -p "$DUNE_STATE_DIR/server"; echo $$ > "$DUNE_STATE_DIR/server/pid"
 out=$(libexec/dune-backup restore "$b1" --yes 2>&1); [ $? -eq 1 ] && [[ "$out" == *running* ]] || fail "restore while the map server runs not refused: $out"
 : > "$DUNE_STATE_DIR/server/pid"
+# Any other map server (an on-demand one left running) blocks a restore just the same.
+mkdir -p "$DUNE_STATE_DIR/server-SH_Arrakeen"; echo $$ > "$DUNE_STATE_DIR/server-SH_Arrakeen/pid"
+out=$(libexec/dune-backup restore "$b1" --yes 2>&1); [ $? -eq 1 ] && [[ "$out" == *SH_Arrakeen* ]] || fail "restore while another map server runs not refused: $out"
+: > "$DUNE_STATE_DIR/server-SH_Arrakeen/pid"
 n_before=$(libexec/dune-backup list --json | jq length)
 out=$(libexec/dune-backup restore "$b1" --yes 2>&1) || fail "restore failed: $out"
 [ "$(research)" = 5 ] || fail "restore did not bring back the backed-up data: $(research)"

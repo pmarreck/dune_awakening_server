@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# data/maps.tsv against Funcom's own files (the oracle the table was written from): every level URL is one the server
+# allows on its command line (DefaultGame.ini m_AllowedAutomatedCommandLineLevels), every map is one Director knows
+# ([InstancingModes]), and every slot and memory cap matches Funcom's world template (partition id; cap = twice its
+# memory limit).
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. libexec/dune-dirs.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+unpacked=${DUNE_UNPACKED_DIR:-$DUNE_DATA_ROOT/unpacked}
+steam=${DUNE_STEAM_SERVER_DIR:-$DUNE_DATA_ROOT/steam-server}
+game_ini="$unpacked/server/rootfs/home/dune/server/DuneSandbox/Config/DefaultGame.ini"
+director_ini="$unpacked/server-bg-director/rootfs/Tools/Battlegroups/Director/BattlegroupDirector/director_config.ini"
+template="$steam/scripts/setup/templates/world-template.yaml"
+for f in "$game_ini" "$director_ini" "$template"; do [ -r "$f" ] || { fail "missing $f"; exit 1; }; done
+allowed=$(tr -d '\r' < "$game_ini" | sed -n 's/^+m_AllowedAutomatedCommandLineLevels=//p')
+modes=$(tr -d '\r' < "$director_ini" | awk '/^\[ *InstancingModes *\]/ { on = 1; next } /^\[/ { on = 0 } on && /=/ { sub(/=.*/, ""); print }')
+# Funcom's template: worldPartitions give map -> id; each server set's map line is followed by its memory limit.
+ids=$(tr -d '\r' < "$template" | awk '/worldPartitions:/ { on = 1; next } on && /^ *- map:/ { m = $NF } on && /^ *id:/ { print m, $NF } on && /^ *[a-zA-Z]+:$/ && !/partitions:/ { on = 0 }')
+limits=$(tr -d '\r' < "$template" | awk '/ map: / { m = $NF } /memory:/ { if (m != "") { print m, $NF; m = "" } }')
+[ "$(wc -l <<<"$ids")" -ge 30 ] || fail "could not read partition ids from the template: $(head -3 <<<"$ids")"
+n=0
+while IFS=$'\t' read -r map slot mem url; do
+	case "$map" in '#'*|'') continue ;; esac
+	n=$((n + 1))
+	if [ "$url" = - ]; then [ "$map" = Survival_1 ] || fail "$map has no URL"
+	else grep -qxF -- "$url" <<<"$allowed" || fail "$map: URL not among the server's allowed levels: $url"; fi
+	grep -qxF -- "$map" <<<"$modes" || fail "$map is not in Director's [InstancingModes]"
+	[ "$(awk -v m="$map" '$1 == m { print $2; exit }' <<<"$ids")" = "$slot" ] || fail "$map: slot $slot is not Funcom's partition id ($(awk -v m="$map" '$1 == m { print $2 }' <<<"$ids"))"
+	lim=$(awk -v m="$map" '$1 == m { print $2; exit }' <<<"$limits")
+	# Survival_1 keeps the 20G cap it ran under before other maps existed (measured 9.6 GiB with one player).
+	[ "$map" = Survival_1 ] && { [ "$mem" = 20G ] || fail "Survival_1 cap changed: $mem"; continue; }
+	[ "${lim%Gi}" -gt 0 ] 2>/dev/null && [ "$mem" = "$((2 * ${lim%Gi}))G" ] || fail "$map: cap $mem is not twice Funcom's limit $lim"
+done < data/maps.tsv
+[ "$n" -ge 30 ] || fail "only $n maps in data/maps.tsv"
+exit "$failures"

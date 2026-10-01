@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# libexec/lib/map_scaler.lua: the on-demand map scaler's pure logic (map table, settings, travel demand from Director's
+# log, start/stop decisions over time).
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+exec luajit tests/unit/map_scaler.lua

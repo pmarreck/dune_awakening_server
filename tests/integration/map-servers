@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# libexec/dune-server runs any map of data/maps.tsv, chosen by DUNE_MAP (default Survival_1), side by side: each map has
+# its own run directory (pid, console log, Saved/, HOME), systemd scope, memory cap, and game/IGW UDP ports from its
+# slot. Survival_1 keeps the exact launch line it always had (run dir server/, no map URL or port flags). `argv` prints
+# the launch line one argument per line without starting anything.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-map-servers.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+export DUNE_STATE_DIR="$work/state" DUNE_SECRETS_DIR="$work/secrets" DUNE_SERVER_SRC="$work/src" DUNE_GLIBC_LOADER=/x DUNE_GCC_LIB=/x
+export DUNE_WORLD_NAME=sh-test DUNE_PARTITION_INDEX=1 DUNE_EXTERNAL_ADDRESS=192.0.2.10 DUNE_WORLD_REGION="North America"
+unset DUNE_MAP DUNE_SERVER_MEMORY_MAX DUNE_BIND_ADDRESS DUNE_RMQ_GAME_PORT DUNE_RMQ_ADMIN_PORT
+mkdir -p -m 700 "$DUNE_SECRETS_DIR"
+printf 'dbpw\n' > "$DUNE_SECRETS_DIR/postgres_dune_password"; printf 'flstoken\n' > "$DUNE_SECRETS_DIR/fls_token"
+S=libexec/dune-server
+tree="$DUNE_STATE_DIR/server/tree/DuneSandbox/Binaries/Linux/DuneSandboxServer-Linux-Shipping"
+
+# Survival_1: the launch line is exactly the one used before maps existed.
+want="systemd-run
+--user
+--scope
+--quiet
+--unit=dune-server-sh-test
+-p
+MemoryMax=20G
+-p
+MemorySwapMax=0
+$tree
+DuneSandbox
+-FarmRegion=North America
+-RMQGameTlsEnabled=true
+-ExternalAddress=192.0.2.10
+-MultiHome=192.0.2.10
+--RMQGameHostname=127.0.0.1
+--RMQGamePort=31982
+--RMQAdminHostname=127.0.0.1
+--RMQAdminPort=5673
+-PartitionIndex=1
+-stdout
+-FullStdOutLogOutput"
+got=$("$S" argv 2>&1) || fail "argv failed: $got"
+[ "$got" = "$want" ] || fail "Survival_1 launch line changed:
+$got"
+[ "$(DUNE_MAP=Survival_1 "$S" argv 2>&1)" = "$want" ] || fail "DUNE_MAP=Survival_1 differs from the default"
+[ "$(DUNE_SERVER_MEMORY_MAX=12G "$S" argv 2>&1 | grep '^MemoryMax=')" = MemoryMax=12G ] || fail "DUNE_SERVER_MEMORY_MAX ignored for Survival_1"
+
+# Another map: its URL right after DuneSandbox, its own unit, cap and ports, the given partition.
+a=$(DUNE_MAP=SH_Arrakeen DUNE_PARTITION_INDEX=5 "$S" argv 2>&1) || fail "SH_Arrakeen argv failed: $a"
+atree="$DUNE_STATE_DIR/server-SH_Arrakeen/tree/DuneSandbox/Binaries/Linux/DuneSandboxServer-Linux-Shipping"
+[ "$(sed -n 10,12p <<<"$a")" = "$atree
+DuneSandbox
+/Game/Dune/Maps/SocialHubs/Arrakeen/SH_Arrakeen.SH_Arrakeen" ] || fail "SH_Arrakeen binary/map: $(sed -n 10,12p <<<"$a")"
+grep -qx -- '--unit=dune-server-sh-test-SH_Arrakeen' <<<"$a" || fail "SH_Arrakeen unit: $(grep -- --unit <<<"$a")"
+grep -qx 'MemoryMax=4G' <<<"$a" || fail "SH_Arrakeen memory cap: $(grep MemoryMax <<<"$a")"
+grep -qx -- '-Port=7779' <<<"$a" && grep -qx -- '-IGWPort=7890' <<<"$a" || fail "SH_Arrakeen ports: $(grep Port= <<<"$a")"
+grep -qx -- '-PartitionIndex=5' <<<"$a" || fail "SH_Arrakeen partition"
+[ "$(DUNE_SERVER_MEMORY_MAX=12G DUNE_MAP=SH_Arrakeen "$S" argv 2>&1 | grep '^MemoryMax=')" = MemoryMax=4G ] ||
+	fail "DUNE_SERVER_MEMORY_MAX (Survival_1's cap) applied to another map"
+# Everything Survival_1 passes, the other map passes too (same world, brokers and address).
+for arg in "-FarmRegion=North America" -RMQGameTlsEnabled=true -ExternalAddress=192.0.2.10 -MultiHome=192.0.2.10 \
+	--RMQGamePort=31982 --RMQAdminPort=5673 -stdout -FullStdOutLogOutput; do
+	grep -qxF -- "$arg" <<<"$a" || fail "SH_Arrakeen lacks $arg"
+done
+out=$(DUNE_MAP=NoSuchMap "$S" argv 2>&1); [ $? -ne 0 ] && [[ "$out" == *NoSuchMap* ]] || fail "unknown map accepted: $out"
+out=$(DUNE_MAP='SH_Arrakeen;x' "$S" argv 2>&1); [ $? -ne 0 ] || fail "map name with odd characters accepted"
+
+# Every map in the table: distinct slots, ports inside Funcom's game range and outside the IGW range, distinct units.
+all=$(awk -F'\t' '!/^#/ && NF { print $1 }' data/maps.tsv)
+[ "$(wc -l <<<"$all")" -ge 30 ] || fail "map table has too few maps: $(wc -l <<<"$all")"
+ports=""
+for m in $all; do
+	l=$(DUNE_MAP="$m" "$S" argv 2>&1) || { fail "argv for $m failed: $l"; continue; }
+	if [ "$m" = Survival_1 ]; then gp=7777 ip=7888
+	else
+		gp=$(sed -n 's/^-Port=//p' <<<"$l"); ip=$(sed -n 's/^-IGWPort=//p' <<<"$l")
+		[ "$(sed -n 12p <<<"$l")" = "$(awk -F'\t' -v m="$m" '$1 == m { print $4 }' data/maps.tsv)" ] || fail "$m: URL not passed"
+		[[ "$(sed -n 12p <<<"$l")" == */"$m"."$m" || "$(sed -n 12p <<<"$l")" == *."$m" ]] || fail "$m: URL does not name the map: $(sed -n 12p <<<"$l")"
+	fi
+	[ "$gp" -ge 7777 ] && [ "$gp" -le 7887 ] || fail "$m game port $gp outside 7777..7887"
+	[ "$ip" -ge 7888 ] && [ "$ip" -le 7998 ] || fail "$m IGW port $ip outside 7888..7998"
+	ports+="$gp $ip "
+	grep -q '^MemoryMax=[0-9]\+G$' <<<"$l" || fail "$m has no memory cap"
+done
+[ "$(tr ' ' '\n' <<<"$ports" | grep -c .)" = "$(tr ' ' '\n' <<<"$ports" | grep . | sort -u | wc -l)" ] || fail "ports collide: $ports"
+
+# configure writes each map's private ini into its own Saved/ (Survival_1's stays where it was).
+DUNE_MAP=SH_Arrakeen "$S" configure >/dev/null 2>&1 || fail "configure SH_Arrakeen failed"
+ini="$DUNE_STATE_DIR/server-SH_Arrakeen/Saved/Config/LinuxServer/Engine.ini"
+[ "$(stat -c %a "$ini" 2>/dev/null)" = 600 ] || fail "SH_Arrakeen Engine.ini missing or not 0600"
+grep -qx 'ServerName=sh-test' "$ini" || fail "SH_Arrakeen Engine.ini lacks the world name"
+[ -e "$DUNE_STATE_DIR/server/Saved" ] && fail "configuring SH_Arrakeen touched Survival_1's run dir"
+"$S" configure >/dev/null 2>&1 && [ -e "$DUNE_STATE_DIR/server/Saved/Config/LinuxServer/Engine.ini" ] || fail "Survival_1 configure moved"
+
+# status/stop are per map: a live pid in one map's run dir says nothing about another's.
+mkdir -p "$DUNE_STATE_DIR/server-SH_HarkoVillage"; echo $$ > "$DUNE_STATE_DIR/server-SH_HarkoVillage/pid"
+DUNE_MAP=SH_HarkoVillage "$S" status || fail "SH_HarkoVillage with a live pid not up"
+DUNE_MAP=SH_Arrakeen "$S" status && fail "SH_Arrakeen up without a pid"
+"$S" status && fail "Survival_1 up without a pid"
+DUNE_MAP=SH_Arrakeen "$S" stop || fail "stopping a map that is not running failed"
+exit "$failures"

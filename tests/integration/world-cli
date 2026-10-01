@@ -9,7 +9,7 @@ fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 work=$(mktemp -d "${TMPDIR:-/tmp}/dune-world-cli.XXXXXX") || exit 1
 trap 'rm -r -- "$work"' EXIT
 export DUNE_CONFIG_DIR="$work/config dir" DUNE_STATE_DIR="$work/state" DUNE_UNPACKED_DIR="$work/unpacked"
-unset DUNE_EXTERNAL_ADDRESS DUNE_IDLE_FPS DUNE_DEEP_IDLE_POLL DUNE_NOTIFY_TO DUNE_IDLE_THROTTLE
+unset DUNE_EXTERNAL_ADDRESS DUNE_IDLE_FPS DUNE_DEEP_IDLE_POLL DUNE_NOTIFY_TO DUNE_IDLE_THROTTLE DUNE_MAPS DUNE_MAPS_ALWAYS_ON DUNE_MAP_IDLE_AFTER DUNE_MAP_SCALER DUNE_MAP_POLL DUNE_MAP
 mkdir -p -m 700 "$DUNE_CONFIG_DIR"
 printf 'WORLD_UNIQUE_NAME=sh-abc-qwerty\nWORLD_DISPLAY_NAME=%q\nWORLD_REGION=%q\n' "My World" "North America" > "$DUNE_CONFIG_DIR/world.conf"
 printf 'token\n' > "$DUNE_CONFIG_DIR/fls_secret"
@@ -52,11 +52,13 @@ rm -r -- "$DUNE_CONFIG_DIR/UserSettings" "$DUNE_CONFIG_DIR/join_password.sample"
 # Orchestration against fake components that log each call.
 fake="$work/fake bin"
 mkdir -p "$fake"
-for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server gm-bridge idle-throttle; do
+allmaps=$(awk -F'\t' '!/^#/ && NF { print $1 }' data/maps.tsv)
+for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server map-scaler gm-bridge idle-throttle; do
 	cat > "$fake/dune-$c" <<EOF
 #!$BASH
-printf '%s %s|%s\n' "$c" "\$*" "\${DUNE_PARTITION_INDEX:-}:\${DUNE_EXTERNAL_ADDRESS:-}" >> "$work/calls"
-[ "$c" = world-partitions ] && echo 7
+printf '%s %s|%s|%s\n' "$c" "\$*" "\${DUNE_PARTITION_INDEX:-}:\${DUNE_EXTERNAL_ADDRESS:-}" "\${DUNE_MAP:-}" >> "$work/calls"
+[ "$c" = world-partitions ] && { n=7; for m in "\$@"; do echo "\$m \$n"; n=\$((n + 1)); done; }
+[ "$c \$1" = "map-scaler start" ] && printf '%s\n' "\${DUNE_MAPS:-}|\${DUNE_MAPS_ALWAYS_ON:-}|\${DUNE_MAP_IDLE_AFTER:-}" > "$work/scaler-env"
 [ "$c \$1" = "idle-throttle start" ] && printf '%s\n' "\${DUNE_IDLE_FPS:-}|\${DUNE_DEEP_IDLE_POLL:-}|\${DUNE_NOTIFY_TO:-}|\${DUNE_IDLE_THROTTLE:-}" > "$work/idle-env"
 [ "\$1" = status ] && exit 1
 [ "$c \$*" = "\${FAIL_AT:-}" ] && exit 1
@@ -78,13 +80,50 @@ printf '#!%s\ncase "$*" in *MemoryCurrent*) echo 123 ;; *MemoryMax*) echo 456 ;;
 s=$(PATH="$work/sysbin:$PATH" world status --json 2>/dev/null | jq -c '.server | [.memory_bytes, .memory_max_bytes, (.uptime_seconds | type), (.cpu_seconds | type)]')
 [ "$s" = '[123,456,"number","number"]' ] || fail "running server stats: $s"
 : > "$DUNE_STATE_DIR/server/pid"
+# Other maps: one entry each, with mode and ports; a running one reports its own scope (unit named after the map).
+printf '#!%s\nprintf "%%s\\n" "$*" >> "%s"\ncase "$*" in *MemoryCurrent*) echo 77 ;; *MemoryMax*) echo 88 ;; esac\n' "$BASH" "$work/systemctl-args" > "$work/sysbin/systemctl"
+mkdir -p "$DUNE_STATE_DIR/server-SH_Arrakeen"; echo $$ > "$DUNE_STATE_DIR/server-SH_Arrakeen/pid"
+j=$(PATH="$work/sysbin:$PATH" DUNE_MAPS_ALWAYS_ON=Overmap world status --json 2>/dev/null)
+[ "$(jq -r '[.maps[].name] | join(" ")' <<<"$j")" = "$(grep -vx Survival_1 <<<"$allmaps" | paste -sd' ' -)" ] || fail "maps listed: $(jq -c '[.maps[].name]' <<<"$j")"
+[ "$(jq -c '.maps[] | select(.name == "SH_Arrakeen") | [.mode, .up, .game_port, .igw_port, .memory_bytes, .memory_max_bytes, (.uptime_seconds | type)]' <<<"$j")" = '["on-demand",true,7779,7890,77,88,"number"]' ] ||
+	fail "running on-demand map entry: $(jq -c '.maps[] | select(.name == "SH_Arrakeen")' <<<"$j")"
+[ "$(jq -c '.maps[] | select(.name == "Overmap") | [.mode, .up, .game_port, .memory_bytes]' <<<"$j")" = '["always-on",false,7778,null]' ] ||
+	fail "stopped always-on map entry: $(jq -c '.maps[] | select(.name == "Overmap")' <<<"$j")"
+grep -q 'dune-server-sh-abc-qwerty-SH_Arrakeen.scope' "$work/systemctl-args" || fail "map scope not queried: $(cat "$work/systemctl-args")"
+# Text status: a line per map; a stopped on-demand map is normal, a stopped always-on map is down.
+out=$(DUNE_MAPS="SH_Arrakeen SH_HarkoVillage" DUNE_MAPS_ALWAYS_ON=Overmap world status 2>&1)
+[[ "$out" == *"SH_Arrakeen"*"up"* && "$out" == *"SH_HarkoVillage"*"on demand"* && "$out" == *"Overmap"*"down"* ]] || fail "text status maps: $out"
+[ "$(grep -c 'DeepDesert_1' <<<"$out")" = 0 ] || fail "text status lists a map the world does not serve: $out"
+: > "$DUNE_STATE_DIR/server-SH_Arrakeen/pid"
 
 : > "$work/calls"
 out=$(DUNE_EXTERNAL_ADDRESS=10.9.8.7 world start 2>&1) || fail "start with healthy fakes failed: $out"
 got=$(cut -d'|' -f1 "$work/calls" | paste -sd, -)
-[ "$got" = "postgres init,postgres start,db-setup ,world-partitions ,rabbitmq init admin,rabbitmq start admin,rabbitmq init game,rabbitmq start game,textrouter status,dotnet-prepare $DUNE_UNPACKED_DIR/server-text-router/rootfs $DUNE_STATE_DIR/textrouter-root Tools/Battlegroups/TextRouter/TextRouter TextRouter,textrouter start,director status,dotnet-prepare $DUNE_UNPACKED_DIR/server-bg-director/rootfs $DUNE_STATE_DIR/director-root Tools/Battlegroups/Director/BattlegroupDirector Director,director start,gateway start,server start,gm-bridge start,idle-throttle start" ] ||
+# By default every map of the table gets its partition (Survival_1 first) and the scaler starts after Survival_1.
+[ "$got" = "postgres init,postgres start,db-setup ,world-partitions $(paste -sd' ' - <<<"$allmaps"),rabbitmq init admin,rabbitmq start admin,rabbitmq init game,rabbitmq start game,textrouter status,dotnet-prepare $DUNE_UNPACKED_DIR/server-text-router/rootfs $DUNE_STATE_DIR/textrouter-root Tools/Battlegroups/TextRouter/TextRouter TextRouter,textrouter start,director status,dotnet-prepare $DUNE_UNPACKED_DIR/server-bg-director/rootfs $DUNE_STATE_DIR/director-root Tools/Battlegroups/Director/BattlegroupDirector Director,director start,gateway start,server start,map-scaler start,gm-bridge start,idle-throttle start" ] ||
 	fail "start order wrong: $got"
-[ "$(grep '^server start' "$work/calls" | cut -d'|' -f2)" = 7:10.9.8.7 ] || fail "server not given partition 7 and address: $(grep '^server' "$work/calls")"
+[ "$(grep '^server start' "$work/calls" | cut -d'|' -f2,3)" = "7:10.9.8.7|" ] || fail "server not given partition 7 and address: $(grep '^server' "$work/calls")"
+[ "$(cat "$work/scaler-env" 2>/dev/null)" = "||" ] || fail "map settings invented when world.conf has none: $(cat "$work/scaler-env" 2>/dev/null)"
+# MAPS narrows the partitions to the maps served; MAPS_ALWAYS_ON maps start right after Survival_1, each with its own
+# partition (ids from dune-world-partitions); the settings reach the scaler.
+cp "$DUNE_CONFIG_DIR/world.conf" "$work/world.conf.bak"
+printf 'MAPS=%q\nMAPS_ALWAYS_ON=%q\nMAP_IDLE_AFTER=600\n' "SH_HarkoVillage Overmap" "SH_Arrakeen" >> "$DUNE_CONFIG_DIR/world.conf"
+: > "$work/calls"
+out=$(world start 2>&1) || fail "start with maps failed: $out"
+[ "$(grep '^world-partitions' "$work/calls" | cut -d'|' -f1)" = "world-partitions Survival_1 Overmap SH_Arrakeen SH_HarkoVillage" ] ||
+	fail "partitions for MAPS: $(grep '^world-partitions' "$work/calls")"
+got=$(cut -d'|' -f1,3 "$work/calls" | sed -n '/^gateway start/,/^gm-bridge/p' | paste -sd, -)
+[ "$got" = "gateway start|,server start|,server start|SH_Arrakeen,map-scaler start|,gm-bridge start|" ] ||
+	fail "always-on map not started after Survival_1: $got"
+[ "$(grep '^server start' "$work/calls" | sed -n 2p | cut -d'|' -f2 | cut -d: -f1)" = 9 ] || fail "SH_Arrakeen not given its partition: $(grep '^server start' "$work/calls")"
+[ "$(cat "$work/scaler-env" 2>/dev/null)" = "SH_HarkoVillage Overmap|SH_Arrakeen|600" ] || fail "map settings not passed on: $(cat "$work/scaler-env" 2>/dev/null)"
+[[ "$out" == *"SH_Arrakeen"* ]] || fail "start does not name the always-on map: $out"
+# A bad map setting stops start before anything runs, naming the setting.
+printf 'MAPS=NoSuchMap\n' >> "$DUNE_CONFIG_DIR/world.conf"
+: > "$work/calls"
+out=$(world start 2>&1); [ $? -eq 1 ] && [[ "$out" == *MAPS* && "$out" == *NoSuchMap* ]] || fail "bad MAPS not refused: $out"
+[ -s "$work/calls" ] && fail "start ran components despite a bad MAPS: $(paste -sd, "$work/calls")"
+cp "$work/world.conf.bak" "$DUNE_CONFIG_DIR/world.conf"
 [ "$(readlink "$DUNE_STATE_DIR/secrets/fls_token")" = "$DUNE_CONFIG_DIR/fls_secret" ] || fail "fls token not linked into secrets"
 # Idle-throttle settings: world.conf keys become DUNE_<key> for the components; the environment wins over world.conf.
 [ "$(cat "$work/idle-env" 2>/dev/null)" = "|||" ] || fail "idle settings invented when world.conf has none: $(cat "$work/idle-env" 2>/dev/null)"
@@ -151,8 +190,11 @@ dirs() { printf '%s|%s|%s|%s' "$2/dune_awakening_server" "$1/dune_awakening_serv
 : > "$work/calls"
 world stop >/dev/null 2>&1 || fail "stop failed"
 # (the players-online guard first asks dune-character; only component stops count for the order)
-got=$(grep -v '^dune-character ' "$work/calls" | cut -d'|' -f1 | paste -sd, -)
-[ "$got" = "idle-throttle stop,gm-bridge stop,server stop,gateway stop,director stop,textrouter stop,rabbitmq stop game,rabbitmq stop admin,postgres stop" ] || fail "stop order wrong: $got"
+got=$(grep -v '^dune-character ' "$work/calls" | cut -d'|' -f1 | uniq | paste -sd, -)
+[ "$got" = "idle-throttle stop,gm-bridge stop,map-scaler stop,server stop,gateway stop,director stop,textrouter stop,rabbitmq stop game,rabbitmq stop admin,postgres stop" ] || fail "stop order wrong: $got"
+# Every map server in the table is stopped (whatever MAPS says now), the other maps before Survival_1.
+[ "$(grep '^server stop' "$work/calls" | cut -d'|' -f3 | paste -sd' ' -)" = "$(tac <<<"$allmaps" | grep -vx Survival_1 | paste -sd' ' -) " ] ||
+	fail "map servers stopped: $(grep '^server stop' "$work/calls" | cut -d'|' -f3 | paste -sd' ' -)"
 
 # Subcommand tools get the world identity too (doctor probes components that need it), when world.conf exists.
 printf '#!%s\nprintf "%%s %%s\\n" "${DUNE_WORLD_NAME:-unset}" "${DUNE_PARTITION_INDEX:-unset}" > "%s"\n' "$BASH" "$work/wname" > "$fake/dune-doctor"; chmod +x "$fake/dune-doctor"

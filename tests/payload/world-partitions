@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# libexec/dune-world-partitions creates exactly one Survival_1 partition (dimension 0) with Funcom's own helper,
-# prints its partition_id (the game server's -PartitionIndex), and is idempotent.
+# libexec/dune-world-partitions creates one dimension-0 partition per map it is given (default: Survival_1 alone) with
+# Funcom's own helper, prints "<map> <partition_id>" per map (the game server's -PartitionIndex), and is idempotent:
+# a second run adds nothing and keeps the ids. Maps outside data/maps.tsv are refused before the database is touched.
 set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
 . libexec/dune-dirs.bash
@@ -18,12 +19,29 @@ libexec/dune-postgres init >/dev/null && libexec/dune-postgres start >/dev/null 
 admin_pw=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password")
 sql() { PGPASSWORD="$admin_pw" psql -X -A -t -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune_sb_1_5_3_0 -c "$1" 2>&1; }
 
-id1=$(libexec/dune-world-partitions 2>&1) || fail "first run: $id1"
-[[ "$id1" =~ ^[0-9]+$ ]] || fail "did not print a numeric partition id: $id1"
+out1=$(libexec/dune-world-partitions 2>&1) || fail "first run: $out1"
+[[ "$out1" =~ ^Survival_1\ [0-9]+$ ]] || fail "did not print 'Survival_1 <id>': $out1"
+id1=${out1#Survival_1 }
 [ "$(sql "select count(*) from dune.world_partition")" = 1 ] || fail "expected exactly one partition"
 [ "$(sql "select map || ':' || dimension_index || ':' || partition_id from dune.world_partition")" = "Survival_1:0:$id1" ] || fail "partition is not Survival_1 dimension 0 with the printed id"
 [ -n "$(sql "select label from dune.world_partition")" ] || fail "partition label not set"
-id2=$(libexec/dune-world-partitions 2>&1) || fail "second run: $id2"
-[ "$id2" = "$id1" ] || fail "second run printed a different id ($id2 vs $id1)"
+out2=$(libexec/dune-world-partitions 2>&1) || fail "second run: $out2"
+[ "$out2" = "$out1" ] || fail "second run printed something else ($out2 vs $out1)"
 [ "$(sql "select count(*) from dune.world_partition")" = 1 ] || fail "second run added a partition"
+
+# More maps: one dimension-0 row each, Survival_1's id unchanged, output in the order asked, labels set.
+out3=$(libexec/dune-world-partitions Survival_1 SH_Arrakeen Overmap 2>&1) || fail "multi-map run: $out3"
+[ "$(cut -d' ' -f1 <<<"$out3" | paste -sd, -)" = Survival_1,SH_Arrakeen,Overmap ] || fail "multi-map output: $out3"
+[ "$(sed -n 1p <<<"$out3")" = "Survival_1 $id1" ] || fail "Survival_1 id changed: $out3"
+got=$(sql "select string_agg(map || ':' || dimension_index || ':' || partition_id, ',' order by map) from dune.world_partition")
+want=$(awk '{ print $1 ":0:" $2 }' <<<"$out3" | sort | paste -sd, -)
+[ "$got" = "$want" ] || fail "rows ($got) do not match the printed ids ($want)"
+[ "$(sql "select count(*) from dune.world_partition where label is null")" = 0 ] || fail "new partitions left unlabeled"
+out4=$(libexec/dune-world-partitions Overmap SH_Arrakeen 2>&1) || fail "repeat run: $out4"
+[ "$out4" = "$(sed -n '3p;2p' <<<"$out3" | tac)" ] || fail "repeat run changed ids or order: $out4"
+[ "$(sql "select count(*) from dune.world_partition")" = 3 ] || fail "repeat run added partitions"
+# A map outside the table, or a malformed name, is refused and nothing is written.
+out=$(libexec/dune-world-partitions SH_Arrakeen NoSuchMap 2>&1); [ $? -ne 0 ] && [[ "$out" == *NoSuchMap* ]] || fail "unknown map accepted: $out"
+out=$(libexec/dune-world-partitions "Overmap'; drop table dune.world_partition; --" 2>&1); [ $? -ne 0 ] || fail "malformed map name accepted"
+[ "$(sql "select count(*) from dune.world_partition")" = 3 ] || fail "a refused run changed the partitions"
 exit "$failures"

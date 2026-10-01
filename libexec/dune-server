@@ -4,8 +4,13 @@
 # interpreter patched to nixpkgs glibc; DuneSandbox/Saved is a real dir outside the farm (world logs/config
 # survive rebuilds). Secrets go into 0600 Saved/Config/LinuxServer ini overrides, never onto argv. Runs under a
 # systemd user scope with a hard MemoryMax so a leak cannot push the host into swap.
-# Usage: dune-server start|stop|status|configure (configure writes the private ini overrides only)
+# DUNE_MAP picks the map from data/maps.tsv (default Survival_1). Each map has its own run directory (server/ for
+# Survival_1, server-<map>/ for the others), scope, memory cap and UDP ports (game 7776+slot, IGW 7887+slot), so any
+# number of maps run side by side; Survival_1 keeps the server's default map and ports (7777/7888).
+# Usage: dune-server start|stop|status|configure|argv (configure writes the private ini overrides only; argv prints
+# the launch line, one argument per line)
 set -u
+die() { printf 'dune-server: %s\n' "$*" >&2; exit 1; }
 : "${DUNE_STATE_DIR:?set DUNE_STATE_DIR}"
 : "${DUNE_SECRETS_DIR:?set DUNE_SECRETS_DIR}"
 : "${DUNE_SERVER_SRC:?set DUNE_SERVER_SRC to the unpacked server dir (contains DuneSandbox/ and Engine/)}"
@@ -21,17 +26,31 @@ DUNE_BIND_ADDRESS=${DUNE_BIND_ADDRESS:-$DUNE_EXTERNAL_ADDRESS}
 DUNE_PG_PORT=${DUNE_PG_PORT:-15431}
 DUNE_RMQ_ADMIN_PORT=${DUNE_RMQ_ADMIN_PORT:-5673}
 DUNE_RMQ_GAME_PORT=${DUNE_RMQ_GAME_PORT:-31982}
-DUNE_SERVER_MEMORY_MAX=${DUNE_SERVER_MEMORY_MAX:-20G}
-run_dir="$DUNE_STATE_DIR/server"
+DUNE_MAP=${DUNE_MAP:-Survival_1}
+GAME_PORT_BASE=7776 IGW_PORT_BASE=7887
+[[ "$DUNE_MAP" =~ ^[A-Za-z0-9_]+$ ]] || die "invalid map name: $DUNE_MAP"
+maps_table="$(dirname -- "$0")/../data/maps.tsv"
+map_row=$(awk -F'\t' -v m="$DUNE_MAP" '!/^#/ && $1 == m { print $2 "\t" $3 "\t" $4; exit }' "$maps_table" 2>/dev/null)
+[ -n "$map_row" ] || die "unknown map $DUNE_MAP (not in $maps_table)"
+IFS=$'\t' read -r map_slot map_memory map_url <<<"$map_row"
+unit="dune-server-$(printf '%s' "$DUNE_WORLD_NAME" | tr -c 'a-zA-Z0-9-' '-')"
+if [ "$DUNE_MAP" = Survival_1 ]; then
+	run_dir="$DUNE_STATE_DIR/server"
+	memory_max=${DUNE_SERVER_MEMORY_MAX:-$map_memory}
+	map_args=()
+else
+	run_dir="$DUNE_STATE_DIR/server-$DUNE_MAP"
+	memory_max=$map_memory
+	unit="$unit-$DUNE_MAP"
+	map_args=("$map_url" "-Port=$((GAME_PORT_BASE + map_slot))" "-IGWPort=$((IGW_PORT_BASE + map_slot))")
+fi
 tree="$run_dir/tree"
 saved="$run_dir/Saved"
 home="$run_dir/home"
 pid_file="$run_dir/pid"
 log="$run_dir/server-console.log"
 bin_rel=DuneSandbox/Binaries/Linux/DuneSandboxServer-Linux-Shipping
-unit="dune-server-$(printf '%s' "$DUNE_WORLD_NAME" | tr -c 'a-zA-Z0-9-' '-')"
 
-die() { printf 'dune-server: %s\n' "$*" >&2; exit 1; }
 running() { [ -s "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; }
 
 # Rebuild the symlink farm when the payload binary changes (new build); Saved/ lives outside it.
@@ -110,26 +129,32 @@ write_secret_ini() {
 	) || die "cannot write secret ini overrides"
 }
 
+# The launch line: the binary under its memory-capped user scope, the map (other than Survival_1) and its ports, then
+# the flags every map shares.
+launch_argv() {
+	launch=(systemd-run --user --scope --quiet --unit="$unit" -p MemoryMax="$memory_max" -p MemorySwapMax=0
+		"$tree/$bin_rel" DuneSandbox "${map_args[@]}"
+		"-FarmRegion=$DUNE_WORLD_REGION"
+		-RMQGameTlsEnabled=true
+		"-ExternalAddress=$DUNE_EXTERNAL_ADDRESS" "-MultiHome=$DUNE_BIND_ADDRESS"
+		"--RMQGameHostname=127.0.0.1" "--RMQGamePort=$DUNE_RMQ_GAME_PORT"
+		"--RMQAdminHostname=127.0.0.1" "--RMQAdminPort=$DUNE_RMQ_ADMIN_PORT"
+		"-PartitionIndex=$DUNE_PARTITION_INDEX" -stdout -FullStdOutLogOutput)
+}
+
 cmd_start() {
 	running && return 0
 	mkdir -p -m 700 "$run_dir" || die "cannot create $run_dir"
 	prepare_tree
 	write_secret_ini
 	(umask 077; : > "$log") || die "cannot create $log"
+	launch_argv
 	(
 		cd "$tree" || exit 1
 		export HOME="$home"
 		# Map servers mint their broker credentials with the shared secret (Funcom labels rmq-game-secret env-for-server).
 		export RMQ_HTTP_TOKEN_AUTH_SECRET="$(cat "$DUNE_SECRETS_DIR/rmq_http_token_auth_secret")"
-		exec setsid systemd-run --user --scope --quiet --unit="$unit" -p MemoryMax="$DUNE_SERVER_MEMORY_MAX" -p MemorySwapMax=0 \
-			"$tree/$bin_rel" DuneSandbox \
-			"-FarmRegion=$DUNE_WORLD_REGION" \
-			-RMQGameTlsEnabled=true \
-			"-ExternalAddress=$DUNE_EXTERNAL_ADDRESS" "-MultiHome=$DUNE_BIND_ADDRESS" \
-			"--RMQGameHostname=127.0.0.1" "--RMQGamePort=$DUNE_RMQ_GAME_PORT" \
-			"--RMQAdminHostname=127.0.0.1" "--RMQAdminPort=$DUNE_RMQ_ADMIN_PORT" \
-			"-PartitionIndex=$DUNE_PARTITION_INDEX" -stdout -FullStdOutLogOutput \
-			< /dev/null >> "$log" 2>&1
+		exec setsid "${launch[@]}" < /dev/null >> "$log" 2>&1
 	) &
 	echo $! > "$pid_file"
 }
@@ -149,5 +174,6 @@ case "${1:-}" in
 	stop) cmd_stop ;;
 	status) running ;;
 	configure) mkdir -p -m 700 "$run_dir" "$saved/Config/LinuxServer" || die "cannot create $saved"; write_secret_ini ;;
-	*) die "usage: dune-server start|stop|status|configure" ;;
+	argv) launch_argv; printf '%s\n' "${launch[@]}" ;;
+	*) die "usage: dune-server start|stop|status|configure|argv" ;;
 esac

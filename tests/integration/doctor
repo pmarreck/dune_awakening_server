@@ -32,7 +32,7 @@ token() { printf '%s.%s.sig' "$(printf '{"alg":"none"}' | b64url)" "$(printf '{"
 	printf 'caladan-spice-leto-17\n' > "$DUNE_SECRETS_DIR/gm_password"
 	mkdir -p "$DUNE_BACKUP_DIR/20260925T040000.000Z-scheduled" && printf '{}' > "$DUNE_BACKUP_DIR/20260925T040000.000Z-scheduled/manifest.json")
 mkdir -p "$DUNE_COMPONENTS_DIR"
-for c in postgres rabbitmq textrouter director gateway server gm-bridge idle-throttle; do
+for c in postgres rabbitmq textrouter director gateway server map-scaler gm-bridge idle-throttle; do
 	printf '#!%s\n[ -e "%s/down-%s" ] && exit 1\nexit 0\n' "$BASH" "$work" "$c" > "$DUNE_COMPONENTS_DIR/dune-$c"
 	chmod +x "$DUNE_COMPONENTS_DIR/dune-$c"
 done
@@ -79,6 +79,7 @@ cat "$work/token.keep" > "$DUNE_CONFIG_DIR/fls_secret"
 touch "$work/down-gateway"; expect components warn "a component down"; unlink "$work/down-gateway"
 touch "$work/down-gm-bridge"; expect components warn "the chat bridge down"; unlink "$work/down-gm-bridge"
 touch "$work/down-idle-throttle"; expect components warn "the idle throttle down"; unlink "$work/down-idle-throttle"
+touch "$work/down-map-scaler"; expect components warn "the map scaler down"; unlink "$work/down-map-scaler"
 (umask 077; printf 'wrong\n' > "$DUNE_SECRETS_DIR/postgres_dune_password"); expect database fail "game role cannot log in"
 (umask 077; printf 'dune-pw-for-test\n' > "$DUNE_SECRETS_DIR/postgres_dune_password")
 DUNE_DB_NAME=dune_sb_0_0_0_0 expect database fail "game database missing"

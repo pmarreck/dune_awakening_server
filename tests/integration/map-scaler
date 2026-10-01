@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# libexec/dune-map-scaler: the component around lib/map_scaler.lua. A scripted Director log, fake dune-server and
+# dune-world-partitions (record calls; a started map's pid file gets this shell's pid), fake psql (players per map,
+# scripted per poll); `run --polls N --virtual-clock T --from-start` makes it deterministic (no sleeping).
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-map-scaler.XXXXXX") || exit 1
+trap 'libexec/dune-map-scaler stop >/dev/null 2>&1; rm -r -- "$work"' EXIT
+export DUNE_STATE_DIR="$work/state dir" DUNE_SECRETS_DIR="$work/secrets" DUNE_SERVER_TOOL="$work/fake/dune-server"
+export DUNE_PARTITIONS_TOOL="$work/fake/dune-world-partitions" PATH="$work/fake:$PATH"
+export DUNE_MAPS="SH_Arrakeen SH_HarkoVillage" DUNE_MAPS_ALWAYS_ON=Overmap DUNE_MAP_IDLE_AFTER=60 DUNE_MAP_POLL=10
+unset DUNE_MAP_SCALER DUNE_DIRECTOR_LOG DUNE_MAP
+mkdir -p "$work/fake" "$DUNE_STATE_DIR/director" "$DUNE_SECRETS_DIR" "$DUNE_STATE_DIR/db-utils/DuneSandbox/Config"
+printf 'dbpw\n' > "$DUNE_SECRETS_DIR/postgres_dune_password"
+printf '{"path": "$File: //seabass/sb-1.5.3.0/DuneSandbox/Config/perforce-keywords.json $"}\n' > "$DUNE_STATE_DIR/db-utils/DuneSandbox/Config/perforce-keywords.json"
+dlog="$DUNE_STATE_DIR/director/director.log"
+cat > "$work/fake/dune-server" <<FAKE
+#!$BASH
+printf '%s %s %s\n' "\$1" "\${DUNE_MAP:-}" "\${DUNE_PARTITION_INDEX:-}" >> "$work/calls"
+d="$DUNE_STATE_DIR/server-\$DUNE_MAP"
+case "\$1" in
+	start) [ -e "$work/start-fails" ] && exit 1; mkdir -p "\$d" && echo $$ > "\$d/pid" ;;
+	stop) : > "\$d/pid" ;;
+esac
+exit 0
+FAKE
+cat > "$work/fake/dune-world-partitions" <<FAKE
+#!$BASH
+printf 'partitions %s\n' "\$*" >> "$work/calls"
+for m in "\$@"; do case "\$m" in SH_Arrakeen) echo "SH_Arrakeen 3" ;; SH_HarkoVillage) echo "SH_HarkoVillage 4" ;; esac; done
+FAKE
+# psql: the K-th query prints players-K (map<TAB>count lines); psql-fails makes it fail. Records its arguments and
+# the database password it was given.
+cat > "$work/fake/psql" <<FAKE
+#!$BASH
+printf '%s|%s\n' "\$*" "\${PGPASSWORD:-}" > "$work/psql-args"
+[ -e "$work/psql-fails" ] && exit 2
+n=\$(cat "$work/psql-count" 2>/dev/null || echo 0); echo \$((n + 1)) > "$work/psql-count"
+cat "$work/players-\$n" 2>/dev/null
+exit 0
+FAKE
+chmod +x "$work/fake/dune-server" "$work/fake/dune-world-partitions" "$work/fake/psql"
+T=libexec/dune-map-scaler
+log="$DUNE_STATE_DIR/map-scaler/map-scaler.log"
+events() { sed -E 's/^[0-9TZ:-]+ //' "$log" 2>/dev/null; }
+reset() { rm -rf -- "$DUNE_STATE_DIR/map-scaler" "$DUNE_STATE_DIR"/server-*; rm -f -- "$work/calls" "$work/psql-count" "$work/start-fails" "$work/psql-fails" "$work"/players-*; : > "$dlog"; }
+runit() { "$T" run --from-start "$@" >"$work/out" 2>&1; local rc=$?; [ -s "$work/out" ] && fail "run printed output: $(cat "$work/out")"; return $rc; }
+calls() { paste -sd, "$work/calls" 2>/dev/null; }
+
+out=$("$T" --help 2>&1) && [[ "$out" == *start* && "$out" == *MAPS* && "$out" == *MAP_IDLE_AFTER* ]] || fail "--help: $out"
+out=$("$T" --about 2>&1) && [ "$(printf '%s\n' "$out" | wc -l)" -eq 1 ] && [[ "$out" == dune-map-scaler* ]] || fail "--about: $out"
+"$T" bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown action not a usage error"
+out=$(DUNE_MAPS=NoSuchMap "$T" start 2>&1); [ $? -ne 0 ] && [[ "$out" == *NoSuchMap* ]] || fail "start with a bad MAPS: $out"
+
+# A travel request in Director's log (with a credential-looking line beside it) starts the map with its partition;
+# nobody arrives, so it stops IDLE_AFTER (60 s) later. Polls every 10 s: t=0 start, ..., t=60 stop.
+reset
+printf '[00:00:01 16 INF Main] Generated credentials bgd.x.game:secretpassword123\n[00:11:03 16 INF Main] Received travel request for 1 player(s) to SH_Arrakeen (instancingMode=ClassicalInstancing)\n' >> "$dlog"
+runit --polls 8 --virtual-clock 0 || fail "run exited nonzero"
+[ "$(calls)" = "partitions SH_Arrakeen,start SH_Arrakeen 3,stop SH_Arrakeen 0" ] || fail "calls: $(calls)"
+want="started: SH_Arrakeen SH_HarkoVillage on demand, Overmap always on; idle after 60 s
+demand for SH_Arrakeen (1 player)
+starting SH_Arrakeen
+started SH_Arrakeen (partition 3)
+stopped SH_Arrakeen (nobody on it for 60 s)
+stopping after 8 polls"
+[ "$(events)" = "$want" ] || fail "log:
+$(events)"
+grep -q secretpassword "$log" && fail "a Director log line leaked into the scaler's log"
+[ "$(stat -c %a "$DUNE_STATE_DIR/map-scaler")" = 700 ] && [ "$(stat -c %a "$log")" = 600 ] || fail "run dir or log not private"
+[[ "$(cat "$work/psql-args")" == *"-U dune"*"-d dune_sb_1_5_3_0"*"|dbpw" ]] || fail "players query not run as dune on the game database: $(cat "$work/psql-args")"
+
+# Players keep it up: on it at polls 2-3 (query 1-2), gone afterwards; it stops 60 s after the last one was seen.
+reset
+printf 'Received travel request for 2 player(s) to SH_HarkoVillage (instancingMode=ClassicalInstancing)\n' >> "$dlog"
+printf 'SH_HarkoVillage\t2\nSurvival_1\t1\n' > "$work/players-1"; cp "$work/players-1" "$work/players-2"
+runit --polls 12 --virtual-clock 0
+[ "$(calls)" = "partitions SH_HarkoVillage,start SH_HarkoVillage 4,stop SH_HarkoVillage 0" ] || fail "players calls: $(calls)"
+events | grep -qx 'SH_HarkoVillage: 2 players on it' && events | grep -qx 'SH_HarkoVillage: nobody on it' || fail "presence not logged: $(events)"
+events | grep -qx 'stopped SH_HarkoVillage (nobody on it for 60 s)' || fail "stop not logged: $(events)"
+[ "$(grep -c '^stop' "$work/calls")" = 1 ] || fail "stopped more than once"
+# The stop came 60 s after the players were last seen (t=20), at t=80: 9th poll; nothing before.
+[ "$(cat "$work/psql-count")" -ge 8 ] || fail "players not polled while the map ran: $(cat "$work/psql-count")"
+
+# The database unreachable: the map is never stopped (players unknown); the failure is logged once.
+reset; : > "$work/psql-fails"
+printf 'Received travel request for 1 player(s) to SH_Arrakeen (instancingMode=ClassicalInstancing)\n' >> "$dlog"
+runit --polls 12 --virtual-clock 0
+[ "$(calls)" = "partitions SH_Arrakeen,start SH_Arrakeen 3" ] || fail "stopped with players unknown: $(calls)"
+[ "$(events | grep -c 'cannot count players')" = 1 ] || fail "players failure not logged once: $(events)"
+
+# A failed start is logged and retried (at most once a minute while the demand is fresh).
+reset; : > "$work/start-fails"
+printf 'Received travel request for 1 player(s) to SH_Arrakeen (instancingMode=ClassicalInstancing)\n' >> "$dlog"
+DUNE_MAP_IDLE_AFTER=120 runit --polls 9 --virtual-clock 0
+[ "$(grep -c '^start SH_Arrakeen' "$work/calls")" = 2 ] || fail "failed start not retried once a minute: $(calls)"
+events | grep -q '^could not start SH_Arrakeen' || fail "failed start not logged: $(events)"
+
+# Maps the world does not serve, Survival_1 and always-on maps are never started on demand.
+reset
+printf 'Received travel request for 1 player(s) to DeepDesert_1 (instancingMode=Dimension)\nReceived travel request for 1 player(s) to Survival_1 (instancingMode=Dimension)\nReceived travel request for 1 player(s) to Overmap (instancingMode=SingleServer)\n' >> "$dlog"
+runit --polls 3 --virtual-clock 0
+[ -z "$(calls)" ] || fail "unserved maps acted on: $(calls)"
+
+# Without --from-start, only lines written after the scaler started count (old travel is history).
+reset
+printf 'Received travel request for 1 player(s) to SH_Arrakeen (instancingMode=ClassicalInstancing)\n' >> "$dlog"
+"$T" run --polls 2 --virtual-clock 0 >/dev/null 2>&1
+[ -z "$(calls)" ] || fail "old demand replayed: $(calls)"
+
+# MAP_SCALER=0: demand is logged, nothing started.
+reset
+printf 'Received travel request for 1 player(s) to SH_Arrakeen (instancingMode=ClassicalInstancing)\n' >> "$dlog"
+DUNE_MAP_SCALER=0 runit --polls 2 --virtual-clock 0
+[ -z "$(calls)" ] || fail "scaler off but acted: $(calls)"
+events | grep -q 'scaler off, not starting it' || fail "demand not logged with the scaler off: $(events)"
+
+# start/status/stop run it in the background.
+reset
+"$T" start || fail "start failed"
+"$T" status || fail "status after start"
+"$T" stop || fail "stop failed"
+"$T" status && fail "status after stop"
+exit "$failures"

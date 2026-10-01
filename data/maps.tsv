@@ -1,0 +1,38 @@
+# Map servers this world can run (docs/operations.md, "Maps"). Hand-written from Funcom's own files; safe to publish.
+# Columns, tab-separated: map (Funcom's name, as in the world_partition table and Director's [InstancingModes]),
+# slot (Funcom's world-template partition id; the map's UDP ports are game 7776+slot and IGW 7887+slot), memory cap of
+# its systemd scope (twice Funcom's Kubernetes limit), and the level URL put on its command line (- = the server's
+# default map). URLs come from the server's DefaultGame.ini [/Script/DuneSandboxAuto.DuneSandboxAutoModuleSettings]
+# m_AllowedAutomatedCommandLineLevels. Funcom's slots 33-35 (CB_Arrakis_* rooms) are left out: no URL is known for them.
+Survival_1	1	20G	-
+Overmap	2	4G	/Game/Dune/Systems/Overmap/Overmap.Overmap
+SH_Arrakeen	3	4G	/Game/Dune/Maps/SocialHubs/Arrakeen/SH_Arrakeen.SH_Arrakeen
+SH_HarkoVillage	4	4G	/Game/Dune/Maps/SocialHubs/HarkoVillage/SH_HarkoVillage.SH_HarkoVillage
+CB_Story_Hephaestus	5	4G	/Game/Dune/Maps/OverlandMaps_Story/WreckOfTheHephaestus/CB_Story_Hephaestus/CB_Story_Hephaestus.CB_Story_Hephaestus
+CB_Story_Ecolab_Carthag	6	4G	/Game/Dune/Maps/OverlandMaps_Story/BeneathOldCarthag/CB_Story_Ecolab_Carthag/CB_Story_Ecolab_Carthag.CB_Story_Ecolab_Carthag
+CB_Story_WaterFatManor	7	4G	/Game/Dune/Maps/OverlandMaps_Story/WaterFatManor/CB_Story_WaterFatManor.CB_Story_WaterFatManor
+DeepDesert_1	8	30G	/Game/Dune/Maps/Arrakis/DeepDesert_1/DeepDesert_1.DeepDesert_1
+Story_ProcesVerbal	9	4G	/Game/Dune/Maps/MainStory_Chapter2/ProcesVerbal/ProcesVerbalMap/Story_ProcesVerbal.Story_ProcesVerbal
+DLC_Story_LostHarvest_EcolabA	10	6G	/Game/DLC/B1C2/Maps/DLC_Story_LostHarvest/DLC_Story_LostHarvest_EcolabA/DLC_Story_LostHarvest_EcolabA.DLC_Story_LostHarvest_EcolabA
+DLC_Story_LostHarvest_EcolabB	11	4G	/Game/DLC/B1C2/Maps/DLC_Story_LostHarvest/DLC_Story_LostHarvest_EcolabB/DLC_Story_LostHarvest_EcolabB.DLC_Story_LostHarvest_EcolabB
+DLC_Story_LostHarvest_ForgottenLab	12	4G	/Game/DLC/B1C2/Maps/DLC_Story_LostHarvest/DLC_Story_LostHarvest_ForgottenLab/DLC_Story_LostHarvest_ForgottenLab.DLC_Story_LostHarvest_ForgottenLab
+Story_ArtOfKanly	13	4G	/Game/DLC/B1C3/Maps/MainStory_Chapter3/ArtOfKanly/Story_ArtOfKanly.Story_ArtOfKanly
+CB_Dungeon_Hephaestus	14	6G	/Game/DLC/B1C3/Maps/MainStory_Chapter3/HephaestusRevisit/CB_Dungeon_Hephaestus/CB_Dungeon_Hephaestus.CB_Dungeon_Hephaestus
+CB_Dungeon_OldCarthag	15	6G	/Game/DLC/B1C3/Maps/MainStory_Chapter3/OldCarthagRevisit/CB_Dungeon_OldCarthag/CB_Dungeon_OldCarthag.CB_Dungeon_OldCarthag
+Story_Faction_Outpost_Atre	16	6G	/Game/DLC/B1C3/Maps/Story_Faction_Outpost_Atre/Story_Faction_Outpost_Atre.Story_Faction_Outpost_Atre
+Story_Faction_Outpost_Hark	17	6G	/Game/DLC/B1C3/Maps/Story_Faction_Outpost_Hark/Story_Faction_Outpost_Hark.Story_Faction_Outpost_Hark
+Story_HeighlinerDungeon	18	6G	/Game/DLC/B1C3/Maps/MainStory_Chapter3/FallenLight_HighlinerDungeon/Story_HeighlinerDungeon.Story_HeighlinerDungeon
+CB_Ecolab_Bronze_Green_089	19	12G	/Game/Dune/Maps/Dungeons/Ecolabs/Bronze/Greenhouse/Ecolab_Bronze_Green_089/CB_Ecolab_Bronze_Green_089.CB_Ecolab_Bronze_Green_089
+CB_Ecolab_Bronze_Green_152	20	6G	/Game/Dune/Maps/Dungeons/Ecolabs/Bronze/Greenhouse/Ecolab_Bronze_Green_152/CB_Ecolab_Bronze_Green_152.CB_Ecolab_Bronze_Green_152
+CB_Ecolab_Bronze_Green_024	21	6G	/Game/Dune/Maps/Dungeons/Ecolabs/Bronze/Greenhouse/Ecolab_Bronze_Green_024/CB_Ecolab_Bronze_Green_024.CB_Ecolab_Bronze_Green_024
+CB_Ecolab_Bronze_Green_195	22	6G	/Game/Dune/Maps/Dungeons/Ecolabs/Bronze/Greenhouse/Ecolab_Bronze_Green_195/CB_Ecolab_Bronze_Green_195.CB_Ecolab_Bronze_Green_195
+CB_Ecolab_Bronze_Green_136	23	6G	/Game/Dune/Maps/Dungeons/Ecolabs/Bronze/Greenhouse/Ecolab_Bronze_Green_136/CB_Ecolab_Bronze_Green_136.CB_Ecolab_Bronze_Green_136
+CB_Overland_M_01	24	6G	/Game/Dune/Maps/OverlandMaps/Overland_S_01/CB_Overland_M_01.CB_Overland_M_01
+CB_Overland_S_04	25	6G	/Game/Dune/Maps/OverlandMaps/Overland_S_04/CB_Overland_S_04.CB_Overland_S_04
+CB_Overland_S_06	26	6G	/Game/Dune/Maps/OverlandMaps/Overland_S_06/CB_Overland_S_06.CB_Overland_S_06
+CB_Story_BanditFortress01	27	4G	/Game/Dune/Maps/OverlandMaps_Story/BanditFortress01/CB_Story_BanditFortress01.CB_Story_BanditFortress01
+CB_Overland_S_07	28	4G	/Game/Dune/Maps/OverlandMaps/Overland_S_07/CB_Overland_S_07.CB_Overland_S_07
+CB_Overland_S_08	29	4G	/Game/Dune/Maps/OverlandMaps/CB_Overland_S_08/CB_Overland_S_08.CB_Overland_S_08
+CB_Dungeon_ThePit	30	4G	/Game/Dune/Maps/Dungeons/Dungeon_ThePit/CB_Dungeon_ThePit.CB_Dungeon_ThePit
+CB_Story_DestroyedZanovar	31	4G	/Game/DLC/B1C4/Maps/MainStory_Chapter4/Zanovar/CB_Story_DestroyedZanovar.CB_Story_DestroyedZanovar
+CB_Story_OrbitalMonitor	32	4G	/Game/DLC/B1C4/Maps/MainStory_Chapter4/OrbitalMonitor/CB_Story_OrbitalMonitor.CB_Story_OrbitalMonitor
