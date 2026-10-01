@@ -174,6 +174,20 @@ How it works and why it is safe to run:
 
 A world whose game broker was started before this listener existed keeps refusing the bridge's connection (logged once) until its next restart.
 
+## Building height: the sub-fief console's claim box
+
+A base must fit inside its console's landclaim, which is a box, not just a footprint. The sizes come from the game's DataTable `/Game/Dune/Systems/Building/Data/DT_DuneTotemData` (decoded 2026-10-01 from build 25610213 with retoc; vertical values are relative to the claim's stored origin, which is inferred from the `dune.totems` columns and server strings):
+
+| Console | Width | Vertical range | Extendable |
+|---|---|---|---|
+| Sub-Fief Console (`Totem_Small_Placeable`) | 30.6 m | 12.8 m down, 17.92 m up (30.72 m) | no, in either direction |
+| Advanced Sub-Fief Console (`Totem_Placeable`), level 1 | 53.8 m | 23.04 m down, 28.16 m up (51.2 m) | yes, horizontally and vertically |
+| Advanced Sub-Fief Console, level 6 (max) | 53.8 m plus segments | 99.84 m down, 130.56 m up (230.4 m) | |
+
+Each vertical level of the advanced console adds 15.36 m below and 20.48 m above. On a Sub-Fief Console the ceiling is about 13.8 m above the console itself.
+
+No server setting changes these. No ini key mentions a claim radius or vertical range, and `m_BuildingHeightLimitInM` (which this world already raises from 980 to 1960) is an absolute altitude cap far above Hagga Basin bases. Editing `dune.totems.landclaim_vertical_level` does nothing for a Sub-Fief Console, because its row defines only one level. Replacing the DataTable would be a mod pak, which the client would also need. The supported way to build taller is to build the Advanced Sub-Fief Console and raise its vertical level in game.
+
 ## The game's own GM system
 
 ### How it works (from the server binary and Funcom's configs)
