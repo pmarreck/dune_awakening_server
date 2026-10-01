@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# bin/dune-awakening heal (the self-heal timer's command): cheap liveness checks first, outside the dev shell; the
+# full `start` (inside nix develop) only when a component or an always-on map is down; nothing while an update holds
+# the update lock. Fake components report up or down from a file; a fake nix logs how it was called.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-heal.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+export DUNE_CONFIG_DIR="$work/config" DUNE_STATE_DIR="$work/state" DUNE_UNPACKED_DIR="$work/unpacked" DUNE_COMPONENTS_DIR="$work/fake"
+unset DUNE_EXTERNAL_ADDRESS DUNE_MAPS DUNE_MAPS_ALWAYS_ON DUNE_MAP_IDLE_AFTER DUNE_MAP_SCALER DUNE_MAP_POLL DUNE_MAP DUNE_NO_WARNINGS
+mkdir -p -m 700 "$DUNE_CONFIG_DIR"
+printf 'WORLD_UNIQUE_NAME=sh-abc-qwerty\nEXTERNAL_ADDRESS=10.1.1.1\n' > "$DUNE_CONFIG_DIR/world.conf"
+printf 'token\n' > "$DUNE_CONFIG_DIR/fls_secret"
+lock="$DUNE_STATE_DIR/update.lock"
+
+# Fake components: `status` fails for names listed in $work/down; every other call is logged, and each logs whether it
+# inherited a descriptor on the update lock (it must not: a daemon holding it would block updates forever).
+mkdir -p "$DUNE_COMPONENTS_DIR"
+for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server map-scaler gm-bridge idle-throttle; do
+	cat > "$DUNE_COMPONENTS_DIR/dune-$c" <<EOF
+#!$BASH
+printf '%s %s|%s\n' "$c" "\$*" "\${DUNE_MAP:-}" >> "$work/calls"
+for fd in /proc/\$\$/fd/*; do [ "\$(readlink "\$fd")" = "$lock" ] && echo "$c" >> "$work/inherited"; done
+[ "$c" = world-partitions ] && { n=7; for m in "\$@"; do echo "\$m \$n"; n=\$((n + 1)); done; }
+if [ "\$1" = status ]; then n=$c; [ "$c" = rabbitmq ] && n="$c-\$2"; grep -qx "\$n" "$work/down" 2>/dev/null && exit 1; exit 0; fi
+exit 0
+EOF
+done
+chmod +x "$DUNE_COMPONENTS_DIR"/*
+# The home map server is probed through its pid file (dune-server needs the dev shell); this shell stands in for it.
+mkdir -p "$DUNE_STATE_DIR/server"; echo $$ > "$DUNE_STATE_DIR/server/pid"
+# A fake nix: logs its arguments and the TMPDIR it was given, and whether it inherited the lock.
+mkdir -p "$work/nixbin"
+cat > "$work/nixbin/nix" <<EOF
+#!$BASH
+printf '%s\n' "\$*" > "$work/nix-args"
+printf '%s\n' "\${TMPDIR:-}" > "$work/nix-tmpdir"
+for fd in /proc/\$\$/fd/*; do [ "\$(readlink "\$fd")" = "$lock" ] && echo nix >> "$work/inherited"; done
+exit "\${FAKE_NIX_RC:-0}"
+EOF
+chmod +x "$work/nixbin/nix"
+# heal as the timer runs it: outside the dev shell (no DUNE_GLIBC_LOADER), with nix on PATH.
+heal() { env -u DUNE_GLIBC_LOADER PATH="$work/nixbin:$PATH" bin/dune-awakening heal "$@"; }
+reset() { : > "$work/calls"; : > "$work/down"; rm -f -- "$work/nix-args" "$work/inherited"; }
+starts() { grep -v ' status' "$work/calls" | cut -d'|' -f1 | paste -sd, -; }
+
+# Everything up: cheap checks only, no nix develop, no start.
+reset
+out=$(heal 2>&1); rc=$?
+[ "$rc" -eq 0 ] || fail "heal with everything up exited $rc: $out"
+[ -e "$work/nix-args" ] && fail "heal re-entered nix develop with everything up: $(cat "$work/nix-args")"
+[ -z "$(starts)" ] || fail "heal ran more than status checks with everything up: $(starts)"
+grep -q '^postgres status --quick|' "$work/calls" || fail "postgres not probed with --quick: $(grep postgres "$work/calls")"
+[ "$(grep -c '^rabbitmq status [a-z]* --quick|' "$work/calls")" = 2 ] || fail "rabbitmq not probed with --quick: $(grep rabbitmq "$work/calls")"
+grep -q '^server ' "$work/calls" && fail "heal ran dune-server (it needs the dev shell): $(grep '^server' "$work/calls")"
+[[ "$out" == *up* ]] || fail "heal does not say all is up: $out"
+
+# One component down: the full start, through nix develop, with this checkout's flake and a private TMPDIR.
+for c in postgres rabbitmq-game gm-bridge map-scaler; do
+	reset; echo "$c" > "$work/down"
+	out=$(heal 2>&1); rc=$?
+	[ "$rc" -eq 0 ] || fail "heal with $c down exited $rc: $out"
+	[[ "$(cat "$work/nix-args" 2>/dev/null)" == "develop $PWD "*" -c luajit $PWD/bin/dune-awakening start --no-warn" ]] ||
+		fail "heal with $c down did not run start in nix develop: $(cat "$work/nix-args" 2>/dev/null)"
+	[[ "$out" == *"${c/rabbitmq-/rabbitmq }"* ]] || fail "heal does not name the down component $c: $out"
+done
+grep -q -- '--keep TMPDIR' "$work/nix-args" || fail "nix develop does not keep the private TMPDIR: $(cat "$work/nix-args")"
+[ "$(cat "$work/nix-tmpdir")" = "$DUNE_STATE_DIR/tmp" ] || fail "nix develop not given the private TMPDIR: $(cat "$work/nix-tmpdir")"
+[ "$(stat -c %a "$DUNE_STATE_DIR/tmp" 2>/dev/null)" = 700 ] || fail "private TMPDIR not 0700"
+# The start's exit status is heal's.
+reset; echo gateway > "$work/down"
+FAKE_NIX_RC=1 heal >/dev/null 2>&1; [ $? -eq 1 ] || fail "a failed start is not reported by heal's exit status"
+# The home map server down (stale pid file).
+reset; : > "$DUNE_STATE_DIR/server/pid"
+heal >/dev/null 2>&1; [ -e "$work/nix-args" ] || fail "heal did not start the world with the home map server down"
+echo $$ > "$DUNE_STATE_DIR/server/pid"
+
+# Maps: a stopped always-on map is down; a stopped on-demand map is stopped on purpose (the scaler starts it).
+reset
+DUNE_MAPS="SH_Arrakeen Overmap" heal >/dev/null 2>&1
+[ -e "$work/nix-args" ] && fail "heal started the world for a stopped on-demand map"
+reset
+out=$(DUNE_MAPS="SH_Arrakeen Overmap" DUNE_MAPS_ALWAYS_ON=Overmap heal 2>&1)
+[ -e "$work/nix-args" ] || fail "heal did not start the world with an always-on map down"
+[[ "$out" == *Overmap* && "$out" != *SH_Arrakeen* ]] || fail "heal does not name only the down always-on map: $out"
+mkdir -p "$DUNE_STATE_DIR/server-Overmap"; echo $$ > "$DUNE_STATE_DIR/server-Overmap/pid"
+reset
+DUNE_MAPS="SH_Arrakeen Overmap" DUNE_MAPS_ALWAYS_ON=Overmap heal >/dev/null 2>&1
+[ -e "$work/nix-args" ] && fail "heal started the world with the always-on map running"
+
+# Inside the dev shell already, heal runs the start itself (no second nix develop), holding the update lock while
+# it runs; the components it starts do not inherit the lock.
+reset; echo director > "$work/down"
+cat > "$DUNE_COMPONENTS_DIR/dune-db-setup" <<EOF
+#!$BASH
+echo 'db-setup |' >> "$work/calls"
+flock -n "$lock" true && echo free > "$work/lock-during-start" || echo held > "$work/lock-during-start"
+EOF
+out=$(PATH="$work/nixbin:$PATH" bin/dune-awakening heal 2>&1) || fail "in-shell heal failed: $out"
+[ -e "$work/nix-args" ] && fail "in-shell heal re-entered nix develop"
+[[ "$(starts)" == "postgres init,postgres start,db-setup ,"*",director start,"* ]] || fail "in-shell heal did not run the full start: $(starts)"
+[ "$(cat "$work/lock-during-start" 2>/dev/null)" = held ] || fail "update lock not held while heal starts the world"
+[ -e "$work/inherited" ] && fail "lock descriptor inherited by: $(paste -sd' ' "$work/inherited")"
+reset; echo director > "$work/down"
+heal >/dev/null 2>&1
+[ -e "$work/inherited" ] && fail "lock descriptor inherited by the nix develop child: $(paste -sd' ' "$work/inherited")"
+
+# An update in progress holds the lock: heal does nothing at all (not even status checks) and succeeds.
+reset; echo gateway > "$work/down"
+exec 8>>"$lock"; flock 8
+out=$(heal 2>&1); rc=$?
+exec 8>&-
+[ "$rc" -eq 0 ] || fail "heal during an update exited $rc: $out"
+[ -s "$work/calls" ] && fail "heal during an update ran components: $(paste -sd, "$work/calls")"
+[ -e "$work/nix-args" ] && fail "heal during an update ran nix develop"
+[[ "$out" == *update* ]] || fail "heal during an update does not say why it skipped: $out"
+
+# heal is a builtin command (listed in --help).
+[[ "$(bin/dune-awakening --help)" == *heal* ]] || fail "--help does not list heal"
+exit "$failures"

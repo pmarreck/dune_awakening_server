@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# libexec/lib/update_notice.bash: the pure decision behind the hourly update check's notice (one per new Steam build),
+# tested as a classifier over every combination of installed, latest and last-announced build.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. libexec/lib/update_notice.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+
+# installed latest last-notified -> due?
+cases=(
+	"100 100 -       no"   # up to date, never announced
+	"100 100 100     no"   # up to date
+	"100 100 99      no"   # up to date after an earlier announcement
+	"100 101 -       yes"  # first notice for a new build
+	"100 101 100     yes"  # announced an older build; this one is new
+	"100 101 101     no"   # already announced
+	"100 102 101     yes"  # a second build arrived before the update was applied
+	"101 100 101     yes"  # Steam rolled back: the server is now ahead, still a mismatch players hit
+	"100 -   -       no"   # Steam unreadable
+	"-   101 -       no"   # nothing installed
+)
+for c in "${cases[@]}"; do
+	read -r installed latest last want <<<"$c"
+	[ "$installed" = - ] && installed=""; [ "$latest" = - ] && latest=""; [ "$last" = - ] && last=""
+	if update_notice_due "$installed" "$latest" "$last"; then got=yes; else got=no; fi
+	[ "$got" = "$want" ] || fail "update_notice_due '$installed' '$latest' '$last': got $got, want $want"
+done
+exit "$failures"

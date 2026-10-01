@@ -6,6 +6,7 @@
 # (which runs Funcom's DB migrations through dune-db-setup) and re-check.
 set -u
 . "$(dirname -- "${BASH_SOURCE[0]}")/dune-dirs.bash"
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/update_notice.bash"
 NAME=dune-update VERSION=0.1.0 APP=4754530
 EXIT_CURRENT=0 EXIT_STALE=1 EXIT_USAGE=2 EXIT_UNKNOWN=3
 : "${HOME:=$(cd ~ 2>/dev/null && pwd)}"
@@ -14,6 +15,9 @@ DUNE_UNPACKED_DIR=${DUNE_UNPACKED_DIR:-$DUNE_DATA_ROOT/unpacked}
 DUNE_STEAMCMD=${DUNE_STEAMCMD:-steamcmd}
 DUNE_STEAMCMD_HOME=${DUNE_STEAMCMD_HOME:-$DUNE_DATA_ROOT/steamcmd}
 DUNE_TRASH_DIR=${DUNE_TRASH_DIR:-$HOME/.Trash}
+DUNE_STATE_DIR=${DUNE_STATE_DIR:-$DUNE_DATA_ROOT/runtime}
+DUNE_UPDATE_LOCK_WAIT=${DUNE_UPDATE_LOCK_WAIT:-1800}
+NOTIFY_AS=dune_awakening_server
 DUNE_COMPONENTS_DIR=${DUNE_COMPONENTS_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}
 IMAGES=(server server-bg-director server-text-router server-gateway server-db-utils)
 
@@ -31,28 +35,38 @@ Commands:
 
 Options:
   --json    check: machine-readable result
+  --notify  check: when Steam has a build the server lacks, send one notice per new build through
+            NOTIFY_CMD (default post) to NOTIFY_TO, both from world.conf; the build last announced is kept in
+            \$DUNE_STATE_DIR/update-notified. A failed notice is retried at the next check. It never applies.
   --force   apply: proceed with players online or when already current (re-download and re-unpack)
   --about, -h/--help
 
-Environment: DUNE_STEAM_SERVER_DIR, DUNE_UNPACKED_DIR, DUNE_STEAMCMD, DUNE_STEAMCMD_HOME, DUNE_TRASH_DIR.
+apply holds \$DUNE_STATE_DIR/update.lock from stopping the world until it has started it again; the self-heal
+(dune-awakening heal) skips while it is held, and apply waits up to DUNE_UPDATE_LOCK_WAIT seconds (1800) for a heal
+that holds it.
+
+Environment: DUNE_STEAM_SERVER_DIR, DUNE_UNPACKED_DIR, DUNE_STEAMCMD, DUNE_STEAMCMD_HOME, DUNE_TRASH_DIR,
+DUNE_STATE_DIR, DUNE_UPDATE_LOCK_WAIT, DUNE_NOTIFY_TO, DUNE_NOTIFY_CMD.
 EOF
 }
 die() { printf '%s: %s\n' "$NAME" "$1" >&2; exit "${2:-1}"; }
 step() { printf '▸ %s\n' "$*" >&2; }
 
-cmd="" json=false force=false
+cmd="" json=false force=false notify=false
 for a in "$@"; do
 	case "$a" in
 		-h|--help) usage; exit 0 ;;
 		--about) printf '%s %s: Dune self-host server update check and procedure (%s %s)\n' "$NAME" "$VERSION" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)"; exit 0 ;;
 		--json) json=true ;;
+		--notify) notify=true ;;
 		--force) force=true ;;
 		-*) die "unknown option $a (see --help)" "$EXIT_USAGE" ;;
 		*) [ -z "$cmd" ] || die "unexpected argument $a (see --help)" "$EXIT_USAGE"; cmd=$a ;;
 	esac
 done
 
-run_steamcmd() { mkdir -p "$DUNE_STEAMCMD_HOME" && HOME=$DUNE_STEAMCMD_HOME "$DUNE_STEAMCMD" "$@"; }
+# Children never get descriptor 9 (the update lock): a daemon holding it would block the next update and every heal.
+run_steamcmd() { mkdir -p "$DUNE_STEAMCMD_HOME" && HOME=$DUNE_STEAMCMD_HOME "$DUNE_STEAMCMD" "$@" 9>&-; }
 installed_buildid() { sed -n 's/^[[:space:]]*"buildid"[[:space:]]*"\([0-9]*\)".*/\1/p' "$DUNE_STEAM_SERVER_DIR/steamapps/appmanifest_$APP.acf" 2>/dev/null | head -1; }
 
 # Public-branch buildid and time from app_info_print (VDF), ignoring other branches and ANSI noise.
@@ -81,14 +95,41 @@ cmd_check() {
 	else
 		printf '⚠ update available: installed build %s, Steam has %s%s\n' "$installed" "$latest" "${t:+ (published $(date -d "@$t" '+%Y-%m-%d %H:%M %Z'))}"
 	fi
+	$notify && notify_update "$installed" "$latest" "${t:-}"
 	[ "$installed" = "$latest" ] && return "$EXIT_CURRENT" || return "$EXIT_STALE"
+}
+
+# One notice per new Steam build (update_notice_due); the build is recorded only once the notice went out, so a failed
+# notice is retried at the next check. Messages go to stderr (stdout may be check's JSON).
+notify_update() {
+	local installed=$1 latest=$2 t=$3 state="$DUNE_STATE_DIR/update-notified" last subject body
+	last=$(cat "$state" 2>/dev/null)
+	update_notice_due "$installed" "$latest" "$last" || return 0
+	if [ -z "${DUNE_NOTIFY_TO:-}" ]; then
+		printf '%s: update notice for build %s not sent: NOTIFY_TO is not set in world.conf\n' "$NAME" "$latest" >&2
+		return 0
+	fi
+	subject="Dune server update available: Steam build $latest${DUNE_WORLD_DISPLAY_NAME:+ ($DUNE_WORLD_DISPLAY_NAME)}"
+	body="Steam has published Dune: Awakening server build $latest${t:+ on $(date -d "@$t" '+%Y-%m-%d %H:%M %Z')}; this world runs build $installed.
+Players' clients update themselves to Steam's build and then cannot join an older server (\"Outdated Client\").
+
+Update when nobody is online:  dune-awakening update apply
+(it refuses while players are online, backs up, stops the world, downloads, unpacks and starts it again).
+
+This notice is sent once per build."
+	if "${DUNE_NOTIFY_CMD:-post}" to "$DUNE_NOTIFY_TO" --as "$NOTIFY_AS" --subject "$subject" --body "$body" --yes >/dev/null 2>&1; then
+		mkdir -p -m 700 "$DUNE_STATE_DIR" && printf '%s\n' "$latest" > "$state" || printf '%s: cannot record the notice in %s\n' "$NAME" "$state" >&2
+		printf '%s: sent update notice for build %s to %s\n' "$NAME" "$latest" "$DUNE_NOTIFY_TO" >&2
+	else
+		printf '%s: update notice for build %s failed; retrying at the next check\n' "$NAME" "$latest" >&2
+	fi
 }
 
 # Components live beside this script (libexec/); the world front end lives in the checkout's bin/.
 component() {
 	local c="$DUNE_COMPONENTS_DIR/dune-$1"
 	[ "$1" = world ] && [ ! -x "$c" ] && c="$(dirname -- "${BASH_SOURCE[0]}")/../bin/dune-awakening"
-	"$c" "${@:2}"
+	"$c" "${@:2}" 9>&-
 }
 
 cmd_apply() {
@@ -101,6 +142,11 @@ cmd_apply() {
 	if ! $force && jq -e 'any(.[]; .online)' >/dev/null 2>&1 <<<"$online"; then
 		die "players are online ($(jq -r '[.[] | select(.online) | .name] | join(", ")' <<<"$online")); update when they log out, or --force"
 	fi
+	# The update lock, held on descriptor 9 until the world is started again: the self-heal skips meanwhile, so it
+	# cannot start a component from the images being replaced (on 2026-09-30 it did, and the map server crashed).
+	mkdir -p -m 700 "$DUNE_STATE_DIR" && exec 9>>"$DUNE_STATE_DIR/update.lock" || die "cannot open $DUNE_STATE_DIR/update.lock; nothing changed"
+	flock -w "$DUNE_UPDATE_LOCK_WAIT" 9 ||
+		die "the update lock ($DUNE_STATE_DIR/update.lock) is still held after ${DUNE_UPDATE_LOCK_WAIT} s (a self-heal start?); nothing changed"
 	step "backup"; component backup create --label "before update ${installed:-none} to $latest" >/dev/null || die "backup failed; nothing changed"
 	step "stop world"; component world stop $($force && echo --force) || die "world did not stop cleanly; nothing downloaded"
 	step "download build $latest (validated)"
@@ -112,13 +158,14 @@ cmd_apply() {
 		[ -e "$DUNE_UNPACKED_DIR/$img.new" ] && { mkdir -p "$DUNE_TRASH_DIR"; mv "$DUNE_UNPACKED_DIR/$img.new" "$DUNE_TRASH_DIR/$img.new.$(date +%s%N)"; }
 		component unpack "$tar" "$DUNE_UNPACKED_DIR/$img.new" >&2 || die "unpacking $img failed; the world is stopped on the previous images"
 	done
-	ts=$(date +%Y%m%dT%H%M%S)
+	ts=$(date +%Y%m%dT%H%M%S.%N)
 	for img in "${IMAGES[@]}"; do
 		if [ -e "$DUNE_UNPACKED_DIR/$img.prev" ]; then mkdir -p "$DUNE_TRASH_DIR" && mv "$DUNE_UNPACKED_DIR/$img.prev" "$DUNE_TRASH_DIR/$img.prev.$ts" || die "cannot retire $img.prev"; fi
 		if [ -e "$DUNE_UNPACKED_DIR/$img" ]; then mv "$DUNE_UNPACKED_DIR/$img" "$DUNE_UNPACKED_DIR/$img.prev" || die "cannot keep $img as .prev"; fi
 		mv "$DUNE_UNPACKED_DIR/$img.new" "$DUNE_UNPACKED_DIR/$img" || die "cannot install new $img"
 	done
 	step "start world (runs DB migrations)"; component world start || die "world failed to start on build $latest; previous images are in $DUNE_UNPACKED_DIR/*.prev"
+	exec 9>&-
 	installed=$(installed_buildid)
 	[ "$installed" = "$(latest_info | cut -d' ' -f1)" ] || die "after the update the installed build ($installed) still differs from Steam's"
 	printf '✓ updated to build %s\n' "$installed"

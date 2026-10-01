@@ -24,6 +24,10 @@ admin_pw=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password" 2>/dev/null)
 
 out=$(libexec/dune-postgres start 2>&1) || fail "start exited nonzero: $out"
 libexec/dune-postgres status >/dev/null 2>&1 || fail "status nonzero while running"
+# --quick status (postmaster.pid names a live process) needs no pg_ctl, so the heal path can run it outside the dev
+# shell; it must agree with the full check, here with pg_ctl unavailable.
+mkdir -p "$work/noctl"; printf '#!%s\nexit 1\n' "$BASH" > "$work/noctl/pg_ctl"; chmod +x "$work/noctl/pg_ctl"
+PATH="$work/noctl:$PATH" libexec/dune-postgres status --quick || fail "quick status says running postgres is down (or used pg_ctl)"
 out=$(libexec/dune-postgres start 2>&1) || fail "start while already running must be a no-op success: $out"
 
 [ "$(sql "$admin_pw" "select current_setting('server_version_num')::int / 10000")" = 17 ] || fail "server is not PostgreSQL 17"
@@ -42,5 +46,10 @@ out=$(libexec/dune-postgres init 2>&1) || fail "re-init exited nonzero: $out"
 
 out=$(libexec/dune-postgres stop 2>&1) || fail "stop exited nonzero: $out"
 libexec/dune-postgres status >/dev/null 2>&1 && fail "status zero after stop"
+libexec/dune-postgres status --quick && fail "quick status says stopped postgres is up"
+# A stale postmaster.pid (the cluster crashed) names a dead process: down.
+printf '%s\n%s\n' 999999999 "$DUNE_PG_DATA" > "$DUNE_PG_DATA/postmaster.pid"
+libexec/dune-postgres status --quick && fail "quick status trusts a stale postmaster.pid"
+mv "$DUNE_PG_DATA/postmaster.pid" "$work/stale.pid"
 
 exit "$failures"

@@ -9,6 +9,8 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/dune-update-test.XXXXXX") || exit 1
 trap 'rm -r -- "$work"' EXIT
 export DUNE_STEAM_SERVER_DIR="$work/steam server" DUNE_UNPACKED_DIR="$work/unpacked" DUNE_TRASH_DIR="$work/trash"
 export DUNE_STEAMCMD_HOME="$work/steamcmd-home" DUNE_COMPONENTS_DIR="$work/fake" DUNE_STEAMCMD="$work/fake/steamcmd"
+export DUNE_STATE_DIR="$work/state" DUNE_CONFIG_DIR="$work/config"
+unset DUNE_NOTIFY_TO DUNE_NOTIFY_CMD DUNE_WORLD_DISPLAY_NAME
 mkdir -p "$DUNE_STEAM_SERVER_DIR/steamapps" "$DUNE_COMPONENTS_DIR"
 for i in server server-bg-director server-text-router server-gateway server-db-utils; do mkdir -p "$DUNE_UNPACKED_DIR/$i"; echo old > "$DUNE_UNPACKED_DIR/$i/marker"; done
 manifest() { printf '"AppState"\n{\n\t"appid"\t\t"4754530"\n\t"buildid"\t\t"%s"\n\t"TargetBuildID"\t\t"%s"\n}\n' "$1" "$1" > "$DUNE_STEAM_SERVER_DIR/steamapps/appmanifest_4754530.acf"; }
@@ -29,15 +31,19 @@ for c in world backup character; do
 	cat > "$DUNE_COMPONENTS_DIR/dune-$c" <<EOF
 #!$BASH
 printf '%s %s\n' "$c" "\$*" >> "$work/calls"
+for fd in /proc/\$\$/fd/*; do [ "\$(readlink "\$fd")" = "$DUNE_STATE_DIR/update.lock" ] && echo "$c" >> "$work/inherited"; done
 [ "$c \$*" = "character list --json" ] && { if [ -e "$work/online" ]; then echo '[{"name":"A","online":true}]'; else echo '[{"name":"A","online":false}]'; fi; }
 [ "$c" = backup ] && [ "\$1" = create ] && echo "$work/backups/b1"
 [ "$c \$*" = "\${FAIL_AT:-}" ] && exit 1
 exit 0
 EOF
 done
+# The unpack of server.tar can be held at a gate (two fifos) to look at the world mid-update.
 cat > "$DUNE_COMPONENTS_DIR/dune-unpack" <<EOF
 #!$BASH
 printf 'unpack %s\n' "\${1##*/} \${2##*/}" >> "$work/calls"
+for fd in /proc/\$\$/fd/*; do [ "\$(readlink "\$fd")" = "$DUNE_STATE_DIR/update.lock" ] && echo unpack >> "$work/inherited"; done
+if [ "\${1##*/}" = server.tar ] && [ -p "$work/unpack-gate" ]; then echo started > "$work/unpack-started"; read -r _ < "$work/unpack-gate"; fi
 mkdir -p "\$2" && echo new > "\$2/marker"
 EOF
 chmod +x "$DUNE_COMPONENTS_DIR"/*
@@ -87,4 +93,74 @@ libexec/dune-update apply >/dev/null 2>&1 || fail "second update failed"
 touch "$work/online"; : > "$work/calls"; libexec/dune-update apply --force >/dev/null 2>&1
 grep -qx 'world stop --force' "$work/calls" || fail "apply --force does not force the world stop: $(grep '^world' "$work/calls" | paste -sd, -)"
 rm -f "$work/online"
+
+# The update lock: from stopping the world until it is started again, apply holds DUNE_STATE_DIR/update.lock, and the
+# self-heal (dune-awakening heal) does nothing meanwhile. On 2026-09-30 the heal timer started the map server from the
+# old images during an update's unpack; the update then swapped the images under the running server, which crashed.
+mkdir -p -m 700 "$DUNE_CONFIG_DIR"; printf 'WORLD_UNIQUE_NAME=sh-abc-qwerty\nEXTERNAL_ADDRESS=10.1.1.1\n' > "$DUNE_CONFIG_DIR/world.conf"
+mkfifo "$work/unpack-started" "$work/unpack-gate"
+echo 103 > "$work/latest"; : > "$work/calls"; rm -f "$work/inherited"
+libexec/dune-update apply > "$work/apply-out" 2>&1 &
+apply_pid=$!
+read -r _ < "$work/unpack-started"
+[ -e "$DUNE_STATE_DIR/update.lock" ] && ! flock -n "$DUNE_STATE_DIR/update.lock" true || fail "update lock not held during the unpack"
+: > "$work/heal-calls"
+out=$(bin/dune-awakening heal 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [[ "$out" == *update* ]] || fail "heal during an update did not skip: rc $rc: $out"
+echo go > "$work/unpack-gate"
+wait "$apply_pid" || fail "apply held at the unpack failed: $(cat "$work/apply-out")"
+[ "$(grep -c '^world start' "$work/calls")" = 1 ] || fail "world started other than once by the update: $(grep '^world' "$work/calls" | paste -sd, -)"
+flock -n "$DUNE_STATE_DIR/update.lock" true || fail "update lock still held after apply"
+[ -e "$work/inherited" ] && fail "update lock descriptor inherited by: $(paste -sd' ' "$work/inherited")"
+rm -- "$work/unpack-gate" "$work/unpack-started"
+# A heal holding the lock (starting the world) makes apply wait for it, up to DUNE_UPDATE_LOCK_WAIT seconds.
+echo 104 > "$work/latest"; : > "$work/calls"
+exec 8>>"$DUNE_STATE_DIR/update.lock"; flock 8
+out=$(DUNE_UPDATE_LOCK_WAIT=0 libexec/dune-update apply 2>&1); rc=$?
+exec 8>&-
+[ "$rc" -eq 1 ] && [[ "$out" == *lock* ]] || fail "apply did not give up on a held lock: rc $rc: $out"
+grep -q '^world stop' "$work/calls" && fail "apply stopped the world without the lock"
+
+# check --notify (the hourly timer): one notice per new Steam build, through NOTIFY_CMD with the post tool's
+# arguments; the build last announced is kept in DUNE_STATE_DIR/update-notified. Never an automatic apply.
+cat > "$work/fake/notify" <<EOF
+#!$BASH
+printf '%s\n' "\$*" > "$work/last-notice"; echo attempt >> "$work/notices"
+[ -e "$work/notify-fails" ] && exit 1
+exit 0
+EOF
+chmod +x "$work/fake/notify"
+export DUNE_NOTIFY_CMD="$work/fake/notify" DUNE_NOTIFY_TO=someone
+notices() { [ -e "$work/notices" ] && wc -l < "$work/notices" || echo 0; }
+manifest 104; echo 104 > "$work/latest"; rm -f "$work/notices"; : > "$work/calls"
+libexec/dune-update check --notify >/dev/null 2>&1; [ $? -eq 0 ] || fail "check --notify when current did not exit 0"
+[ "$(notices)" = 0 ] || fail "notice sent with nothing to update"
+echo 105 > "$work/latest"
+json=$(libexec/dune-update check --json --notify 2>"$work/err"); rc=$?
+[ "$rc" -eq 1 ] || fail "check --notify with an update exited $rc (want 1)"
+jq -e . >/dev/null 2>&1 <<<"$json" || fail "check --json --notify stdout is not JSON: $json"
+[ "$(notices)" = 1 ] || fail "no notice for a new build: $(notices)"
+n=$(cat "$work/last-notice" 2>/dev/null)
+[[ "$n" == "to someone --as dune_awakening_server --subject "*105*" --body "*105*104*"update apply"*" --yes" ]] || fail "notice arguments: $n"
+[ "$(cat "$DUNE_STATE_DIR/update-notified" 2>/dev/null)" = 105 ] || fail "notified build not recorded: $(cat "$DUNE_STATE_DIR/update-notified" 2>/dev/null)"
+for _ in 1 2; do libexec/dune-update check --notify >/dev/null 2>&1; done
+[ "$(notices)" = 1 ] || fail "notice repeated for the same build: $(notices)"
+grep -q '^world \|app_update' "$work/calls" && fail "check --notify applied the update: $(paste -sd, "$work/calls")"
+# A failed notice is not recorded, so the next hourly check tries again.
+echo 106 > "$work/latest"; touch "$work/notify-fails"
+out=$(libexec/dune-update check --notify 2>&1); [ $? -eq 1 ] || fail "check with a failed notice changed the exit status"
+[[ "$out" == *notice*failed* || "$out" == *failed*notice* ]] || fail "failed notice not reported: $out"
+[ "$(cat "$DUNE_STATE_DIR/update-notified")" = 105 ] || fail "failed notice recorded as sent"
+rm "$work/notify-fails"
+libexec/dune-update check --notify >/dev/null 2>&1
+[ "$(notices)" = 3 ] && [ "$(cat "$DUNE_STATE_DIR/update-notified")" = 106 ] || fail "failed notice not retried: $(notices) notices"
+# Without NOTIFY_TO nothing is sent and nothing recorded (configuring it later still announces the pending build).
+echo 107 > "$work/latest"
+out=$(env -u DUNE_NOTIFY_TO libexec/dune-update check --notify 2>&1)
+[ "$(notices)" = 3 ] && [ "$(cat "$DUNE_STATE_DIR/update-notified")" = 106 ] || fail "notice sent or recorded without NOTIFY_TO"
+[[ "$out" == *NOTIFY_TO* ]] || fail "missing NOTIFY_TO not mentioned: $out"
+# Steam unreachable: no notice.
+touch "$work/steam-down"; libexec/dune-update check --notify >/dev/null 2>&1; [ $? -eq 3 ] || fail "check --notify with Steam down"
+[ "$(notices)" = 3 ] || fail "notice sent with Steam unreachable"
+rm "$work/steam-down"
 exit "$failures"

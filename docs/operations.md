@@ -139,12 +139,18 @@ The sandstorm structs come from the server's `DuneSandbox/Config/DefaultGame.ini
 | Unit | Schedule | Does |
 |---|---|---|
 | `dune-world.service` | boot (`default.target`, needs `loginctl enable-linger`) | `dune-awakening start`; `stop` at shutdown |
-| `dune-world-heal.timer` | every 5 min, from 10 min after boot | `dune-awakening start` (only missing components start) while `dune-world.service` is active; `KillMode=process` so what it starts survives |
+| `dune-world-heal.timer` | every 5 min, from 10 min after boot | `dune-awakening heal` while `dune-world.service` is active (see "Self-heal" below); `KillMode=process` so what it starts survives |
 | `dune-backup.timer` | daily 04:30, catch-up after downtime | `dune-awakening backup create --label scheduled`, then `prune` (retention policy, see "Backups and retention") |
 | `dune-backup-verify.timer` | Sundays 05:15 | `dune-awakening backup verify latest` (restore drill) |
-| `dune-update-check.timer` | daily 06:00 | `dune-awakening update check --json` into the journal; exit 1 (update available) is not a failure |
+| `dune-update-check.timer` | hourly, catch-up after downtime | `dune-awakening update check --json --notify` into the journal, plus one notice per new Steam build (see "Update notices" below); exit 1 (update available) is not a failure; it never applies the update |
 
-`systemctl --user stop dune-awakening` stops the world and keeps it stopped (the heal timer only acts while the world unit is active).
+`systemctl --user stop dune-world` stops the world and keeps it stopped (the heal timer only acts while the world unit is active).
+
+**Self-heal.** `dune-awakening heal` runs the cheap liveness checks first, outside the dev shell: postgres and both brokers with `status --quick` (pid file plus a live process, and for the brokers the distribution port), the other components through their `status` (a pid file), and the map servers through their pid files. When every component and every always-on map is up, that is all it does: about 0.08 s of CPU per run against the live world, measured 2026-10-01 (user + system, 5 runs), where the previous `start` through `nix develop` cost about 5.4 s (journal, `Consumed … CPU time`). Only when something is down does it run the full, idempotent `dune-awakening start` inside `nix develop`, which starts what is missing. An on-demand map that is stopped is not down (the map scaler starts it when a player travels there), so heal leaves it alone; a stopped always-on map is down. Heal does nothing while an update holds the update lock (`runtime/update.lock`): `dune-awakening update apply` holds it from stopping the world until it has started it again, and waits up to `DUNE_UPDATE_LOCK_WAIT` seconds (default 1800) for a heal that holds it. On 2026-09-30 a heal run during an update's unpack started the map server from the old images, the update then swapped the images under it, and the server crashed (Oodle decompression errors, SIGSEGV).
+
+**Temporary directories.** Every `nix develop` run creates a `nix-develop-*` and a `nix-shell.*` directory and, because it replaces itself with the command, never removes them; the heal timer alone left about 288 a day in `/tmp`. `dune-awakening` now gives `nix develop` the private `runtime/tmp` (0700) as `TMPDIR`, removes its own two directories there once inside, and removes empty ones older than 10 minutes left by runs that died. The components get `runtime/tmp` as their `TMPDIR`.
+
+**Update notices.** The hourly check compares the installed build with Steam's public branch. When Steam has a build the server lacks, it sends one notice through `NOTIFY_CMD to <NOTIFY_TO> --as dune_awakening_server --subject … --body … --yes` (the same world.conf settings as the idle throttle's weekly notice) and records the build in `runtime/update-notified`, so the next checks stay quiet until Steam publishes another build. A failed notice is not recorded and is retried at the next check; with no `NOTIFY_TO` nothing is sent and the journal says so. The check never updates the server: run `dune-awakening update apply` when nobody is online. On 2026-09-30 Funcom published build 25610213 at 09:58 EDT; the daily 06:00 check missed it, players' clients updated themselves, and joins failed with "Outdated Client" until a manual apply at about 22:00. A possible next step is applying automatically when nobody is online (apply already refuses while anyone is); it is not done, so an update never lands unannounced.
 
 ## Status feed for admin pages
 
@@ -240,7 +246,7 @@ Nothing is lowered in the first 5 minutes after the throttle or the map server s
 
 **Weekly notice.** While the world stays in deep idle, the throttle sends a notice every 7 days (the first one 7 days after deep idle began) that the world is still up, with the time the last player left. A failed notice is retried at the next poll. The idle clock, the deep-idle start and the last notice time are kept in `runtime/idle-throttle/state`, so restarting the throttle neither resets the weekly clock nor sends a notice early. A connection ends the deep-idle stretch; the next one starts its own week. Notices go through a command with the arguments of the host's `post` mail tool: `NOTIFY_CMD to <NOTIFY_TO> --as dune_awakening_server --subject … --body … --yes`. With no `NOTIFY_TO` the notice is only written to the log. The world's tools run inside `nix develop` with the project's own PATH, so give `NOTIFY_CMD` as an absolute path (for example the output of `command -v post`).
 
-**Settings** go in `world.conf` (read at every `dune-awakening start`, so the heal timer or a restart of the component applies them); an environment variable `DUNE_<key>` wins over the file. Invalid values stop `start` with a message naming the setting.
+**Settings** go in `world.conf` (read at every `dune-awakening start`, so a restart of the component applies them: stop it, and the heal timer starts it again with the new settings within 5 minutes); an environment variable `DUNE_<key>` wins over the file. Invalid values stop `start` with a message naming the setting.
 
 | Key | Default | Meaning |
 |---|---|---|
