@@ -51,7 +51,9 @@ Character (online or offline is detected; offline changes take a backup first):
   give <player> ITEM [COUNT]      Put COUNT (default 1) of ITEM into the player's inventory (AddItemToInventory); ITEM is an
                                   item template id, e.g. HarkAr2 (Karpov 38 rifle), Ammo (light darts); see docs/admin.md.
                                   The player must be online
-  xp <player> AMOUNT [CATEGORY]   Award XP; CATEGORY is Combat (default), Crafting, Gathering, Exploration or Sabotage
+  xp <player> AMOUNT [CATEGORY]   Send AMOUNT to the server's AwardXP as is; CATEGORY is Combat (default), Crafting,
+                                  Gathering, Exploration or Sabotage. The server multiplies it by the world's
+                                  GlobalXpMultiplier; \`dune-awakening character xp\` and \`level\` divide by it first
   whisper <player> <message> [--from NAME]
                                   Private chat line to an online player (chat.whispers to their own queue; the
                                   sender shown is NAME, default Admin)
