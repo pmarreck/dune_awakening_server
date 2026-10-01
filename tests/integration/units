@@ -26,8 +26,15 @@ done < <(sed -n -e 's/^Exec[A-Za-z]*=[-!@+:]*"\([^"]*\)".*/\1/p' -e 't' -e 's/^E
 grep -qF "ExecStart=\"$PWD/bin/dune-awakening\" start" "$out/dune-world.service" || fail "world unit does not run this checkout's dune-awakening"
 grep -q '^KillMode=process$' "$out/dune-world-heal.service" || fail "heal unit would kill the components it starts"
 grep -q 'is-active --quiet dune-world.service' "$out/dune-world-heal.service" || fail "heal unit not conditioned on the world being wanted up"
+# The heal timer runs the cheap heal path (full start only when something is down), not start itself.
+grep -q '^ExecStart=.*dune-awakening" heal$' "$out/dune-world-heal.service" || fail "heal unit does not run heal: $(grep ExecStart "$out/dune-world-heal.service")"
 grep -q '^Persistent=true$' "$out/dune-backup.timer" || fail "backup timer misses runs across downtime"
 grep -q '^ExecStartPost=.*dune-awakening" backup prune$' "$out/dune-backup.service" || fail "backup unit does not prune with the default retention policy: $(grep ExecStartPost "$out/dune-backup.service")"
 grep -q '^SuccessExitStatus=1$' "$out/dune-update-check.service" || fail "update available should not mark the check failed"
+# Hourly, announcing each new build once (a daily check missed a build published mid-morning for 12 hours); it never
+# applies the update.
+grep -q '^OnCalendar=hourly$' "$out/dune-update-check.timer" || fail "update check not hourly: $(grep OnCalendar "$out/dune-update-check.timer")"
+grep -q '^ExecStart=.*dune-awakening" update check --json --notify$' "$out/dune-update-check.service" || fail "update check does not notify: $(grep ExecStart "$out/dune-update-check.service")"
+grep -q 'apply' "$out/dune-update-check.service" && fail "update check unit applies updates"
 p=$(sed -n 's/^Environment="PATH=\(.*\)"$/\1/p' "$out/dune-world.service"); [ "$(tr : '\n' <<<"$p" | collate | uniq -d)" = "" ] || fail "duplicate PATH entries: $p"
 exit "$failures"

@@ -15,6 +15,10 @@ char *realpath(const char *path, char *resolved);
 void free(void *p);
 int setenv(const char *name, const char *value, int overwrite);
 int execvp(const char *file, char *const argv[]);
+int unsetenv(const char *name);
+int open(const char *path, int flags, unsigned int mode);
+int flock(int fd, int op);
+int getpid(void);
 int isatty(int fd);
 int usleep(unsigned int usec);
 long sysconf(int name);
@@ -31,6 +35,8 @@ Commands:
   stop            Stop every component in reverse order; refuses while characters are online (--force overrides)
   restart         stop, then start (same guard)
   status          One line per component, ● up / ○ down; exit 0 only if all are up
+  heal            For the self-heal timer: cheap liveness checks first; `start` only when a component or an
+                  always-on map is down (stopped on-demand maps are left alone); nothing while an update runs
   world ...       Whole-world live commands: say, timeout on/off/status (aliases bio-break, call-timeout,
                   safety-first), kick-all, exec, cvar, partitions, raw
   update ...      Steam build: check (exit 1 = update available), apply (backup, stop, download, start)
@@ -105,11 +111,31 @@ end
 
 local function dirname(p) return (p:match("^(.*)/[^/]*$")) or "." end
 
--- Replace this process with `nix develop <flake> -c luajit <self> args`, keeping only what the world needs.
-local function reexec_in_nix(flake, self)
+-- An XDG base directory: the variable's value when absolute (a relative one is invalid per the XDG spec), else the
+-- conventional fallback under HOME.
+local function xdg_home(var, fallback)
+	local v = os.getenv(var)
+	if v and v:sub(1, 1) == "/" then return v end
+	return getenv("HOME", "") .. "/" .. fallback
+end
+local function data_dir() return getenv("DUNE_DATA_DIR", xdg_home("XDG_DATA_HOME", ".local/share") .. "/dune_awakening_server") end
+local function state_dir() return getenv("DUNE_STATE_DIR", data_dir() .. "/runtime") end
+
+-- The world's private temporary directory (0700, under the state dir). nix develop gets it as TMPDIR, so the
+-- nix-develop-* and nix-shell.* directories each run creates (and, because it execs, never removes) land there instead
+-- of /tmp; the process inside removes its own (prune_nix_tmp) and the components inherit this directory as TMPDIR.
+local function private_tmp()
+	local t = state_dir() .. "/tmp"
+	if not run("mkdir -p -m 700 " .. q(t) .. " && chmod 700 " .. q(t)) then die(EXIT_ERR, "cannot create %s", t) end
+	return t
+end
+
+-- argv for `nix develop <flake> -c luajit <self> args`, keeping only what the world needs, with the private TMPDIR.
+local function nix_argv(flake, self, args)
+	setenv("TMPDIR", private_tmp())
 	local argv = { "nix", "develop", flake, "--ignore-environment", "--quiet", "--log-format", "raw", "--no-warn-dirty" }
 	local keep = { HOME = true, USER = true, LOGNAME = true, TERM = true, NO_COLOR = true, XDG_RUNTIME_DIR = true, DBUS_SESSION_BUS_ADDRESS = true,
-		XDG_DATA_HOME = true, XDG_CONFIG_HOME = true }
+		XDG_DATA_HOME = true, XDG_CONFIG_HOME = true, TMPDIR = true }
 	local i = 0
 	while ffi.C.environ[i] ~= nil do
 		local k = ffi.string(ffi.C.environ[i]):match("^([^=]+)=")
@@ -117,7 +143,26 @@ local function reexec_in_nix(flake, self)
 		i = i + 1
 	end
 	for _, a in ipairs({ "-c", "luajit", self }) do argv[#argv + 1] = a end
-	for _, a in ipairs(arg) do argv[#argv + 1] = a end
+	for _, a in ipairs(args) do argv[#argv + 1] = a end
+	return argv
+end
+
+-- Inside nix develop entered through nix_argv: point TMPDIR (and its aliases) back at the private directory itself and
+-- remove the empty per-run directories nix left there (ours, plus any older than 10 minutes from a run that died).
+-- rmdir only removes empty directories, so a directory still in use survives.
+local function prune_nix_tmp()
+	local t = state_dir() .. "/tmp"
+	local top = os.getenv("NIX_BUILD_TOP")
+	if not (top and top:sub(1, #t + 1) == t .. "/") then return end
+	for _, k in ipairs({ "TMPDIR", "TMP", "TEMP", "TEMPDIR" }) do setenv(k, t) end
+	ffi.C.unsetenv("NIX_BUILD_TOP")
+	run("rmdir " .. q(top) .. " 2>/dev/null; find " .. q(t) .. " -mindepth 1 -maxdepth 1 -type d -empty \\( -name 'nix-develop-" .. ffi.C.getpid() ..
+		"-*' -o \\( \\( -name 'nix-shell.*' -o -name 'nix-develop-*' \\) -mmin +10 \\) \\) -exec rmdir {} + 2>/dev/null")
+end
+
+-- Replace this process with `nix develop <flake> -c luajit <self> args`.
+local function reexec_in_nix(flake, self)
+	local argv = nix_argv(flake, self, arg)
 	local cargv = ffi.new("char*[?]", #argv + 1)
 	local keepalive = {}
 	for j, a in ipairs(argv) do keepalive[j] = ffi.new("char[?]", #a + 1, a); cargv[j - 1] = keepalive[j] end
@@ -138,7 +183,7 @@ local function arch_name()
 	return (jit.os or "unknown"):lower() .. " " .. (map[jit.arch] or jit.arch)
 end
 
-local BUILTIN = { start = true, stop = true, restart = true, status = true }
+local BUILTIN = { start = true, stop = true, restart = true, status = true, heal = true }
 
 local function parse_args(argv)
 	local opts = { json = false, color = true }
@@ -209,19 +254,11 @@ local function default_route_source()
 	return out:match(" src (%d+%.%d+%.%d+%.%d+)") or "127.0.0.1"
 end
 
--- An XDG base directory: the variable's value when absolute (a relative one is invalid per the XDG spec), else the
--- conventional fallback under HOME.
-local function xdg_home(var, fallback)
-	local v = os.getenv(var)
-	if v and v:sub(1, 1) == "/" then return v end
-	return getenv("HOME", "") .. "/" .. fallback
-end
-
 -- Export the environment every component script reads.
 local function setup_env()
-	local data = getenv("DUNE_DATA_DIR", xdg_home("XDG_DATA_HOME", ".local/share") .. "/dune_awakening_server")
+	local data = data_dir()
 	local config = getenv("DUNE_CONFIG_DIR", xdg_home("XDG_CONFIG_HOME", ".config") .. "/dune_awakening_server")
-	local state = getenv("DUNE_STATE_DIR", data .. "/runtime")
+	local state = state_dir()
 	local unpacked = getenv("DUNE_UNPACKED_DIR", data .. "/unpacked")
 	local steam = getenv("DUNE_STEAM_SERVER_DIR", data .. "/steam-server")
 	local tr_port = getenv("DUNE_TEXTROUTER_PORT", "18081")
@@ -398,11 +435,19 @@ local function server_stats(env, world, map)
 	return stats
 end
 
--- Probe every component; RabbitMQ uses its cheap --quick liveness check (the full one boots an Erlang VM).
-local function probe(dir)
+-- Probe every component; RabbitMQ uses its cheap --quick liveness check (the full one boots an Erlang VM). For heal,
+-- which runs outside the dev shell, postgres uses its --quick check too (no pg_ctl) and the home map server is probed
+-- through its pid file (dune-server insists on the dev shell's variables).
+local function probe(dir, env, heal)
 	local comps, all_up = {}, true
 	for _, c in ipairs(COMPONENTS) do
-		local up = run(comp(dir, c[1], "status", c[2], c[1] == "rabbitmq" and "--quick" or nil) .. " >/dev/null 2>&1")
+		local up
+		if heal and c[1] == "server" then up = map_pid(env, HOME_MAP) ~= nil
+		else
+			local args = { "status", c[2] }
+			if c[1] == "rabbitmq" or (heal and c[1] == "postgres") then args[#args + 1] = "--quick" end
+			up = run(comp(dir, c[1], unpack(args)) .. " >/dev/null 2>&1")
+		end
 		all_up = all_up and up
 		comps[#comps + 1] = { name = c[1] .. (c[2] and ("-" .. c[2]) or ""), label = c[1] .. (c[2] and (" " .. c[2]) or ""), up = up }
 	end
@@ -424,6 +469,41 @@ local function probe_maps(env)
 	for _, m in ipairs(cfg.always_on) do always[m] = true end
 	for _, m in ipairs(cfg.maps) do add(m, always[m] and "always-on" or "on-demand") end
 	return list, all_up
+end
+
+-- The update lock (DUNE_STATE_DIR/update.lock): dune-update apply holds it from stopping the world until it has
+-- started it again, so heal never starts components from images being replaced. Taken without waiting via flock(2) on a
+-- close-on-exec descriptor: held until this process exits, never inherited by nix develop or the components it starts.
+-- Returns false when someone else holds it.
+local O_WRONLY, O_CREAT, O_CLOEXEC, LOCK_EX, LOCK_NB = 1, 0x40, 0x80000, 2, 4
+local function take_update_lock(state)
+	if not run("mkdir -p -m 700 " .. q(state)) then die(EXIT_ERR, "cannot create %s", state) end
+	local fd = ffi.C.open(state .. "/update.lock", bit.bor(O_WRONLY, O_CREAT, O_CLOEXEC), 384) -- 0600
+	if fd < 0 then die(EXIT_ERR, "cannot open %s/update.lock", state) end
+	return ffi.C.flock(fd, bit.bor(LOCK_EX, LOCK_NB)) == 0
+end
+
+-- The self-heal timer's command. The common case (everything up) costs a few pid and port checks, run outside the dev
+-- shell; only when a component or an always-on map is down does it run the full `start`, inside nix develop (re-entered
+-- as a child, so this process keeps the update lock until the start finishes). A stopped on-demand map is not down.
+local function cmd_heal(flake, self)
+	local dir = getenv("DUNE_COMPONENTS_DIR", flake .. "/libexec")
+	local env = setup_env()
+	if not take_update_lock(env.DUNE_STATE_DIR) then
+		io.stdout:write("heal skipped: an update is in progress (", env.DUNE_STATE_DIR, "/update.lock is held)\n")
+		return EXIT_OK
+	end
+	world_env(env)
+	setenv("DUNE_PARTITION_INDEX", "0")
+	local down = {}
+	for _, c in ipairs((probe(dir, env, true))) do if not c.up then down[#down + 1] = c.label end end
+	for _, m in ipairs((probe_maps(env))) do if m.mode == "always-on" and not m.up then down[#down + 1] = m.name end end
+	if #down == 0 then io.stdout:write("✓ every component is up; nothing to heal\n"); return EXIT_OK end
+	io.stdout:write("▸ down: ", table.concat(down, ", "), "; starting the world\n"); io.stdout:flush()
+	if os.getenv("DUNE_GLIBC_LOADER") then cmd_start(dir, env); return EXIT_OK end
+	local parts = {}
+	for i, a in ipairs(nix_argv(flake, self, { "start", "--no-warn" })) do parts[i] = q(a) end
+	return run(table.concat(parts, " ")) and EXIT_OK or EXIT_ERR
 end
 
 -- Names of characters online now, or nil when the database cannot say (then no one can be in the world).
@@ -530,7 +610,10 @@ local function main()
 	local self = self_path()
 	local flake = dirname(dirname(self))
 	FLAKE = flake
+	-- heal decides outside the dev shell whether it needs it (nix develop costs seconds of CPU per run).
+	if opts.cmd == "heal" then os.exit(cmd_heal(flake, self)) end
 	if not os.getenv("DUNE_GLIBC_LOADER") then reexec_in_nix(flake, self) end
+	prune_nix_tmp()
 	local dir = getenv("DUNE_COMPONENTS_DIR", flake .. "/libexec")
 	local env = setup_env()
 	warn_templates(opts, env.DUNE_CONFIG_DIR)

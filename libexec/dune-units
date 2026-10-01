@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Render the systemd user units that run the Dune world unattended: the world itself (start at boot, stop at
-# shutdown), a self-heal timer (the idempotent `dune-awakening start` every 5 minutes while the world is meant to be up),
-# a daily backup with pruning, a weekly restore drill and a daily Steam update check. Paths are filled in from this
+# shutdown), a self-heal timer (`dune-awakening heal` every 5 minutes while the world is meant to be up: cheap liveness
+# checks, and the idempotent `start` only when something is down),
+# a daily backup with pruning, a weekly restore drill and an hourly Steam update check that announces each new build once. Paths are filled in from this
 # checkout and the host's nix/luajit, so nothing is hardcoded. Installing them is a host change for the host administrator.
 set -u
 NAME=dune-units
@@ -13,11 +14,13 @@ Usage: $NAME render DEST [--nix PATH] [--luajit PATH] [--systemctl PATH]
 
 Write systemd user units for this checkout ($root) into DEST:
   dune-world.service              start at boot (default.target), stop at shutdown
-  dune-world-heal.timer/.service  every 5 min: \`dune-awakening start\` (starts only missing components) while
-                                  dune-world.service is active, so \`systemctl --user stop dune-awakening\` stays stopped
+  dune-world-heal.timer/.service  every 5 min: \`dune-awakening heal\` (cheap checks; \`start\` only when a component
+                                  or always-on map is down; skipped during an update) while dune-world.service is
+                                  active, so \`systemctl --user stop dune-world\` stays stopped
   dune-backup.timer/.service      daily 04:30 backup, then prune (7 days, then weekly for 3 months)
   dune-backup-verify.timer/...    weekly restore drill of the newest backup
-  dune-update-check.timer/...     daily Steam build check; JSON result in the journal (exit 1 = update available)
+  dune-update-check.timer/...     hourly Steam build check; JSON result in the journal (exit 1 = update available);
+                                  one notice per new build through NOTIFY_CMD/NOTIFY_TO (never applies it)
 
 Install (host change): copy DEST/* to ~/.config/systemd/user/, then
   systemctl --user daemon-reload && systemctl --user enable --now dune-world.service dune-world-heal.timer \\
@@ -73,7 +76,7 @@ Description=Restart any stopped Dune world component while the world is meant to
 Type=oneshot
 Environment=$env_path
 ExecCondition=$(sq "$systemctl") --user is-active --quiet dune-world.service
-ExecStart=$world start --no-warn
+ExecStart=$world heal
 # Components it starts must outlive this oneshot.
 KillMode=process
 TimeoutStartSec=20min"
@@ -134,15 +137,15 @@ Description=Check whether Steam has a newer Dune self-hosted server build
 Type=oneshot
 WorkingDirectory=$root
 Environment=$env_path
-ExecStart=$world update check --json
+ExecStart=$world update check --json --notify
 # 1 = update available: a result, not a failure.
 SuccessExitStatus=1"
 
 unit dune-update-check.timer "[Unit]
-Description=Daily Dune server update check
+Description=Hourly Dune server update check
 
 [Timer]
-OnCalendar=*-*-* 06:00:00
+OnCalendar=hourly
 Persistent=true
 
 [Install]

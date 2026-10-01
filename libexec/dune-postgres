@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Manage the project's PostgreSQL 17 cluster for the Dune database: loopback-only TCP, scram auth, builtin C.UTF-8
 # locale (codepoint order + Unicode case mapping, matching Funcom's musl en_US.utf8 cluster),
-# admin password generated once into a private secrets dir. Usage: dune-postgres init|start|stop|status
+# admin password generated once into a private secrets dir. Usage: dune-postgres init|start|stop|status [--quick]
 set -u
 : "${DUNE_PG_DATA:?set DUNE_PG_DATA to the cluster data directory}"
 : "${DUNE_SECRETS_DIR:?set DUNE_SECRETS_DIR to the private secrets directory}"
@@ -38,12 +38,18 @@ cmd_start() {
 
 cmd_stop() { pg_ctl -D "$DUNE_PG_DATA" -m fast -w stop >/dev/null; }
 cmd_status() { pg_ctl -D "$DUNE_PG_DATA" status >/dev/null 2>&1; }
+# Cheap liveness for the heal path, which runs outside the dev shell (no pg_ctl there): postmaster.pid's first line
+# names a live process, the same test pg_ctl status makes, in Bash builtins only.
+cmd_quick_status() {
+	local pid
+	{ read -r pid < "$DUNE_PG_DATA/postmaster.pid"; } 2>/dev/null && [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
 
 case "${1:-}" in
 	init) cmd_init ;;
 	start) cmd_start ;;
 	stop) cmd_stop ;;
-	status) cmd_status ;;
+	status) if [ "${2:-}" = --quick ]; then cmd_quick_status; else cmd_status; fi ;;
 	-h|--help) sed -n '2,3p' "$0" | sed 's/^# \{0,1\}//' ;;
-	*) die "usage: dune-postgres init|start|stop|status" ;;
+	*) die "usage: dune-postgres init|start|stop|status [--quick]" ;;
 esac
