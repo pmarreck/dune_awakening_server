@@ -174,6 +174,15 @@ How it works and why it is safe to run:
 
 A world whose game broker was started before this listener existed keeps refusing the bridge's connection (logged once) until its next restart.
 
+## Storms: warning time and damage
+
+The world has two storm kinds, configured in the game's DefaultGame.ini and overridable in `$DUNE_CONFIG_DIR/UserSettings/UserGame.ini` (restart the map servers afterwards):
+
+- **Sandstorms** (`[/Script/DuneSandbox.SandStormConfig]`): random (`m_bAutoSpawnEnabled`), damaging (`m_SmallSandStormDamageConfig`, `m_LargeSandStormDamageConfig`, per Player/Building/Placeable/Vehicle; defaults 5 and 7), and short-warned by default: `m_WarningBuildupTimeInSeconds=10` then `m_BuildupTimeInSeconds=30`, so under a minute between the warning and full strength. Players who see "only a minute of warning" are seeing this, not a fault.
+- **Coriolis storms** (`[/Script/DuneSandbox.CoriolisStormConfigMultiplayer]`): scheduled, warned 6 hours ahead with a 59-minute final stage, and harmless unless `m_bCoriolisDoesDamage` is turned on.
+
+A struct value such as `m_SmallSandStormDamageConfig=(...)` replaces the whole struct, so give every field. Whether the client's warning display follows a longer `m_WarningBuildupTimeInSeconds` is not verified yet.
+
 ## Building height: the sub-fief console's claim box
 
 A base must fit inside its console's landclaim, which is a box, not just a footprint. The sizes come from the game's DataTable `/Game/Dune/Systems/Building/Data/DT_DuneTotemData` (decoded 2026-10-01 from build 25610213 with retoc; vertical values are relative to the claim's stored origin, which is inferred from the `dune.totems` columns and server strings):
