@@ -8,8 +8,12 @@ local cjson = require("cjson.safe")
 local items = require("items")
 local M = {}
 M.NOT_ALLOWED = "not allowed"
--- Permissions a policy line can grant. give puts items into your own inventory; give-others into another player's.
-M.COMMANDS = { "bring", "give", "give-others", "goto", "kick", "say", "timeout", "where" }
+-- Permissions a policy line can grant. give puts items into your own inventory; give-others into another player's;
+-- water and water-others likewise refill water containers.
+M.COMMANDS = { "bring", "give", "give-others", "goto", "kick", "say", "timeout", "water", "water-others", "where" }
+-- Amount &water asks dune-live to put into the player's containers: more than any loadout holds, so every container
+-- ends up full (the game caps each at its capacity).
+M.WATER_FILL = "100000"
 local KNOWN = { help = true }
 for _, c in ipairs(M.COMMANDS) do KNOWN[c] = true end
 local MAX_ARG = 200
@@ -133,6 +137,8 @@ function M.permission(cmd, me)
 	if cmd.name == "give" then
 		local g = M.parse_give(cmd)
 		if g and g.target and g.target ~= me then return "give-others" end
+	elseif cmd.name == "water" and cmd.rest ~= "" and cmd.rest ~= me then
+		return "water-others"
 	end
 	return cmd.name
 end
@@ -170,6 +176,10 @@ function M.plan(cmd, sender, policy, item_db)
 		local a = (cmd.args[1] or "status"):lower()
 		if #cmd.args > 1 or not (a == "on" or a == "off" or a == "status") then return usage("&timeout on|off|status") end
 		return { actions = { { "world", "timeout", a } }, reply = "timeout " .. a }
+	elseif n == "water" then
+		local who = cmd.rest ~= "" and cmd.rest or me
+		if not ok_arg(who) then return usage("&water [player]") end
+		return { actions = { { "character", "water", who, M.WATER_FILL } }, reply = who == me and "water refilled" or ("refilled " .. who .. "'s water") }
 	elseif n == "give" then
 		local g = M.parse_give(cmd)
 		if not g or (g.target and not ok_arg(g.target)) then return usage(GIVE_USAGE) end

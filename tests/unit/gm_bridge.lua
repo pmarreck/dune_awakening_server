@@ -59,18 +59,19 @@ local policy_text = table.concat({
 	"Carol : say  timeout",
 	"Erin: give",
 	"Frank: give-others",
+	"Gina: water",
 	"",
 	"bogus line without colon",
 }, "\n")
 local policy, errors = gm.parse_policy(policy_text)
 eq("one error for the bad line", #errors, 1)
-if errors[1] and not errors[1]:find("line 8", 1, true) then fail("error does not name the line: " .. errors[1]) end
+if errors[1] and not errors[1]:find("line 9", 1, true) then fail("error does not name the line: " .. errors[1]) end
 
 -- Authorization as a classifier: every sender x command, allow/deny. Senders by name, by FLS id, unlisted,
 -- and unresolvable (whois failed: no name).
-local COMMANDS = { "help", "where", "goto", "bring", "say", "timeout", "give", "give-others", "kick", "bogus" }
+local COMMANDS = { "help", "where", "goto", "bring", "say", "timeout", "give", "give-others", "kick", "water", "water-others", "bogus" }
 local senders = {
-	{ "alice by name", ALICE, "Alice", { help = 1, where = 1, goto = 1, bring = 1, say = 1, timeout = 1, give = 1, ["give-others"] = 1, kick = 1 } },
+	{ "alice by name", ALICE, "Alice", { help = 1, where = 1, goto = 1, bring = 1, say = 1, timeout = 1, give = 1, ["give-others"] = 1, kick = 1, water = 1, ["water-others"] = 1 } },
 	{ "bob by fls", BOB, "Bob", { help = 1, where = 1, goto = 1 } },
 	{ "bob unresolved", BOB, nil, { help = 1, where = 1, goto = 1 } },
 	{ "carol spaced", CAROL, "Carol", { help = 1, say = 1, timeout = 1 } },
@@ -79,6 +80,7 @@ local senders = {
 	{ "unresolved unlisted", DAVE, nil, {} },
 	{ "erin gives to herself only", "00000000000000EE", "Erin", { help = 1, give = 1 } },
 	{ "frank gives to others only", "00000000000000FF", "Frank", { help = 1, ["give-others"] = 1 } },
+	{ "gina waters herself only", "0000000000000099", "Gina", { help = 1, water = 1 } },
 	-- An entry that is an FLS id matches that account only, never a character named like it.
 	{ "character named like bob's id", DAVE, BOB, {} },
 }
@@ -122,10 +124,16 @@ same("timeout status", plan("&timeout").actions, { { "world", "timeout", "status
 same("give by id", plan("&give SandbikeChassis_1 2").actions, { { "character", "give", "Alice", "SandbikeChassis_1", "2" } })
 same("give default count", plan("&give Ammo").actions, { { "character", "give", "Alice", "Ammo", "1" } })
 same("kick", plan("&kick Bob").actions, { { "character", "kick", "Bob" } })
+same("water refills your own containers", plan("&water").actions, { { "character", "water", "Alice", gm.WATER_FILL } })
+same("water for another player", plan("&water Bob Two").actions, { { "character", "water", "Bob Two", gm.WATER_FILL } })
+eq("water permission for yourself", gm.permission(gm.parse_command("&water"), "Alice"), "water")
+eq("water naming yourself is still water", gm.permission(gm.parse_command("&water Alice"), "Alice"), "water")
+eq("water for another needs water-others", gm.permission(gm.parse_command("&water Bob"), "Alice"), "water-others")
+if not (type(gm.WATER_FILL) == "string" and tonumber(gm.WATER_FILL) and tonumber(gm.WATER_FILL) > 0) then fail("WATER_FILL must be a positive amount string") end
 same("player names with spaces", plan("&goto Bob Two").actions, { { "character", "move", "Alice", "to", "Bob Two" } })
 -- Usage errors produce no actions and a short reply.
 for _, bad in ipairs({ "&goto", "&goto Alice", "&bring", "&say", "&timeout maybe", "&give", "&give Bad;Item", "&give Ammo 0",
-	"&give Ammo 1001", "&give Ammo x", "&kick", "&goto --help", "&say -h", "&kick -x", "&bogus" }) do
+	"&give Ammo 1001", "&give Ammo x", "&kick", "&goto --help", "&say -h", "&kick -x", "&water -x", "&bogus" }) do
 	p = plan(bad)
 	if #p.actions ~= 0 then fail(bad .. " produced actions: " .. cjson.encode(p.actions)) end
 	if not (p.reply and #p.reply > 0) then fail(bad .. " has no reply") end
@@ -133,7 +141,7 @@ end
 p = gm.plan(gm.parse_command("&where"), { fls = ALICE, name = "Alice" }, policy)
 eq("where without origin: no actions", #p.actions, 0); eq("where without origin: reply", p.reply, "your position is unknown")
 -- help lists only what the sender may run.
-eq("help for alice", plan("&help").reply, "commands: bring, give, give-others, goto, kick, say, timeout, where")
+eq("help for alice", plan("&help").reply, "commands: bring, give, give-others, goto, kick, say, timeout, water, water-others, where")
 eq("help for bob", gm.plan(gm.parse_command("&help"), { fls = BOB, name = "Bob" }, policy).reply, "commands: goto, where")
 eq("not allowed reply", gm.NOT_ALLOWED, "not allowed")
 

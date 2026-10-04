@@ -48,9 +48,11 @@ the bridge runs it through dune-live and whispers the result back (sender shown 
                          stack size is unknown, unless data/items.tsv sets another max) of an item, by name
                          or id, into your inventory (permission give) or an online player's (give-others)
   &kick <player>         disconnect a player
+  &water [player]        fill every water container you carry (permission water) or an online player's
+                         (water-others)
 
 Who may use what: $DUNE_CONFIG_DIR/gm_bridge.conf, one line per player, `<character name or FLS id>: <command>...`
-or `<who>: *` for every command (permissions: help, where, goto, bring, say, timeout, give, give-others, kick);
+or `<who>: *` for every command (permissions: help, where, goto, bring, say, timeout, give, give-others, kick, water, water-others);
 `#` starts a comment. No file, or nobody listed, means nobody (fail closed). The
 file is read for every command, so edits apply at once. Senders are identified only by the account id the broker
 stamps on each message; ordinary chat is never logged, only `&` commands (log: $DUNE_STATE_DIR/gm-bridge/).
@@ -164,7 +166,7 @@ local function handle(d)
 	reply(name, answer)
 end
 
--- Set once a session is consuming, so the retry loop resets its backoff and logs the next failure.
+-- Set once a session is consump resets its backoff and logs the next failure.
 local connected = false
 
 -- Connect, bind and consume until the connection ends or max deliveries are seen. Returns seen count, error.
