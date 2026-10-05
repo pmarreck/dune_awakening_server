@@ -227,7 +227,7 @@ end
 
 -- Optional world.conf settings handed to the components as DUNE_<key> (an environment variable of that name wins).
 local WORLD_SETTINGS = { "IDLE_THROTTLE", "ACTIVE_FPS", "IDLE_FPS", "IDLE_AFTER", "IDLE_POLL", "DEEP_IDLE_FPS", "DEEP_IDLE_AFTER",
-	"DEEP_IDLE_POLL", "DEEP_IDLE_NOTICE", "NOTIFY_TO", "NOTIFY_CMD", "MAPS", "MAPS_ALWAYS_ON", "MAP_SCALER", "MAP_IDLE_AFTER", "MAP_POLL" }
+	"DEEP_IDLE_POLL", "DEEP_IDLE_NOTICE", "NOTIFY_TO", "NOTIFY_CMD", "MAPS", "MAPS_ALWAYS_ON", "MAP_SCALER", "MAP_IDLE_AFTER", "MAP_POLL", "THUFIR_INBOX" }
 
 -- world.conf is written with Bash %q quoting, so let Bash read it. Each value is printed on its own line, with
 -- newlines inside a value flattened to spaces.

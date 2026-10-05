@@ -60,6 +60,7 @@ printf '%s %s|%s|%s\n' "$c" "\$*" "\${DUNE_PARTITION_INDEX:-}:\${DUNE_EXTERNAL_A
 [ "$c" = world-partitions ] && { n=7; for m in "\$@"; do echo "\$m \$n"; n=\$((n + 1)); done; }
 [ "$c \$1" = "map-scaler start" ] && printf '%s\n' "\${DUNE_MAPS:-}|\${DUNE_MAPS_ALWAYS_ON:-}|\${DUNE_MAP_IDLE_AFTER:-}" > "$work/scaler-env"
 [ "$c \$1" = "idle-throttle start" ] && printf '%s\n' "\${DUNE_IDLE_FPS:-}|\${DUNE_DEEP_IDLE_POLL:-}|\${DUNE_NOTIFY_TO:-}|\${DUNE_IDLE_THROTTLE:-}" > "$work/idle-env"
+[ "$c \$1" = "gm-bridge start" ] && printf '%s\n' "\${DUNE_THUFIR_INBOX:-}" > "$work/bridge-env"
 [ "\$1" = status ] && exit 1
 [ "$c \$*" = "\${FAIL_AT:-}" ] && exit 1
 exit 0
@@ -128,8 +129,9 @@ cp "$work/world.conf.bak" "$DUNE_CONFIG_DIR/world.conf"
 # Idle-throttle settings: world.conf keys become DUNE_<key> for the components; the environment wins over world.conf.
 [ "$(cat "$work/idle-env" 2>/dev/null)" = "|||" ] || fail "idle settings invented when world.conf has none: $(cat "$work/idle-env" 2>/dev/null)"
 cp "$DUNE_CONFIG_DIR/world.conf" "$work/world.conf.bak"
-printf 'IDLE_FPS=3\nDEEP_IDLE_POLL=45\nNOTIFY_TO=%q\nIDLE_THROTTLE=0\n' "some one" >> "$DUNE_CONFIG_DIR/world.conf"
+printf 'IDLE_FPS=3\nDEEP_IDLE_POLL=45\nNOTIFY_TO=%q\nIDLE_THROTTLE=0\nTHUFIR_INBOX=%q\n' "some one" "/x/thufir inbox" >> "$DUNE_CONFIG_DIR/world.conf"
 world start >/dev/null 2>&1
+[ "$(cat "$work/bridge-env" 2>/dev/null)" = "/x/thufir inbox" ] || fail "world.conf THUFIR_INBOX not passed to the GM bridge: $(cat "$work/bridge-env" 2>/dev/null)"
 [ "$(cat "$work/idle-env" 2>/dev/null)" = "3|45|some one|0" ] || fail "world.conf idle settings not passed on: $(cat "$work/idle-env" 2>/dev/null)"
 DUNE_IDLE_FPS=4 DUNE_IDLE_THROTTLE=1 world start >/dev/null 2>&1
 [ "$(cat "$work/idle-env" 2>/dev/null)" = "4|45|some one|1" ] || fail "environment does not win over world.conf: $(cat "$work/idle-env" 2>/dev/null)"
