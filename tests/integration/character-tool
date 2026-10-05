@@ -103,18 +103,18 @@ for c in "export Alice" "validate /dev/null" "import /dev/null"; do
 	out=$(char $c 2>&1) && fail "$c ran without transfer procedures"
 	[[ "$out" == *chema*character_transfer_export* ]] || fail "$c did not name the missing transfer procedure: $out"
 done
-# Live character commands (move, where, kick, water, whisper, worm, give, whois) go to dune-live's character group with
+# Live character commands (move, where, kick, water, whisper, worm, give, whois, unlock-tree) go to dune-live's character group with
 # the user's arguments in order; this tool's own options (--server-root, -o, --text, --no-color) stay here; exit status
 # passes. xp and level are this tool's own (below): they correct for the world's XP multiplier before dune-live sends.
 fake="$work/components"; mkdir -p "$fake"
 printf '#!%s\nprintf "%%s\\n" "$*" > "%s"\nexit 4\n' "$BASH" "$work/live-argv" > "$fake/dune-live"; chmod +x "$fake/dune-live"
-for sub in move where kick water whisper worm give whois; do
+for sub in move where kick water whisper worm give whois unlock-tree; do
 	DUNE_COMPONENTS_DIR="$fake" char "$sub" "Some One" --json --no-color x >/dev/null 2>&1; rc=$?
 	[ "$(cat "$work/live-argv" 2>/dev/null)" = "character $sub Some One --json x" ] || fail "$sub not handed to dune-live: $(cat "$work/live-argv" 2>/dev/null)"
 	[ "$rc" -eq 4 ] || fail "$sub exit status not passed through: $rc"
 	unlink "$work/live-argv" 2>/dev/null
 done
-out=$(char --help 2>&1); for sub in move where kick water xp level whisper worm give whois; do [[ "$out" == *"  $sub "* ]] || fail "--help does not list $sub"; done
+out=$(char --help 2>&1); for sub in move where kick water xp level whisper worm give whois unlock-tree; do [[ "$out" == *"  $sub "* ]] || fail "--help does not list $sub"; done
 
 # xp: the server multiplies AwardXP by the world's GlobalXpMultiplier (measured 2026-09-30: 4150 sent at x1.5 added
 # 6225), so the tool divides first, rounding to the nearest whole amount. The multiplier is read from the settings the

@@ -108,6 +108,8 @@ Live (online or offline is detected; handled by dune-live, see `dune-live --help
   whisper <player> <message> [--from NAME]  Private chat line to an online player
   worm <player>               Send a nearby sandworm at the player (experimental)
   whois <FLS id>              Character name of an account id (read-only)
+  unlock-tree <player> <school>  Open a school's skill tree without its trainer quests (bg, mentat, planetologist,
+                              sword, trooper)
 
 Options:
   --server-root DIR   Server tree holding the game's ini chain (default: $DUNE_STATE_DIR/server/tree)
@@ -712,7 +714,7 @@ end
 
 -- Live commands belong to dune-live's character group. They are handed over with the user's arguments in order,
 -- minus this tool's own options, before any database work here.
-local LIVE = { move = true, where = true, kick = true, water = true, whisper = true, worm = true, give = true, whois = true }
+local LIVE = { move = true, where = true, kick = true, water = true, whisper = true, worm = true, give = true, whois = true, ["unlock-tree"] = true }
 local OWN_WITH_VALUE = { ["--server-root"] = true, ["-o"] = true, ["--output"] = true }
 local OWN_FLAGS = { ["--text"] = true, ["--no-color"] = true, ["--"] = true }
 
