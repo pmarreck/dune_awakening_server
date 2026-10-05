@@ -176,6 +176,16 @@ How it works and why it is safe to run:
 
 A world whose game broker was started before this listener existed keeps refusing the bridge's connection (logged once) until its next restart.
 
+## Skill trees: unlocking a school without its trainer quests
+
+Each school's tree is gated by a key module in the character's `FLevelComponent` ModuleData: `Skills.Key.<School>1` (schools: `BeneGesserit`, `Mentat`, `Planetologist`, `Swordmaster`, `Trooper`; `2` and `3` are the later phases). A trainer's funnel contract normally raises it to 1. Funcom's `SkillsSetModuleLevel` server command sets it directly for an online player (verified 2026-10-05 on build 25610213: the Bene Gesserit tree unlocked at once):
+
+```bash
+dune-awakening world raw SkillsSetModuleLevel --player <player> Module=Skills.Key.BeneGesserit1 Level=1:int
+```
+
+The field names are `Module` and `Level`; with any other name the server logs `'SkillsSetModuleLevel' Server command failed: 'Module' field is missing.`
+
 ## Storms: warning time and damage
 
 The world has two storm kinds, configured in the game's DefaultGame.ini and overridable in `$DUNE_CONFIG_DIR/UserSettings/UserGame.ini` (restart the map servers afterwards):
