@@ -150,6 +150,7 @@ A trusted player can run a few admin commands from game chat, without host acces
 | `&give <item> [count] [to <player>]` | puts items into your inventory, or with `to <player>` into another online player's (`character give`). The item is a name or an id ([Item names](#item-names-for-give)); count defaults to 1, at most one stack of the item (at least 10; 1000 when the stack size is unknown) unless `data/items.tsv` sets another max ([the cap per give](#the-cap-per-give)). Examples: `&give solari 5000`, `&give emf generator 2 to Alice`, `&give HarkAr2` |
 | `&kick <player>` | disconnects a player |
 | `&thufir <message>` | sends the message to the operator's assistant as an llmsend note in the directory named by `THUFIR_INBOX` in `world.conf` (unset: the command answers that it is not set up); the assistant replies with an in-game whisper from `Thufir`. Permission `thufir` |
+| `&unlock <school> [to <player>]` | opens a school's skill tree (`character unlock-tree`, see [Skill trees](#skill-trees-unlocking-a-school-without-its-trainer-quests)); permissions `unlock` (yourself) and `unlock-others` |
 | `&water [player]` | fills every water container you carry, or with a name another online player's (`character water`); permissions `water` (yourself) and `water-others`. Useful after time in the Escape menu, where water keeps draining because the world never pauses |
 
 To enable it, write `gm_bridge.conf` in the config directory (template: `config.sample/gm_bridge.conf.sample`) and `chmod 600` it. One line per player, `<character name or FLS id>: <command>...`, or `<who>: *` for every command; `#` starts a comment. The permissions are the command names, except that giving is split: `give` lets a player give to themselves, `give-others` to anyone else (`*` grants both). An entry of 16 hex digits is an FLS id and matches that account only; `dune-awakening character whois <FLS id>` names the character of an id. The file is read for every command, so edits apply at once; `dune-awakening doctor` fails if others can read or write it.
@@ -181,8 +182,12 @@ A world whose game broker was started before this listener existed keeps refusin
 Each school's tree is gated by a key module in the character's `FLevelComponent` ModuleData: `Skills.Key.<School>1` (schools: `BeneGesserit`, `Mentat`, `Planetologist`, `Swordmaster`, `Trooper`; `2` and `3` are the later phases). A trainer's funnel contract normally raises it to 1. Funcom's `SkillsSetModuleLevel` server command sets it directly for an online player (verified 2026-10-05 on build 25610213: the Bene Gesserit tree unlocked at once):
 
 ```bash
+dune-awakening character unlock-tree <player> bg      # bg / bene gesserit, mentat, planetologist, sword / swordmaster, trooper
+# the same by hand:
 dune-awakening world raw SkillsSetModuleLevel --player <player> Module=Skills.Key.BeneGesserit1 Level=1:int
 ```
+
+In game, `&unlock <school> [to <player>]` does the same through the GM bridge.
 
 The field names are `Module` and `Level`; with any other name the server logs `'SkillsSetModuleLevel' Server command failed: 'Module' field is missing.`
 
@@ -223,9 +228,7 @@ No server setting changes these. No ini key mentions a claim radius or vertical 
 `dune-server` writes two generated passwords into the map server's private `Saved/Config/LinuxServer/Game.ini` (the file it already reads its database password from):
 
 - `Password_Admin`, replacing Funcom's public default. For the host operator.
-- `Password_GM`, for a trusted player who should have GM powers without host access. Their allow-list is Funcom's `Allowed_GM_Commands` minus the Destroy* commands and `AddItemToInventory`, removed with `-Allowed_GM_Commands=…` entries. A payload-tier test (`tests/payload/gm-allowlist`) fails if Funcom renames any of those, because a removal of a missing name would silently leave the real command allowed.
-
-Both are typeable Dune passphrases (`word-word-word-NN`, e.g. `sietch-thumper-kynes-42`): three distinct words from a 65-word list shuffled by `random --true-random`, plus a number from 10 to 99, about 25 bits. That suits a world reachable only over Tailscale; on the open internet, use long random passwords instead. They live in `runtime/secrets/admin_password` and `runtime/secrets/gm_password` (0600). To read one: `cat ~/.local/share/dune_awakening_server/runtime/secrets/gm_password`. To change one, move the file to the trash and restart the world; a new one is generated. That the game accepts them is **inferred** until someone logs in with the Admin Panel.
+- `Password_GM`, for a trusted player who should have GM powers without host access. Their allow-list is Funcom's `Allowed_GM_Commands` minus the Destroy* commands and `AddItemToInventory`, removed with `-Allowed_GM_Commands=…` entries. A payload-tier test (`tests/payload/gm-allowlist`) fails if Funcom renames any of those, because a removal of a missing name would silently leave the real comma suits a world reachable only over Tailscale; on the open internet, use long random passwords instead. They live in `runtime/secrets/admin_password` and `runtime/secrets/gm_password` (0600). To read one: `cat ~/.local/share/dune_awakening_server/runtime/secrets/gm_password`. To change one, move the file to the trash and restart the world; a new one is generated. That the game accepts them is **inferred** until someone logs in with the Admin Panel.
 
 ### Getting to it from the client
 

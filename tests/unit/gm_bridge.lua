@@ -69,9 +69,9 @@ if errors[1] and not errors[1]:find("line 9", 1, true) then fail("error does not
 
 -- Authorization as a classifier: every sender x command, allow/deny. Senders by name, by FLS id, unlisted,
 -- and unresolvable (whois failed: no name).
-local COMMANDS = { "help", "where", "goto", "bring", "say", "timeout", "give", "give-others", "kick", "thufir", "water", "water-others", "bogus" }
+local COMMANDS = { "help", "where", "goto", "bring", "say", "timeout", "give", "give-others", "kick", "thufir", "unlock", "unlock-others", "water", "water-others", "bogus" }
 local senders = {
-	{ "alice by name", ALICE, "Alice", { help = 1, where = 1, goto = 1, bring = 1, say = 1, timeout = 1, give = 1, ["give-others"] = 1, kick = 1, thufir = 1, water = 1, ["water-others"] = 1 } },
+	{ "alice by name", ALICE, "Alice", { help = 1, where = 1, goto = 1, bring = 1, say = 1, timeout = 1, give = 1, ["give-others"] = 1, kick = 1, thufir = 1, unlock = 1, ["unlock-others"] = 1, water = 1, ["water-others"] = 1 } },
 	{ "bob by fls", BOB, "Bob", { help = 1, where = 1, goto = 1 } },
 	{ "bob unresolved", BOB, nil, { help = 1, where = 1, goto = 1 } },
 	{ "carol spaced", CAROL, "Carol", { help = 1, say = 1, timeout = 1 } },
@@ -129,6 +129,12 @@ same("water for another player", plan("&water Bob Two").actions, { { "character"
 eq("water permission for yourself", gm.permission(gm.parse_command("&water"), "Alice"), "water")
 eq("water naming yourself is still water", gm.permission(gm.parse_command("&water Alice"), "Alice"), "water")
 eq("water for another needs water-others", gm.permission(gm.parse_command("&water Bob"), "Alice"), "water-others")
+-- &unlock <school> [to <player>]: dune-live normalizes the school name, so the bridge passes the words through.
+same("unlock for yourself", plan("&unlock Bene Gesserit").actions, { { "character", "unlock-tree", "Alice", "Bene Gesserit" } })
+same("unlock for another", plan("&unlock sword to Bob Two").actions, { { "character", "unlock-tree", "Bob Two", "sword" } })
+eq("unlock permission", gm.permission(gm.parse_command("&unlock bg"), "Alice"), "unlock")
+eq("unlock naming yourself", gm.permission(gm.parse_command("&unlock bg to Alice"), "Alice"), "unlock")
+eq("unlock for another needs unlock-others", gm.permission(gm.parse_command("&unlock bg to Bob"), "Alice"), "unlock-others")
 -- &thufir <message>: no dune-live action; a note for the operator's assistant, delivered by the bridge.
 p = plan("&thufir Where is Sister Mesa?  $(x) | y")
 same("thufir has no dune-live actions", p.actions, {})
@@ -152,7 +158,7 @@ if not (type(gm.WATER_FILL) == "string" and tonumber(gm.WATER_FILL) and tonumber
 same("player names with spaces", plan("&goto Bob Two").actions, { { "character", "move", "Alice", "to", "Bob Two" } })
 -- Usage errors produce no actions and a short reply.
 for _, bad in ipairs({ "&goto", "&goto Alice", "&bring", "&say", "&timeout maybe", "&give", "&give Bad;Item", "&give Ammo 0",
-	"&give Ammo 1001", "&give Ammo x", "&kick", "&goto --help", "&say -h", "&kick -x", "&water -x", "&thufir", "&bogus" }) do
+	"&give Ammo 1001", "&give Ammo x", "&kick", "&goto --help", "&say -h", "&kick -x", "&water -x", "&thufir", "&unlock", "&unlock to Bob", "&unlock -x", "&bogus" }) do
 	p = plan(bad)
 	if #p.actions ~= 0 then fail(bad .. " produced actions: " .. cjson.encode(p.actions)) end
 	if not (p.reply and #p.reply > 0) then fail(bad .. " has no reply") end
@@ -160,7 +166,7 @@ end
 p = gm.plan(gm.parse_command("&where"), { fls = ALICE, name = "Alice" }, policy)
 eq("where without origin: no actions", #p.actions, 0); eq("where without origin: reply", p.reply, "your position is unknown")
 -- help lists only what the sender may run.
-eq("help for alice", plan("&help").reply, "commands: bring, give, give-others, goto, kick, say, thufir, timeout, water, water-others, where")
+eq("help for alice", plan("&help").reply, "commands: bring, give, give-others, goto, kick, say, thufir, timeout, unlock, unlock-others, water, water-others, where")
 eq("help for bob", gm.plan(gm.parse_command("&help"), { fls = BOB, name = "Bob" }, policy).reply, "commands: goto, where")
 eq("not allowed reply", gm.NOT_ALLOWED, "not allowed")
 

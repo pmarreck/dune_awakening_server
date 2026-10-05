@@ -9,8 +9,10 @@ local items = require("items")
 local M = {}
 M.NOT_ALLOWED = "not allowed"
 -- Permissions a policy line can grant. give puts items into your own inventory; give-others into another player's;
--- water and water-others likewise refill water containers; thufir sends a message to the operator's assistant.
-M.COMMANDS = { "bring", "give", "give-others", "goto", "kick", "say", "thufir", "timeout", "water", "water-others", "where" }
+-- water and water-others likewise refill water containers, unlock and unlock-others open a school's skill tree;
+-- thufir sends a message to the operator's assistant.
+M.COMMANDS = { "bring", "give", "give-others", "goto", "kick", "say", "thufir", "timeout", "unlock", "unlock-others", "water",
+	"water-others", "where" }
 -- Longest &thufir message passed on (chat lines are shorter; this only bounds a hostile client).
 local MAX_NOTE = 2000
 -- Amount &water asks dune-live to put into the player's containers: more than any loadout holds, so every container
@@ -135,12 +137,24 @@ end
 
 -- permission(cmd, me) -> the policy permission cmd needs when sent by character me: give-others for a give to
 -- anyone but me, else the command's own name.
+-- parse_unlock(cmd) -> {school, target|nil} for `&unlock <school> [to <player>]` (the last " to " splits), or nil.
+function M.parse_unlock(cmd)
+	local school, target = cmd.rest:match("^(.-)%s+to%s+(.+)$")
+	if cmd.rest:match("^to%s") then return nil end
+	school = school or cmd.rest
+	if school == "" or (target and target == "") then return nil end
+	return { school = school, target = target }
+end
+
 function M.permission(cmd, me)
 	if cmd.name == "give" then
 		local g = M.parse_give(cmd)
 		if g and g.target and g.target ~= me then return "give-others" end
 	elseif cmd.name == "water" and cmd.rest ~= "" and cmd.rest ~= me then
 		return "water-others"
+	elseif cmd.name == "unlock" then
+		local u = M.parse_unlock(cmd)
+		if u and u.target and u.target ~= me then return "unlock-others" end
 	end
 	return cmd.name
 end
@@ -181,6 +195,11 @@ function M.plan(cmd, sender, policy, item_db)
 	elseif n == "thufir" then
 		if cmd.rest == "" or #cmd.rest > MAX_NOTE then return usage("&thufir <message>") end
 		return { actions = {}, note = { from = me, text = cmd.rest }, reply = "sent to Thufir" }
+	elseif n == "unlock" then
+		local u = M.parse_unlock(cmd)
+		if not u or not ok_arg(u.school) or (u.target and not ok_arg(u.target)) then return usage("&unlock <school> [to <player>]") end
+		local who = u.target or me
+		return { actions = { { "character", "unlock-tree", who, u.school } }, reply = "opened the " .. u.school .. " tree" .. (who == me and "" or (" for " .. who)) }
 	elseif n == "water" then
 		local who = cmd.rest ~= "" and cmd.rest or me
 		if not ok_arg(who) then return usage("&water [player]") end

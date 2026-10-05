@@ -111,6 +111,16 @@ world exec t.MaxFPS 5 >/dev/null 2>&1 || fail "exec failed"
 world exec >/dev/null 2>&1; [ $? -eq 2 ] || fail "exec without a command not a usage error"
 char water Tester 5000 >/dev/null 2>&1 || fail "water failed"
 [ "$(inner | jq -c '[.ServerCommand, .PlayerId, .WaterAmount]')" = '["UpdateAllWaterFillables","fls-1",5000]' ] || fail "water payload: $(inner)"
+# unlock-tree: a school's key module to level 1 (Funcom's SkillsSetModuleLevel; field names verified live 2026-10-05).
+# School names are normalized here, so every caller (CLI, GM bridge) accepts the same spellings.
+for pair in "bg:BeneGesserit" "Bene Gesserit:BeneGesserit" "benegesserit:BeneGesserit" "mentat:Mentat" "PLANETOLOGIST:Planetologist" \
+	"planetologist:Planetologist" "sword:Swordmaster" "swordmaster:Swordmaster" "trooper:Trooper"; do
+	char unlock-tree Tester "${pair%%:*}" >/dev/null 2>&1 || fail "unlock-tree ${pair%%:*} failed"
+	[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Module, .Level]')" = "[\"SkillsSetModuleLevel\",\"fls-1\",\"Skills.Key.${pair#*:}1\",1]" ] || fail "unlock-tree ${pair%%:*} payload: $(inner)"
+done
+for bad in "" "sardaukar" "bg x"; do
+	out=$(char unlock-tree Tester $bad 2>&1); [ $? -eq 2 ] || fail "unlock-tree '$bad' is not a usage error: $out"
+done
 char xp Tester 1000 >/dev/null 2>&1 || fail "xp failed"
 [ "$(inner | jq -c '[.ServerCommand, .Experience, .Category]')" = '["AwardXP",1000,"Combat"]' ] || fail "xp payload: $(inner)"
 char xp Tester 10 Gathering >/dev/null 2>&1 && [ "$(inner | jq -r .Category)" = Gathering ] || fail "xp category"
