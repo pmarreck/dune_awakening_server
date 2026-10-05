@@ -118,6 +118,9 @@ for pair in "bg:BeneGesserit" "Bene Gesserit:BeneGesserit" "benegesserit:BeneGes
 	char unlock-tree Tester "${pair%%:*}" >/dev/null 2>&1 || fail "unlock-tree ${pair%%:*} failed"
 	[ "$(inner | jq -c '[.ServerCommand, .PlayerId, .Module, .Level]')" = "[\"SkillsSetModuleLevel\",\"fls-1\",\"Skills.Key.${pair#*:}1\",1]" ] || fail "unlock-tree ${pair%%:*} payload: $(inner)"
 done
+# Character names match regardless of case (players type them in chat).
+char unlock-tree tESTER bg >/dev/null 2>&1 || fail "unlock-tree with a differently cased name failed"
+[ "$(inner | jq -r .PlayerId)" = fls-1 ] || fail "case-insensitive name lookup: $(inner)"
 for bad in "" "sardaukar" "bg x"; do
 	out=$(char unlock-tree Tester $bad 2>&1); [ $? -eq 2 ] || fail "unlock-tree '$bad' is not a usage error: $out"
 done

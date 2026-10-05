@@ -140,6 +140,7 @@ for _, c in ipairs({
 	{ "&unlock bene gesserit for Bob Two", "Bob Two", "bene gesserit" }, { "&unlock bene gesserit Bob Two", "Bob Two", "bene gesserit" },
 	{ "&unlock BG Bob", "Bob", "BG" }, { "&unlock swordmaster to Bob", "Bob", "swordmaster" }, { "&unlock sword Bob", "Bob", "sword" },
 	{ "&unlock Trooper", "Alice", "Trooper" }, { "&unlock Bene  Gesserit", "Alice", "Bene  Gesserit" },
+	{ "&UNLOCK BENE GESSERIT FOR Bob Two", "Bob Two", "BENE GESSERIT" }, { "&Unlock Swordmaster TO Bob", "Bob", "Swordmaster" }, { "&unlock bG bob", "bob", "bG" },
 }) do same("unlock: " .. c[1], plan(c[1]).actions, { { "character", "unlock-tree", c[2], c[3] } }) end
 eq("unlock <school> <player> needs unlock-others", gm.permission(gm.parse_command("&unlock mentat Bob"), "Alice"), "unlock-others")
 eq("unlock for yourself by name", gm.permission(gm.parse_command("&unlock mentat for Alice"), "Alice"), "unlock")

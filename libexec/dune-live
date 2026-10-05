@@ -88,7 +88,7 @@ sql() {
 # channel's PlayerId use. (The Funcom id, name#number, is silently ignored as a PlayerId: verified in game.)
 fls_id() {
 	local id
-	id=$(sql -v name="$1" -f - <<<"select a.\"user\" from dune.player_state ps join dune.accounts a on a.id = ps.account_id where ps.character_name = :'name' limit 1;") ||
+	id=$(sql -v name="$1" -f - <<<"select a.\"user\" from dune.player_state ps join dune.accounts a on a.id = ps.account_id where lower(ps.character_name) = lower(:'name') order by ps.character_name = :'name' desc limit 1;") ||
 		die "database lookup failed"
 	[ -n "$id" ] || die "no character named $1"
 	[[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "unexpected FLS id format for $1"
@@ -101,7 +101,7 @@ where_json() {
 		'partition', wp.label, 'partition_id', a.partition_id, 'map', a.map,
 		'x', ((a.transform).location).x, 'y', ((a.transform).location).y, 'z', ((a.transform).location).z)
 	from dune.player_state ps join dune.actors a on a.id = ps.player_pawn_id left join dune.world_partition wp on wp.partition_id = a.partition_id
-	where ps.character_name = :'name' limit 1;"
+	where lower(ps.character_name) = lower(:'name') order by ps.character_name = :'name' desc limit 1;"
 }
 
 # Whisper: DASH's confirmed route (docs/private-chat-replies.md). A TextChat courier carrying a Whispers message goes to
