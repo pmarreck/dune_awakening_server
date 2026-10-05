@@ -137,13 +137,29 @@ end
 
 -- permission(cmd, me) -> the policy permission cmd needs when sent by character me: give-others for a give to
 -- anyone but me, else the command's own name.
--- parse_unlock(cmd) -> {school, target|nil} for `&unlock <school> [to <player>]` (the last " to " splits), or nil.
+-- School names &unlock accepts, as words (dune-live's unlock-tree normalizes them); longest first so "bene gesserit"
+-- wins over a shorter prefix.
+local SCHOOLS = { "bene gesserit", "benegesserit", "planetologist", "swordmaster", "trooper", "mentat", "sword", "bg" }
+
+-- parse_unlock(cmd) -> {school, target|nil} for `&unlock <school> [to|for] [player]`: the known school name at the start
+-- (any case and spacing), then an optional player, with or without `to`/`for`. nil for an unknown school or an empty
+-- player after `to`/`for`.
 function M.parse_unlock(cmd)
-	local school, target = cmd.rest:match("^(.-)%s+to%s+(.+)$")
-	if cmd.rest:match("^to%s") then return nil end
-	school = school or cmd.rest
-	if school == "" or (target and target == "") then return nil end
-	return { school = school, target = target }
+	local rest, lower = cmd.rest, cmd.rest:lower()
+	for _, name in ipairs(SCHOOLS) do
+		local pat = "^" .. name:gsub(" ", "%%s+") .. "()"
+		local e = lower:match(pat)
+		if e and (e > #lower or lower:sub(e, e):match("%s")) then
+			local after = rest:sub(e):match("^%s*(.-)%s*$")
+			local word, who = after:match("^(%S+)%s*(.*)$")
+			if word and (word:lower() == "to" or word:lower() == "for") then
+				if who == "" then return nil end
+				after = who
+			end
+			return { school = rest:sub(1, e - 1), target = after ~= "" and after or nil }
+		end
+	end
+	return nil
 end
 
 function M.permission(cmd, me)

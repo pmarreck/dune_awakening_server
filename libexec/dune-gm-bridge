@@ -50,7 +50,7 @@ the bridge runs it through dune-live and whispers the result back (sender shown 
   &kick <player>         disconnect a player
   &thufir <message>      send a message to the operator's assistant, who answers by whisper
                          (needs THUFIR_INBOX in world.conf)
-  &unlock <school> [to <player>]
+  &unlock <school> [[to|for] <player>]
                          open a school's skill tree without its trainer quests (permission unlock, or
                          unlock-others for another online player); school: bg, mentat, planetologist, sword, trooper
   &water [player]        fill every water container you carry (permission water) or an online player's

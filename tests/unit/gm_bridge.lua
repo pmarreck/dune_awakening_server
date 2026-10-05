@@ -135,6 +135,17 @@ same("unlock for another", plan("&unlock sword to Bob Two").actions, { { "charac
 eq("unlock permission", gm.permission(gm.parse_command("&unlock bg"), "Alice"), "unlock")
 eq("unlock naming yourself", gm.permission(gm.parse_command("&unlock bg to Alice"), "Alice"), "unlock")
 eq("unlock for another needs unlock-others", gm.permission(gm.parse_command("&unlock bg to Bob"), "Alice"), "unlock-others")
+-- The player may follow the school directly or after `to`/`for`; the longest known school name at the start wins.
+for _, c in ipairs({
+	{ "&unlock bene gesserit for Bob Two", "Bob Two", "bene gesserit" }, { "&unlock bene gesserit Bob Two", "Bob Two", "bene gesserit" },
+	{ "&unlock BG Bob", "Bob", "BG" }, { "&unlock swordmaster to Bob", "Bob", "swordmaster" }, { "&unlock sword Bob", "Bob", "sword" },
+	{ "&unlock Trooper", "Alice", "Trooper" }, { "&unlock Bene  Gesserit", "Alice", "Bene  Gesserit" },
+}) do same("unlock: " .. c[1], plan(c[1]).actions, { { "character", "unlock-tree", c[2], c[3] } }) end
+eq("unlock <school> <player> needs unlock-others", gm.permission(gm.parse_command("&unlock mentat Bob"), "Alice"), "unlock-others")
+eq("unlock for yourself by name", gm.permission(gm.parse_command("&unlock mentat for Alice"), "Alice"), "unlock")
+for _, bad in ipairs({ "&unlock sardaukar", "&unlock sardaukar Bob", "&unlock for Bob", "&unlock bg for" }) do
+	p = plan(bad); if #p.actions ~= 0 then fail(bad .. " produced actions") end
+end
 -- &thufir <message>: no dune-live action; a note for the operator's assistant, delivered by the bridge.
 p = plan("&thufir Where is Sister Mesa?  $(x) | y")
 same("thufir has no dune-live actions", p.actions, {})
