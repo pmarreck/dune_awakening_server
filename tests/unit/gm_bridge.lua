@@ -69,9 +69,9 @@ if errors[1] and not errors[1]:find("line 9", 1, true) then fail("error does not
 
 -- Authorization as a classifier: every sender x command, allow/deny. Senders by name, by FLS id, unlisted,
 -- and unresolvable (whois failed: no name).
-local COMMANDS = { "help", "where", "goto", "bring", "say", "timeout", "give", "give-others", "kick", "water", "water-others", "bogus" }
+local COMMANDS = { "help", "where", "goto", "bring", "say", "timeout", "give", "give-others", "kick", "thufir", "water", "water-others", "bogus" }
 local senders = {
-	{ "alice by name", ALICE, "Alice", { help = 1, where = 1, goto = 1, bring = 1, say = 1, timeout = 1, give = 1, ["give-others"] = 1, kick = 1, water = 1, ["water-others"] = 1 } },
+	{ "alice by name", ALICE, "Alice", { help = 1, where = 1, goto = 1, bring = 1, say = 1, timeout = 1, give = 1, ["give-others"] = 1, kick = 1, thufir = 1, water = 1, ["water-others"] = 1 } },
 	{ "bob by fls", BOB, "Bob", { help = 1, where = 1, goto = 1 } },
 	{ "bob unresolved", BOB, nil, { help = 1, where = 1, goto = 1 } },
 	{ "carol spaced", CAROL, "Carol", { help = 1, say = 1, timeout = 1 } },
@@ -129,11 +129,30 @@ same("water for another player", plan("&water Bob Two").actions, { { "character"
 eq("water permission for yourself", gm.permission(gm.parse_command("&water"), "Alice"), "water")
 eq("water naming yourself is still water", gm.permission(gm.parse_command("&water Alice"), "Alice"), "water")
 eq("water for another needs water-others", gm.permission(gm.parse_command("&water Bob"), "Alice"), "water-others")
+-- &thufir <message>: no dune-live action; a note for the operator's assistant, delivered by the bridge.
+p = plan("&thufir Where is Sister Mesa?  $(x) | y")
+same("thufir has no dune-live actions", p.actions, {})
+same("thufir carries the note verbatim", p.note, { from = "Alice", text = "Where is Sister Mesa?  $(x) | y" })
+eq("thufir reply", p.reply, "sent to Thufir")
+eq("thufir permission", gm.permission(gm.parse_command("&thufir hi"), "Alice"), "thufir")
+-- The note file: llmsend/v1 JSON frontmatter, a safe filename, the message as the body.
+local nf = gm.thufir_note({ from = "Mahdi by Nature", text = "line one\nlinе \"two\"" }, "2026-10-05T00:01:02-04:00", "a1b2")
+eq("note filename", nf.name, "2026-10-05-from-game-mahdi-by-nature-a1b2.frontmatter.md")
+local fm = nf.text:match("^%-%-%-json\n(.-)\n%-%-%-\n")
+local meta = fm and cjson.decode(fm)
+if not meta then fail("note frontmatter is not ---json ... --- JSON: " .. nf.text) else
+	eq("note schema", meta.schema, "llmsend/v1"); eq("note sender", meta.sender, "Mahdi by Nature (in game)")
+	eq("note recipient", meta.recipient, "dune_awakening_server"); eq("note type", meta.message_type, "question")
+	eq("note datetime", meta.datetime, "2026-10-05T00:01:02-04:00"); eq("note reply expected", meta.response_expected, true)
+	eq("note reply hint", meta.description:find("whisper", 1, true) ~= nil, true)
+end
+if not nf.text:find('line one\nlinе "two"', 1, true) then fail("note body lost the message: " .. nf.text) end
+eq("filename of an odd name stays safe", gm.thufir_note({ from = "../x/../ Y!", text = "t" }, "2026-10-05T00:00:00-04:00", "ff").name, "2026-10-05-from-game-x-y-ff.frontmatter.md")
 if not (type(gm.WATER_FILL) == "string" and tonumber(gm.WATER_FILL) and tonumber(gm.WATER_FILL) > 0) then fail("WATER_FILL must be a positive amount string") end
 same("player names with spaces", plan("&goto Bob Two").actions, { { "character", "move", "Alice", "to", "Bob Two" } })
 -- Usage errors produce no actions and a short reply.
 for _, bad in ipairs({ "&goto", "&goto Alice", "&bring", "&say", "&timeout maybe", "&give", "&give Bad;Item", "&give Ammo 0",
-	"&give Ammo 1001", "&give Ammo x", "&kick", "&goto --help", "&say -h", "&kick -x", "&water -x", "&bogus" }) do
+	"&give Ammo 1001", "&give Ammo x", "&kick", "&goto --help", "&say -h", "&kick -x", "&water -x", "&thufir", "&bogus" }) do
 	p = plan(bad)
 	if #p.actions ~= 0 then fail(bad .. " produced actions: " .. cjson.encode(p.actions)) end
 	if not (p.reply and #p.reply > 0) then fail(bad .. " has no reply") end
@@ -141,7 +160,7 @@ end
 p = gm.plan(gm.parse_command("&where"), { fls = ALICE, name = "Alice" }, policy)
 eq("where without origin: no actions", #p.actions, 0); eq("where without origin: reply", p.reply, "your position is unknown")
 -- help lists only what the sender may run.
-eq("help for alice", plan("&help").reply, "commands: bring, give, give-others, goto, kick, say, timeout, water, water-others, where")
+eq("help for alice", plan("&help").reply, "commands: bring, give, give-others, goto, kick, say, thufir, timeout, water, water-others, where")
 eq("help for bob", gm.plan(gm.parse_command("&help"), { fls = BOB, name = "Bob" }, policy).reply, "commands: goto, where")
 eq("not allowed reply", gm.NOT_ALLOWED, "not allowed")
 

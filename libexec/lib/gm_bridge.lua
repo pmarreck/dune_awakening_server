@@ -9,8 +9,10 @@ local items = require("items")
 local M = {}
 M.NOT_ALLOWED = "not allowed"
 -- Permissions a policy line can grant. give puts items into your own inventory; give-others into another player's;
--- water and water-others likewise refill water containers.
-M.COMMANDS = { "bring", "give", "give-others", "goto", "kick", "say", "timeout", "water", "water-others", "where" }
+-- water and water-others likewise refill water containers; thufir sends a message to the operator's assistant.
+M.COMMANDS = { "bring", "give", "give-others", "goto", "kick", "say", "thufir", "timeout", "water", "water-others", "where" }
+-- Longest &thufir message passed on (chat lines are shorter; this only bounds a hostile client).
+local MAX_NOTE = 2000
 -- Amount &water asks dune-live to put into the player's containers: more than any loadout holds, so every container
 -- ends up full (the game caps each at its capacity).
 M.WATER_FILL = "100000"
@@ -176,6 +178,9 @@ function M.plan(cmd, sender, policy, item_db)
 		local a = (cmd.args[1] or "status"):lower()
 		if #cmd.args > 1 or not (a == "on" or a == "off" or a == "status") then return usage("&timeout on|off|status") end
 		return { actions = { { "world", "timeout", a } }, reply = "timeout " .. a }
+	elseif n == "thufir" then
+		if cmd.rest == "" or #cmd.rest > MAX_NOTE then return usage("&thufir <message>") end
+		return { actions = {}, note = { from = me, text = cmd.rest }, reply = "sent to Thufir" }
 	elseif n == "water" then
 		local who = cmd.rest ~= "" and cmd.rest or me
 		if not ok_arg(who) then return usage("&water [player]") end
@@ -227,6 +232,21 @@ function M.command_line(argv)
 	local parts = {}
 	for i, a in ipairs(argv) do parts[i] = M.shell_quote(a) end
 	return table.concat(parts, " ")
+end
+
+-- thufir_note(note = {from, text}, datetime, id) -> {name, text}: an llmsend/v1 inbox note (JSON frontmatter between
+-- ---json and ---, then a Markdown body) carrying an in-game &thufir message to the operator's assistant, which
+-- answers with a whisper. The filename slug keeps only [a-z0-9-] of the character name, so it cannot leave the inbox.
+function M.thufir_note(note, datetime, id)
+	local slug = note.from:lower():gsub("[^a-z0-9]+", "-"):gsub("^%-+", ""):gsub("%-+$", "")
+	if slug == "" then slug = "player" end
+	local meta = cjson.encode({ schema = "llmsend/v1", subject = "In-game message from " .. note.from,
+		description = "A player sent &thufir in game chat; reply with an in-game whisper.",
+		sender = note.from .. " (in game)", recipient = "dune_awakening_server", datetime = datetime,
+		message_type = "question", response_expected = true, priority = "normal", tags = { "game", "thufir", "chat" } })
+	local body = "# In-game message from " .. note.from .. "\n\n" .. note.text .. "\n\nReply in game: `dune-awakening character whisper "
+		.. M.shell_quote(note.from) .. " '<reply>' --from Thufir`\n"
+	return { name = datetime:sub(1, 10) .. "-from-game-" .. slug .. "-" .. id .. ".frontmatter.md", text = "---json\n" .. meta .. "\n---\n\n" .. body }
 end
 
 return M

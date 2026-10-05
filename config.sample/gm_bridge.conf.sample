@@ -3,7 +3,7 @@
 #
 # One line per player:   <character name or FLS id>: <command> <command>...
 # or, for every command: <character name or FLS id>: *
-# Commands: where goto bring say timeout give give-others kick water water-others. Anyone listed may also use help.
+# Commands: where goto bring say timeout give give-others kick thufir water water-others. Anyone listed may also use help.
 # give puts items into your own inventory; give-others into another (online) player's; water and water-others
 # likewise fill water containers. `*` grants every command.
 # A 16-hex-digit entry is an FLS id (dune-awakening character whois <id> names it) and matches that account only;
