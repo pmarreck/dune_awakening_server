@@ -1,6 +1,7 @@
 # Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
 ver=1.2
 annotate=[
+	.claude/skills/dune-awakening-guide/SKILL.md = Project skill: answer gameplay questions from docs/game-guide and record new findings
 	.envrc = direnv: PATH_add bin
 	.githooks/pre-push = Refuses a push while tracked files contain denylisted personal strings (runs tests/unit/public-hygiene)
 	.luacheckrc = luacheck config: LuaJIT std, 200-column lines
@@ -13,11 +14,12 @@ annotate=[
 	config.sample/backup.conf.sample = backup retention template: KEEP_ALL_DAYS, KEEP_WEEKLY_DAYS
 	config.sample/gm_bridge.conf.sample = Template: who may use in-game chat commands (GM bridge policy)
 	data/items.tsv = Curated item names for &give: id, verified in game, max per give (- = stack size, at least 10, else 1000), aliases; wins over the generated list
-	data/maps.tsv = Map servers the world can run: name, Funcom slot (ports 7776/7887+slot), memory cap, level URL
 	data/levels.tsv = Game level curve keys (SkillXPPerLevel: XPNeeded, SkillPointsRewarded, IntelPointsRewarded, MaxLevel) with provenance
+	data/maps.tsv = Map servers the world can run: name, Funcom slot (ports 7776/7887+slot), memory cap, level URL
 	docs/acquisition.md = Steam package, FLS token, private inputs, and sizing findings from pinned DASH
 	docs/admin.md = Everything about administering the world: host commands, moves, whispers, timeout, and the game's in-game GM system (AdminSetting, passwords, Admin Panel key hunt)
 	docs/architecture.md = Synthesis: component graph, 1.5 version proof, native NixOS gap list
+	docs/game-guide = Sourced Dune: Awakening player guide (6 topic chapters + README index with provenance tags)
 	docs/hardening.md = measured runtime requirements (files, network, JIT/W^X, caps) per component and candidate systemd sandboxing directives, user vs system unit support
 	docs/operations.md = How to run, stop, inspect the native world; files, logs, ports
 	docs/payload/steam-4754530-build-25486303.sha256 = SHA-256 of official Steam server payload files, build 25486303 / image 2124138
