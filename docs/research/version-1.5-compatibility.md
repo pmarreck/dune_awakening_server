@@ -40,6 +40,7 @@ Researched 2026-09-24 (EDT). Every finding carries a source URL and is labeled
 | Sep 23 12:10 / 12:24 | Client app 1172710 public build **25486029**, then self-host 4754530 public build **25486303** 14 minutes later. The self-host app's `timeupdated` is Sep 24 06:58. | Confirmed (Steam API) | https://api.steamcmd.net/v1/info/1172710 , https://api.steamcmd.net/v1/info/4754530 |
 | Sep 24 | Hotfix 1.5.3.4 notes: "Fixed an issue where custom settings in ServerCustomSettings.ini on self-hosted servers were not applied because the file was missing DifficultyLevel=Custom. We also made sure updated servers receive the corrected file." Also: "Unblocked characters who were stuck after cross-realm transfers on private servers" and a fix for backed-up base origin markers being offset after a server restart. Page `dateModified` is 2026-09-24T11:02 UTC. | Confirmed | patch notes |
 | Sep 24 | Funcom Known Issues page updated. It lists no self-host entries. | Confirmed | https://funcom.helpshift.com/hc/en/4-dune-awakening/faq/88-known-issues/ |
+| Oct 6 | Self-host 4754530 public build **25689360** (after an announced ~30-minute downtime). The client launcher now asks whether to start with BattlEye. The server image sets `BattlEye.Enabled=false` (`DuneSandbox/Config/DefaultEngine.ini`), and a client launched without BattlEye joins a self-hosted world on this build. | Confirmed | tested on this project's server |
 
 Inference: the Sep 23 build pair (client 25486029, server 25486303) is most
 likely hotfix 1.5.3.4, with notes posted the next morning. The local image
@@ -134,4 +135,3 @@ Funcom publish a mapping from revision to patch version.
 | https://discourse.cubecoders.com/tag/dune-awakening (and threads 43144, 43145) | AMP-side breakage reports tied to specific 4754530 build IDs. |
 | https://github.com/Icehunter/dune-admin | Admin-tool schema-compat changes after server builds. |
 | https://awakening.wiki/Self-Hosted_Server_Guide | Last-edited date (2026-09-07 as of this writing). Still has no 1.5 content. |
-| Oct 6 | Self-host 4754530 public build **25689360** (after an announced ~30-minute downtime). The client launcher now asks whether to start with BattlEye. The server image sets `BattlEye.Enabled=false` (`DuneSandbox/Config/DefaultEngine.ini`), and a client launched without BattlEye joins a self-hosted world on this build. | Confirmed | tested on this project's server |
