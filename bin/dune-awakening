@@ -483,6 +483,17 @@ local function take_update_lock(state)
 	return ffi.C.flock(fd, bit.bor(LOCK_EX, LOCK_NB)) == 0
 end
 
+-- start and restart defer to an update as heal does: while another process holds the update lock they start nothing
+-- (on 2026-10-06 a timer-run start raced update apply's own start and the update's schema step failed). Holding the
+-- lock for the whole start also makes a new update wait for it. The lock holder's own start (update apply's, heal's
+-- child in nix develop) carries DUNE_UPDATE_LOCK_HELD=1.
+local function defer_to_update(env)
+	if os.getenv("DUNE_UPDATE_LOCK_HELD") == "1" then return end
+	if not take_update_lock(env.DUNE_STATE_DIR) then
+		die(EXIT_ERR, "an update is in progress (%s/update.lock is held); nothing started", env.DUNE_STATE_DIR)
+	end
+end
+
 -- The self-heal timer's command. The common case (everything up) costs a few pid and port checks, run outside the dev
 -- shell; only when a component or an always-on map is down does it run the full `start`, inside nix develop (re-entered
 -- as a child, so this process keeps the update lock until the start finishes). A stopped on-demand map is not down.
@@ -493,6 +504,7 @@ local function cmd_heal(flake, self)
 		io.stdout:write("heal skipped: an update is in progress (", env.DUNE_STATE_DIR, "/update.lock is held)\n")
 		return EXIT_OK
 	end
+	setenv("DUNE_UPDATE_LOCK_HELD", "1")
 	world_env(env)
 	setenv("DUNE_PARTITION_INDEX", "0")
 	local down = {}
@@ -629,9 +641,9 @@ local function main()
 		for j, a in ipairs(argv) do keep[j] = ffi.new("char[?]", #a + 1, a); cargv[j - 1] = keep[j] end
 		ffi.C.execvp(argv[1], cargv)
 		die(EXIT_ERR, "cannot run %s", argv[1])
-	elseif opts.cmd == "start" then cmd_start(dir, env)
+	elseif opts.cmd == "start" then defer_to_update(env); cmd_start(dir, env)
 	elseif opts.cmd == "stop" then refuse_if_online(opts, dir); cmd_stop(dir, env)
-	elseif opts.cmd == "restart" then refuse_if_online(opts, dir); cmd_stop(dir, env); cmd_start(dir, env)
+	elseif opts.cmd == "restart" then refuse_if_online(opts, dir); defer_to_update(env); cmd_stop(dir, env); cmd_start(dir, env)
 	else cmd_status(opts, dir, env, flake) end
 end
 

@@ -34,6 +34,7 @@ printf '%s %s\n' "$c" "\$*" >> "$work/calls"
 for fd in /proc/\$\$/fd/*; do [ "\$(readlink "\$fd")" = "$DUNE_STATE_DIR/update.lock" ] && echo "$c" >> "$work/inherited"; done
 [ "$c \$*" = "character list --json" ] && { if [ -e "$work/online" ]; then echo '[{"name":"A","online":true}]'; else echo '[{"name":"A","online":false}]'; fi; }
 [ "$c" = backup ] && [ "\$1" = create ] && echo "$work/backups/b1"
+[ "$c \$1" = "world start" ] && echo "\${DUNE_UPDATE_LOCK_HELD:-}" > "$work/start-lock-held"
 [ "$c \$*" = "\${FAIL_AT:-}" ] && exit 1
 exit 0
 EOF
@@ -111,6 +112,7 @@ echo go > "$work/unpack-gate"
 wait "$apply_pid" || fail "apply held at the unpack failed: $(cat "$work/apply-out")"
 [ "$(grep -c '^world start' "$work/calls")" = 1 ] || fail "world started other than once by the update: $(grep '^world' "$work/calls" | paste -sd, -)"
 flock -n "$DUNE_STATE_DIR/update.lock" true || fail "update lock still held after apply"
+[ "$(cat "$work/start-lock-held" 2>/dev/null)" = 1 ] || fail "apply's world start lacks DUNE_UPDATE_LOCK_HELD=1 (start would refuse while apply holds the lock)"
 [ -e "$work/inherited" ] && fail "update lock descriptor inherited by: $(paste -sd' ' "$work/inherited")"
 rm -- "$work/unpack-gate" "$work/unpack-started"
 # A heal holding the lock (starting the world) makes apply wait for it, up to DUNE_UPDATE_LOCK_WAIT seconds.

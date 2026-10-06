@@ -37,6 +37,7 @@ cat > "$work/nixbin/nix" <<EOF
 #!$BASH
 printf '%s\n' "\$*" > "$work/nix-args"
 printf '%s\n' "\${TMPDIR:-}" > "$work/nix-tmpdir"
+printf '%s\n' "\${DUNE_UPDATE_LOCK_HELD:-}" > "$work/nix-lock-held"
 for fd in /proc/\$\$/fd/*; do [ "\$(readlink "\$fd")" = "$lock" ] && echo nix >> "$work/inherited"; done
 exit "\${FAKE_NIX_RC:-0}"
 EOF
@@ -116,6 +117,25 @@ exec 8>&-
 [ -s "$work/calls" ] && fail "heal during an update ran components: $(paste -sd, "$work/calls")"
 [ -e "$work/nix-args" ] && fail "heal during an update ran nix develop"
 [[ "$out" == *update* ]] || fail "heal during an update does not say why it skipped: $out"
+
+# A plain `start` also defers to an update. The timer once ran `start` directly every 5 minutes; on 2026-10-06 one ran
+# alongside update apply's own start and the update's schema step failed. While another process holds the lock,
+# start runs nothing, says why and fails.
+reset; echo gateway > "$work/down"
+exec 8>>"$lock"; flock 8
+out=$(bin/dune-awakening start --no-warn 8>&- 2>&1); rc=$?
+[ "$rc" -ne 0 ] || fail "start during an update succeeded: $out"
+[ -s "$work/calls" ] && fail "start during an update ran components: $(paste -sd, "$work/calls")"
+[[ "$out" == *update* ]] || fail "start during an update does not say why: $out"
+# The lock holder's own start (update apply's, heal's child) sets DUNE_UPDATE_LOCK_HELD=1 and runs.
+reset
+out=$(DUNE_UPDATE_LOCK_HELD=1 bin/dune-awakening start --no-warn 8>&- 2>&1) || fail "lock holder's start failed: $out"
+[[ "$(starts)" == "postgres init,postgres start,"* ]] || fail "lock holder's start did not run the world: $(starts)"
+exec 8>&-
+# heal hands that marker to the start it runs in nix develop.
+reset; echo director > "$work/down"
+heal >/dev/null 2>&1
+[ "$(cat "$work/nix-lock-held" 2>/dev/null)" = 1 ] || fail "heal's nix develop child lacks DUNE_UPDATE_LOCK_HELD=1"
 
 # heal is a builtin command (listed in --help).
 [[ "$(bin/dune-awakening --help)" == *heal* ]] || fail "--help does not list heal"

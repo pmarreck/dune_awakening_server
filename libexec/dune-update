@@ -42,8 +42,8 @@ Options:
   --about, -h/--help
 
 apply holds \$DUNE_STATE_DIR/update.lock from stopping the world until it has started it again; the self-heal
-(dune-awakening heal) skips while it is held, and apply waits up to DUNE_UPDATE_LOCK_WAIT seconds (1800) for a heal
-that holds it.
+(dune-awakening heal) skips while it is held, start and restart refuse, and apply waits up to DUNE_UPDATE_LOCK_WAIT
+seconds (1800) for a heal or start that holds it.
 
 Environment: DUNE_STEAM_SERVER_DIR, DUNE_UNPACKED_DIR, DUNE_STEAMCMD, DUNE_STEAMCMD_HOME, DUNE_TRASH_DIR,
 DUNE_STATE_DIR, DUNE_UPDATE_LOCK_WAIT, DUNE_NOTIFY_TO, DUNE_NOTIFY_CMD.
@@ -164,7 +164,7 @@ cmd_apply() {
 		if [ -e "$DUNE_UNPACKED_DIR/$img" ]; then mv "$DUNE_UNPACKED_DIR/$img" "$DUNE_UNPACKED_DIR/$img.prev" || die "cannot keep $img as .prev"; fi
 		mv "$DUNE_UNPACKED_DIR/$img.new" "$DUNE_UNPACKED_DIR/$img" || die "cannot install new $img"
 	done
-	step "start world (runs DB migrations)"; component world start || die "world failed to start on build $latest; previous images are in $DUNE_UNPACKED_DIR/*.prev"
+	step "start world (runs DB migrations)"; DUNE_UPDATE_LOCK_HELD=1 component world start || die "world failed to start on build $latest; previous images are in $DUNE_UNPACKED_DIR/*.prev"
 	exec 9>&-
 	installed=$(installed_buildid)
 	[ "$installed" = "$(latest_info | cut -d' ' -f1)" ] || die "after the update the installed build ($installed) still differs from Steam's"
