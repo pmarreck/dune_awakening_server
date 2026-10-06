@@ -134,3 +134,4 @@ Funcom publish a mapping from revision to patch version.
 | https://discourse.cubecoders.com/tag/dune-awakening (and threads 43144, 43145) | AMP-side breakage reports tied to specific 4754530 build IDs. |
 | https://github.com/Icehunter/dune-admin | Admin-tool schema-compat changes after server builds. |
 | https://awakening.wiki/Self-Hosted_Server_Guide | Last-edited date (2026-09-07 as of this writing). Still has no 1.5 content. |
+| Oct 6 | Self-host 4754530 public build **25689360** (after an announced ~30-minute downtime). The client launcher now asks whether to start with BattlEye. The server image sets `BattlEye.Enabled=false` (`DuneSandbox/Config/DefaultEngine.ini`), and a client launched without BattlEye joins a self-hosted world on this build. | Confirmed | tested on this project's server |
