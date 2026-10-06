@@ -55,9 +55,11 @@ the bridge runs it through dune-live and whispers the result back (sender shown 
                          unlock-others for another online player); school: bg, mentat, planetologist, sword, trooper
   &water [player]        fill every water container you carry (permission water) or an online player's
                          (water-others)
+  &fuel [player]         5 large vehicle fuel cells into your inventory (permission fuel) or an online
+                         player's (fuel-others); load one into the vehicle to refuel it
 
 Who may use what: $DUNE_CONFIG_DIR/gm_bridge.conf, one line per player, `<character name or FLS id>: <command>...`
-or `<who>: *` for every command (permissions: help, where, goto, bring, say, timeout, give, give-others, kick, thufir, unlock, unlock-others, water, water-others);
+or `<who>: *` for every command (permissions: help, where, goto, bring, say, timeout, give, give-others, fuel, fuel-others, kick, thufir, unlock, unlock-others, water, water-others);
 `#` starts a comment. No file, or nobody listed, means nobody (fail closed). The
 file is read for every command, so edits apply at once. Senders are identified only by the account id the broker
 stamps on each message; ordinary chat is never logged, only `&` commands (log: $DUNE_STATE_DIR/gm-bridge/).
