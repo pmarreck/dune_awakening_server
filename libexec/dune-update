@@ -36,8 +36,10 @@ Commands:
 Options:
   --json    check: machine-readable result
   --notify  check: when Steam has a build the server lacks, send one notice per new build through
-            NOTIFY_CMD (default post) to NOTIFY_TO, both from world.conf; the build last announced is kept in
-            \$DUNE_STATE_DIR/update-notified. A failed notice is retried at the next check. It never applies.
+            NOTIFY_CMD (default post) to NOTIFY_TO (world.private.conf or world.conf); the build last announced
+            is kept in \$DUNE_STATE_DIR/update-notified. A failed notice is retried at the next check. It never
+            applies. The default when NOTIFY_TO is set; --notify also reports a missing NOTIFY_TO.
+  --no-notify  check: send no notice
   --force   apply: proceed with players online or when already current (re-download and re-unpack)
   --about, -h/--help
 
@@ -52,13 +54,14 @@ EOF
 die() { printf '%s: %s\n' "$NAME" "$1" >&2; exit "${2:-1}"; }
 step() { printf '▸ %s\n' "$*" >&2; }
 
-cmd="" json=false force=false notify=false
+cmd="" json=false force=false notify=auto
 for a in "$@"; do
 	case "$a" in
 		-h|--help) usage; exit 0 ;;
 		--about) printf '%s %s: Dune self-host server update check and procedure (%s %s)\n' "$NAME" "$VERSION" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)"; exit 0 ;;
 		--json) json=true ;;
-		--notify) notify=true ;;
+		--notify) notify=on ;;
+		--no-notify) notify=off ;;
 		--force) force=true ;;
 		-*) die "unknown option $a (see --help)" "$EXIT_USAGE" ;;
 		*) [ -z "$cmd" ] || die "unexpected argument $a (see --help)" "$EXIT_USAGE"; cmd=$a ;;
@@ -95,7 +98,10 @@ cmd_check() {
 	else
 		printf '⚠ update available: installed build %s, Steam has %s%s\n' "$installed" "$latest" "${t:+ (published $(date -d "@$t" '+%Y-%m-%d %H:%M %Z'))}"
 	fi
-	$notify && notify_update "$installed" "$latest" "${t:-}"
+	case $notify in
+		on) notify_update "$installed" "$latest" "${t:-}" ;;
+		auto) [ -n "${DUNE_NOTIFY_TO:-}" ] && notify_update "$installed" "$latest" "${t:-}" ;;
+	esac
 	[ "$installed" = "$latest" ] && return "$EXIT_CURRENT" || return "$EXIT_STALE"
 }
 

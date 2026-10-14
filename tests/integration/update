@@ -165,4 +165,15 @@ out=$(env -u DUNE_NOTIFY_TO libexec/dune-update check --notify 2>&1)
 touch "$work/steam-down"; libexec/dune-update check --notify >/dev/null 2>&1; [ $? -eq 3 ] || fail "check --notify with Steam down"
 [ "$(notices)" = 3 ] || fail "notice sent with Steam unreachable"
 rm "$work/steam-down"
+# A plain check notifies too once NOTIFY_TO is set (a scheduled check without --notify let a build go unannounced
+# for four days); --no-notify turns it off, and without NOTIFY_TO a plain check says nothing about notices.
+libexec/dune-update check --json --no-notify >/dev/null 2>&1
+[ "$(notices)" = 3 ] || fail "check --no-notify sent a notice: $(notices)"
+out=$(libexec/dune-update check --json 2>&1 >/dev/null)
+[ "$(notices)" = 4 ] && [ "$(cat "$DUNE_STATE_DIR/update-notified")" = 107 ] || fail "plain check did not notify: $(notices) notices: $out"
+echo 108 > "$work/latest"
+out=$(env -u DUNE_NOTIFY_TO libexec/dune-update check 2>&1 >/dev/null)
+[ "$(notices)" = 4 ] && [[ "$out" != *NOTIFY_TO* ]] || fail "plain check without NOTIFY_TO sent or complained: $out"
+libexec/dune-update check --no-notify --notify >/dev/null 2>&1
+[ "$(notices)" = 5 ] || fail "later --notify did not override --no-notify: $(notices)"
 exit "$failures"
