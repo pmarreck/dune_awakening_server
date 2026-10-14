@@ -1,12 +1,14 @@
-# Normally written by `dune-awakening init --display-name "..." --region "..."`, which derives the unique name from
-# your token's HostId. Values use Bash quoting (the file is sourced by Bash).
-# WORLD_UNIQUE_NAME is registered with Funcom on first start: never change it afterwards.
-WORLD_UNIQUE_NAME=sh-yourhostid-abcdef
-WORLD_DISPLAY_NAME=My\ Arrakis
-WORLD_REGION=North\ America
-# Optional: the address players connect to (default: the source address of this host's default route).
-# Use your Tailscale address (tailscale ip -4) when friends join over Tailscale.
-#EXTERNAL_ADDRESS=100.x.y.z
+# Shareable world settings. Values use Bash quoting (the file is sourced by Bash).
+# The world's identity and other deployment details live in world.private.conf, which is read after this file (its
+# keys win) and belongs in no shared or version-controlled copy of this directory. `dune-awakening init
+# --display-name "..." --region "..."` writes it, deriving the unique name from your token's HostId:
+#   WORLD_UNIQUE_NAME=sh-yourhostid-abcdef   (registered with Funcom on first start: never change it afterwards)
+#   WORLD_DISPLAY_NAME=My\ Arrakis
+#   WORLD_REGION=North\ America
+# Add these to world.private.conf by hand when wanted:
+#   EXTERNAL_ADDRESS=100.x.y.z   the address players connect to (default: the source address of this host's default
+#                                route); use your Tailscale address (tailscale ip -4) when friends join over Tailscale
+#   NOTIFY_TO=someone            who gets the weekly deep-idle notice and update notices
 # Optional: idle frame-rate throttle (docs/operations.md, "Idle frame-rate throttle"). Defaults shown.
 #IDLE_THROTTLE=1
 #ACTIVE_FPS=20
@@ -17,6 +19,5 @@ WORLD_REGION=North\ America
 #IDLE_POLL=10
 #DEEP_IDLE_POLL=30
 #DEEP_IDLE_NOTICE=604800
-# Who gets the weekly "still up" notice in deep idle, and the post-compatible command that sends it (absolute path).
-#NOTIFY_TO=someone
+# The post-compatible command that sends notices to NOTIFY_TO (absolute path).
 #NOTIFY_CMD=/path/to/post

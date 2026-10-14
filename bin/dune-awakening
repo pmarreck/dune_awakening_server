@@ -48,7 +48,7 @@ Commands:
                   components, database logins, backups (read-only; exit 1 on a failure)
   items ...       Item names for the in-game &give: refresh (the private list from the game's own tables;
                   needs DUNE_RETOC), find <name> (resolve a name as the chat bridge does)
-  init ...        One-time setup: write world.conf from your Funcom token
+  init ...        One-time setup: write world.private.conf from your Funcom token
   units ...       render DEST: systemd user units for unattended running
 
   `dune-awakening <subcommand> --help` shows each subcommand's options.
@@ -70,7 +70,7 @@ Environment (defaults in parentheses):
   DUNE_STATE_DIR         runtime state and logs (default $XDG_DATA_HOME/dune_awakening_server/runtime,
                          XDG_DATA_HOME defaulting to ~/.local/share)
   DUNE_UNPACKED_DIR      unpacked Funcom images (default $XDG_DATA_HOME/dune_awakening_server/unpacked)
-  DUNE_EXTERNAL_ADDRESS  address clients use (world.conf EXTERNAL_ADDRESS, else the default route's source address)
+  DUNE_EXTERNAL_ADDRESS  address clients use (EXTERNAL_ADDRESS in world.private.conf or world.conf, else the default route's source address)
   DUNE_COMPONENTS_DIR    component scripts (this tool's own directory)
 
 Outside the project's nix develop environment it re-executes itself inside it (requires nix).
@@ -229,20 +229,30 @@ end
 local WORLD_SETTINGS = { "IDLE_THROTTLE", "ACTIVE_FPS", "IDLE_FPS", "IDLE_AFTER", "IDLE_POLL", "DEEP_IDLE_FPS", "DEEP_IDLE_AFTER",
 	"DEEP_IDLE_POLL", "DEEP_IDLE_NOTICE", "NOTIFY_TO", "NOTIFY_CMD", "MAPS", "MAPS_ALWAYS_ON", "MAP_SCALER", "MAP_IDLE_AFTER", "MAP_POLL", "THUFIR_INBOX" }
 
--- world.conf is written with Bash %q quoting, so let Bash read it. Each value is printed on its own line, with
--- newlines inside a value flattened to spaces.
+-- The world's settings: world.conf (shareable) and then world.private.conf (identity, addresses, contacts; kept out of
+-- shared config), so a key in the private file wins. Either may be missing, not both. Both are written with Bash %q
+-- quoting, so let Bash read them. Each value is printed on its own line, with newlines inside a value flattened to spaces.
+local WORLD_CONFS = { "world.conf", "world.private.conf" }
+local function world_conf_exists(config_dir)
+	for _, name in ipairs(WORLD_CONFS) do
+		local f = io.open(config_dir .. "/" .. name); if f then f:close(); return true end
+	end
+	return false
+end
+
 local function load_world(config_dir)
 	local conf = config_dir .. "/world.conf"
-	local f = io.open(conf); if not f then die(EXIT_ERR, "missing %s; run dune-world-init", conf) end; f:close()
+	if not world_conf_exists(config_dir) then die(EXIT_ERR, "missing %s (and world.private.conf); run dune-world-init", conf) end
 	local vars = { "WORLD_UNIQUE_NAME", "WORLD_DISPLAY_NAME", "WORLD_REGION", "EXTERNAL_ADDRESS" }
 	for _, k in ipairs(WORLD_SETTINGS) do vars[#vars + 1] = k end
 	local refs = {}
 	for i, k in ipairs(vars) do refs[i] = "\"${" .. k .. "-}\"" end
-	local out, ok = capture("bash -c '. \"$1\" && for v in " .. table.concat(refs, " ") .. "; do printf \"%s\\n\" \"${v//$'\"'\"'\\n'\"'\"'/ }\"; done' _ " .. q(conf))
-	if not ok then die(EXIT_ERR, "cannot read %s", conf) end
+	local out, ok = capture("bash -c 'for c in \"$@\"; do if [ -e \"$c\" ]; then . \"$c\" || exit 1; fi; done && for v in " .. table.concat(refs, " ") ..
+		"; do printf \"%s\\n\" \"${v//$'\"'\"'\\n'\"'\"'/ }\"; done' _ " .. q(conf) .. " " .. q(config_dir .. "/world.private.conf"))
+	if not ok then die(EXIT_ERR, "cannot read %s or world.private.conf", conf) end
 	local v = {}
 	for line in (out .. "\n"):gmatch("([^\n]*)\n") do v[#v + 1] = line end
-	if (v[1] or "") == "" then die(EXIT_ERR, "%s has no WORLD_UNIQUE_NAME", conf) end
+	if (v[1] or "") == "" then die(EXIT_ERR, "no WORLD_UNIQUE_NAME in %s or world.private.conf", conf) end
 	local settings = {}
 	for i, k in ipairs(WORLD_SETTINGS) do settings[k] = v[4 + i] ~= "" and v[4 + i] or nil end
 	return { unique = v[1], display = v[2] ~= "" and v[2] or v[1], region = v[3] ~= "" and v[3] or "North America", external = v[4] ~= "" and v[4] or nil,
@@ -630,9 +640,8 @@ local function main()
 	local env = setup_env()
 	warn_templates(opts, env.DUNE_CONFIG_DIR)
 	if TOOLS[opts.cmd] then
-		-- Tools see the world identity too (doctor probes components that need it), once world.conf exists; init runs before.
-		local wc = io.open(env.DUNE_CONFIG_DIR .. "/world.conf", "r")
-		if wc then wc:close(); world_env(env) end
+		-- Tools see the world identity too (doctor probes components that need it), once a world config exists; init runs before.
+		if world_conf_exists(env.DUNE_CONFIG_DIR) then world_env(env) end
 		if not os.getenv("DUNE_PARTITION_INDEX") then setenv("DUNE_PARTITION_INDEX", "0") end
 		local argv = { dir .. "/" .. TOOLS[opts.cmd] }
 		for _, a in ipairs(TOOL_ARGS[opts.cmd] or {}) do argv[#argv + 1] = a end

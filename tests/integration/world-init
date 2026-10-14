@@ -16,7 +16,10 @@ printf '%s.%s.%s\n' "$(printf '{"alg":"HS256"}' | b64url)" "$(printf '{"HostId":
 chmod 600 "$DUNE_CONFIG_DIR/fls_secret"
 
 out=$(libexec/dune-world-init --display-name "My World" --region "North America" 2>&1) || fail "init: $out"
-conf="$DUNE_CONFIG_DIR/world.conf"
+# The identity is a deployment detail: it goes to world.private.conf (0600), leaving world.conf for shareable settings.
+conf="$DUNE_CONFIG_DIR/world.private.conf"
+[ "$(stat -c %a "$conf" 2>/dev/null)" = 600 ] || fail "world.private.conf missing or not 0600"
+[ -e "$DUNE_CONFIG_DIR/world.conf" ] && fail "init wrote world.conf"
 # shellcheck disable=SC1090
 ( . "$conf" && printf '%s\n' "$WORLD_UNIQUE_NAME" ) > "$work/name1" 2>/dev/null || fail "world.conf not sourceable"
 grep -Eq '^sh-a1b2c3d4-[a-z]{6}$' "$work/name1" || fail "unique name not sh-<HostId>-<6 letters>: $(cat "$work/name1")"
@@ -31,4 +34,18 @@ out=$(libexec/dune-world-init --display-name "Renamed" --region "North America" 
 [ "$( . "$conf" && printf '%s' "$WORLD_UNIQUE_NAME")" = "$(cat "$work/name1")" ] || fail "re-init changed the unique name"
 [ "$( . "$conf" && printf '%s' "$WORLD_DISPLAY_NAME")" = Renamed ] || fail "re-init did not update the display name"
 [ "$(cat "$pw")" = "$pw1" ] || fail "re-init changed the join password"
+
+# Re-init keeps the other private settings, and leaves world.conf's shareable settings alone.
+printf 'EXTERNAL_ADDRESS=10.4.4.4\nNOTIFY_TO=%q\n' "some one" >> "$conf"
+printf 'IDLE_FPS=3\n' > "$DUNE_CONFIG_DIR/world.conf"
+out=$(libexec/dune-world-init --display-name "Again" --region "Europe" 2>&1) || fail "re-init: $out"
+[ "$( . "$conf" && printf '%s|%s|%s|%s' "$WORLD_UNIQUE_NAME" "$WORLD_DISPLAY_NAME" "$EXTERNAL_ADDRESS" "$NOTIFY_TO")" = "$(cat "$work/name1")|Again|10.4.4.4|some one" ] ||
+	fail "re-init lost private settings: $(cat "$conf")"
+[ "$(cat "$DUNE_CONFIG_DIR/world.conf")" = IDLE_FPS=3 ] || fail "re-init touched world.conf"
+
+# An identity written by older versions into world.conf is kept: FLS ties the battlegroup to the unique name.
+unlink "$conf"
+printf 'WORLD_UNIQUE_NAME=sh-a1b2c3d4-legacy\nIDLE_FPS=3\n' > "$DUNE_CONFIG_DIR/world.conf"
+out=$(libexec/dune-world-init --display-name "Old" --region "Europe" 2>&1) || fail "legacy init: $out"
+[ "$( . "$conf" && printf '%s' "$WORLD_UNIQUE_NAME")" = sh-a1b2c3d4-legacy ] || fail "init replaced a unique name from world.conf"
 exit "$failures"

@@ -44,7 +44,8 @@ mkdir -p -m 700 ~/.config/dune_awakening_server
 cp -r config.sample/. ~/.config/dune_awakening_server/
 #    fls_secret.sample   -> fls_secret     (your Funcom token, one line)
 #    join_password.sample -> join_password (optional in-game password)
-#    world.conf.sample   -> generate it instead: dune-awakening init --display-name "My World" --region "North America"
+#    world.conf.sample   -> world.conf     (optional shareable settings); then generate the world's identity
+#                           into world.private.conf: dune-awakening init --display-name "My World" --region "North America"
 #    gm_bridge.conf.sample -> gm_bridge.conf (optional: who may use in-game & chat commands; docs/admin.md)
 chmod 600 ~/.config/dune_awakening_server/fls_secret
 
@@ -60,7 +61,7 @@ bin/dune-awakening start
 bin/dune-awakening status
 ```
 
-Leftover `*.sample` / `*.default` files in the config directory make `dune-awakening` print a yellow warning (silence it with `--no-warn` or `DUNE_NO_WARNINGS=1`). Open UDP 7777 and TCP 31982 in your firewall for the players' network, plus UDP 7778–7808 for the other maps. For friends outside your LAN, [Tailscale node sharing](https://tailscale.com/kb/1084/sharing) works well: share just the server machine with their own Tailscale account, and set `EXTERNAL_ADDRESS` in `world.conf` to the server's Tailscale address (`tailscale ip -4`). Tailscale Funnel cannot work, because it carries TCP only.
+Leftover `*.sample` / `*.default` files in the config directory make `dune-awakening` print a yellow warning (silence it with `--no-warn` or `DUNE_NO_WARNINGS=1`). Open UDP 7777 and TCP 31982 in your firewall for the players' network, plus UDP 7778–7808 for the other maps. For friends outside your LAN, [Tailscale node sharing](https://tailscale.com/kb/1084/sharing) works well: share just the server machine with their own Tailscale account, and set `EXTERNAL_ADDRESS` in `world.private.conf` to the server's Tailscale address (`tailscale ip -4`). Tailscale Funnel cannot work, because it carries TCP only.
 
 ## The `dune-awakening` command
 
@@ -76,7 +77,7 @@ Everything runs through one command, `bin/dune-awakening`. It works from any dir
 | `backup …` | `create`, `list`, `verify` (restore drill), `restore --yes`, `prune` (retention policy in `backup.conf`) |
 | `character …` | One character: `list`, `show`, `set-intel`/`add-intel`, `set-skill-points`/`add-skill-points`, `export`, `validate`, `import`, and live or offline: `move` (to another player or X Y Z), `where`, `kick`, `water`, `xp`, `whisper`, `worm`, `give` |
 | `items …` | Item names for the in-game `&give`: `refresh` writes the private list of item ids and names from the game's own tables (needs `DUNE_RETOC`; run after each update), `find <name>` resolves a name as the bridge does (see [docs/admin.md](docs/admin.md#giving-items)) |
-| `init …` | One-time setup: writes `world.conf` from your Funcom token |
+| `init …` | One-time setup: writes the world's identity to `world.private.conf` from your Funcom token |
 | `units render DEST` | systemd user units for unattended running (world at boot, self-heal, backups, update check) |
 
 `dune-awakening <subcommand> --help` lists each subcommand's options.

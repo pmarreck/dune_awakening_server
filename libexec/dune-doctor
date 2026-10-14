@@ -56,7 +56,7 @@ check_config_dir() {
 
 check_config_files() {
 	local f open=()
-	for f in fls_secret join_password world.conf backup.conf public-scrub gm_bridge.conf; do
+	for f in fls_secret join_password world.conf world.private.conf backup.conf public-scrub gm_bridge.conf; do
 		[ -e "$DUNE_CONFIG_DIR/$f" ] && too_open "$DUNE_CONFIG_DIR/$f" && open+=("$f ($(mode_of "$DUNE_CONFIG_DIR/$f"))")
 	done
 	if [ ${#open[@]} -gt 0 ]; then report config-files fail "readable by others: ${open[*]}; run: chmod 600 on each in $DUNE_CONFIG_DIR"
@@ -110,11 +110,14 @@ check_default_passwords() {
 	else report default-passwords ok "no default passwords in use"; fi
 }
 
+# The identity may be in world.conf or in world.private.conf (where init writes it).
 check_world_config() {
-	local f="$DUNE_CONFIG_DIR/world.conf"
-	if [ ! -r "$f" ]; then report world-config fail "$f is missing; run: dune-awakening init"; return; fi
-	grep -q '^WORLD_UNIQUE_NAME=..*' "$f" || { report world-config fail "$f has no WORLD_UNIQUE_NAME; run: dune-awakening init"; return; }
-	report world-config ok "world.conf names the world"
+	local f="$DUNE_CONFIG_DIR/world.conf" p="$DUNE_CONFIG_DIR/world.private.conf" c
+	if [ ! -r "$f" ] && [ ! -r "$p" ]; then report world-config fail "$f and $p are missing; run: dune-awakening init"; return; fi
+	for c in "$p" "$f"; do
+		[ -r "$c" ] && grep -q '^WORLD_UNIQUE_NAME=..*' "$c" && { report world-config ok "${c##*/} names the world"; return; }
+	done
+	report world-config fail "neither world.conf nor world.private.conf has a WORLD_UNIQUE_NAME; run: dune-awakening init"
 }
 
 # The Funcom token is a JWT; its exp claim says when the world stops being able to register.

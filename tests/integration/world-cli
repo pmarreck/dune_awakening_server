@@ -40,6 +40,20 @@ printf 'EXTERNAL_ADDRESS=10.1.1.1\n' >> "$DUNE_CONFIG_DIR/world.conf"
 [ "$(world status --json 2>/dev/null | jq -r '.external_address')" = 10.1.1.1 ] || fail "world.conf EXTERNAL_ADDRESS ignored"
 [ "$(DUNE_EXTERNAL_ADDRESS=10.9.8.7 world status --json 2>/dev/null | jq -r '.external_address')" = 10.9.8.7 ] || fail "DUNE_EXTERNAL_ADDRESS ignored"
 
+# world.private.conf (world identity, addresses, contacts) is read after world.conf, so it can hold the deployment
+# details while world.conf keeps the shareable settings; either file alone is enough.
+cp "$DUNE_CONFIG_DIR/world.conf" "$work/world.conf.keep"
+printf 'WORLD_REGION=%q\nEXTERNAL_ADDRESS=10.3.3.3\n' "North America" > "$DUNE_CONFIG_DIR/world.conf"
+printf 'WORLD_UNIQUE_NAME=sh-priv-zzzzzz\nWORLD_DISPLAY_NAME=%q\nEXTERNAL_ADDRESS=10.2.2.2\n' "Private World" > "$DUNE_CONFIG_DIR/world.private.conf"
+json=$(world status --json 2>/dev/null)
+[ "$(jq -r '[.world.unique_name, .world.display_name, .world.region, .external_address] | join("|")' <<<"$json" 2>/dev/null)" = "sh-priv-zzzzzz|Private World|North America|10.2.2.2" ] ||
+	fail "world.private.conf not read after world.conf: $json"
+mv "$DUNE_CONFIG_DIR/world.conf" "$work/world.conf.shared"
+[ "$(world status --json 2>/dev/null | jq -r '.world.unique_name')" = sh-priv-zzzzzz ] || fail "world.private.conf alone not enough"
+unlink "$DUNE_CONFIG_DIR/world.private.conf"; unlink "$work/world.conf.shared"
+out=$(world status --json 2>&1); [ $? -ne 0 ] && [[ "$out" == *world.conf* ]] || fail "no world config at all not refused: $out"
+cp "$work/world.conf.keep" "$DUNE_CONFIG_DIR/world.conf"
+
 # Leftover .sample/.default templates in the config dir are warned about on stderr, unless silenced.
 mkdir -p "$DUNE_CONFIG_DIR/UserSettings"
 : > "$DUNE_CONFIG_DIR/join_password.sample"; : > "$DUNE_CONFIG_DIR/UserSettings/UserGame.ini.default"

@@ -7,7 +7,8 @@ How to run a private Dune: Awakening 1.5 world natively on NixOS: no Docker, no 
 | File | Created by | Contents |
 |---|---|---|
 | `~/.config/dune_awakening_server/fls_secret` (0600) | the operator, from https://account.duneawakening.com/ | Funcom self-host (FLS) token, retail. It expires one year after it is issued. |
-| `~/.config/dune_awakening_server/world.conf` (0600) | dune-awakening init --display-name "My World" --region "North America"` | `WORLD_UNIQUE_NAME=sh-<hostid>-<suffix>` (never change it after first registration), display name, region |
+| `~/.config/dune_awakening_server/world.private.conf` (0600) | `dune-awakening init --display-name "My World" --region "North America"` | `WORLD_UNIQUE_NAME=sh-<hostid>-<suffix>` (never change it after first registration), display name, region; add `EXTERNAL_ADDRESS` and `NOTIFY_TO` here too. Read after `world.conf`, so its keys win. Keep it out of any shared or version-controlled copy of the config directory |
+| `~/.config/dune_awakening_server/world.conf` (0600) | `config.sample/world.conf.sample` | shareable settings (idle throttle, maps, `NOTIFY_CMD`, `THUFIR_INBOX`); any key may also go in `world.private.conf`. Worlds set up before 2026-10-14 may still have their identity here, which keeps working |
 | `~/.config/dune_awakening_server/join_password` (0600) | dune-awakening init` | In-game join password. Read it with `cat` and share it with your players privately |
 
 ## Payload
@@ -35,12 +36,12 @@ dune-awakening doctor         # health check of the setup (read-only; exit 1 on 
 | Check | ✗ fail / ⚠ warn when |
 |---|---|
 | `config-dir` | the config directory is missing, not yours, or open to group/others (✗) |
-| `config-files` | `fls_secret`, `join_password`, `world.conf`, `backup.conf`, `public-scrub` or `gm_bridge.conf` is readable by others (✗) |
+| `config-files` | `fls_secret`, `join_password`, `world.conf`, `world.private.conf`, `backup.conf`, `public-scrub` or `gm_bridge.conf` is readable by others (✗) |
 | `secrets` | the generated secrets directory or a file in it is readable by others (✗); it does not exist yet (⚠) |
 | `data-dirs` | the state, unpacked payload or Steam download directory is missing or unreadable (✗) |
 | `templates` | `*.sample` / `*.default` files are left in the config directory (⚠) |
 | `default-passwords` | the join, admin, GM or database password is empty or a known default (`sardaukar`, `seabass`, `postgres`, `change-me`), or the map server's `Game.ini` carries `sardaukar` (✗) |
-| `world-config` | `world.conf` is missing or names no world (✗) |
+| `world-config` | neither `world.conf` nor `world.private.conf` exists or names the world (✗) |
 | `fls-token` | the Funcom token has expired (✗), expires within 30 days or cannot be read (⚠) |
 | `components` | a component is not running (⚠: fine when the world is meant to be stopped) |
 | `database` | postgres rejects the admin, listens beyond loopback, lacks the game database, or rejects the game's role (✗) |
@@ -48,7 +49,7 @@ dune-awakening doctor         # health check of the setup (read-only; exit 1 on 
 
 It prints no secret. `DUNE_NOW` (ISO time) replaces the clock, for tests.
 
-The address clients use comes from `DUNE_EXTERNAL_ADDRESS`, else `EXTERNAL_ADDRESS=` in `world.conf`, else the source address of the default route.
+The address clients use comes from `DUNE_EXTERNAL_ADDRESS`, else `EXTERNAL_ADDRESS=` in `world.private.conf` or `world.conf`, else the source address of the default route.
 
 Runtime state: `~/.local/share/dune_awakening_server/runtime/` (0700). Logs, all private:
 

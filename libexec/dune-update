@@ -106,7 +106,7 @@ notify_update() {
 	last=$(cat "$state" 2>/dev/null)
 	update_notice_due "$installed" "$latest" "$last" || return 0
 	if [ -z "${DUNE_NOTIFY_TO:-}" ]; then
-		printf '%s: update notice for build %s not sent: NOTIFY_TO is not set in world.conf\n' "$NAME" "$latest" >&2
+		printf '%s: update notice for build %s not sent: NOTIFY_TO is not set in world.private.conf or world.conf\n' "$NAME" "$latest" >&2
 		return 0
 	fi
 	subject="Dune server update available: Steam build $latest${DUNE_WORLD_DISPLAY_NAME:+ ($DUNE_WORLD_DISPLAY_NAME)}"

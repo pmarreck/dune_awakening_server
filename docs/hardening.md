@@ -40,7 +40,7 @@ Paths below are relative to these roots, all resolved by `bin/dune-awakening` (`
 
 | Symbol | Default | Holds |
 |---|---|---|
-| `$CONFIG` | `$XDG_CONFIG_HOME/dune_awakening_server` | operator inputs: `fls_secret`, `world.conf`, `join_password`, `gm_bridge.conf`, `backup.conf`, `notify`, `UserSettings/` |
+| `$CONFIG` | `$XDG_CONFIG_HOME/dune_awakening_server` | operator inputs: `fls_secret`, `world.conf`, `world.private.conf`, `join_password`, `gm_bridge.conf`, `backup.conf`, `notify`, `UserSettings/` |
 | `$DATA` | `$XDG_DATA_HOME/dune_awakening_server` | everything below |
 | `$STATE` | `$DATA/runtime` | runtime state and logs of every component |
 | `$SECRETS` | `$STATE/secrets` | generated passwords, broker TLS, symlinks to `$CONFIG/fls_secret` and `join_password` |
