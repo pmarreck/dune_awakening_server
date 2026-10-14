@@ -10,8 +10,8 @@ local M = {}
 M.NOT_ALLOWED = "not allowed"
 -- Permissions a policy line can grant. give puts items into your own inventory; give-others into another player's;
 -- water and water-others likewise refill water containers, fuel and fuel-others hand out vehicle fuel cells, unlock and unlock-others open a school's skill tree;
--- thufir sends a message to the operator's assistant.
-M.COMMANDS = { "bring", "fuel", "fuel-others", "give", "give-others", "goto", "kick", "say", "thufir", "timeout", "unlock", "unlock-others", "water",
+-- thufir sends a message to the operator's assistant; newbie whispers a newcomer tip.
+M.COMMANDS = { "bring", "fuel", "fuel-others", "give", "give-others", "goto", "kick", "newbie", "say", "thufir", "timeout", "unlock", "unlock-others", "water",
 	"water-others", "where" }
 -- Longest &thufir message passed on (chat lines are shorter; this only bounds a hostile client).
 local MAX_NOTE = 2000
@@ -187,7 +187,31 @@ local function ok_arg(s) return s and s ~= "" and #s <= MAX_ARG and not s:find("
 -- plan(cmd, sender = {fls, name, origin}, policy, item_db) -> {actions = {argv...}, reply}. argv arrays are dune-live
 -- arguments; the caller runs them without a shell. Authorization is the caller's job (see authorize and permission).
 -- item_db (lib/items.lua build) is needed only for give.
-function M.plan(cmd, sender, policy, item_db)
+-- parse_tips(text) -> {{category, text}...} from the guide's newbie-tips.tsv (`category<TAB>tip` per line). Comments,
+-- blank lines and lines without a tab are skipped; categories are lowercased so filtering ignores case.
+function M.parse_tips(text)
+	local tips = {}
+	for line in ((text or "") .. "\n"):gmatch("([^\n]*)\n") do
+		local cat, tip = line:match("^([^#\t][^\t]*)\t(.-)%s*$")
+		if cat and tip ~= "" then tips[#tips + 1] = { category = cat:lower(), text = tip } end
+	end
+	return tips
+end
+
+-- One &newbie reply: a tip drawn by pick(n) -> 1..n from all tips or from one category.
+local function newbie(rest, tips, pick)
+	if not tips or #tips == 0 then return "no tips available" end
+	local want, pool, cats, seen = rest:lower(), {}, {}, {}
+	for _, t in ipairs(tips) do
+		if want == "" or t.category == want then pool[#pool + 1] = t end
+		if not seen[t.category] then seen[t.category] = true; cats[#cats + 1] = t.category end
+	end
+	if #pool == 0 then table.sort(cats); return "no tips about " .. rest .. "; try: " .. table.concat(cats, ", ") end
+	local t = pool[pick(#pool)]
+	return "tip (" .. t.category .. "): " .. t.text
+end
+
+function M.plan(cmd, sender, policy, item_db, tips, pick)
 	local me = sender.name
 	local n = cmd.name
 	if n == "help" then
@@ -223,6 +247,8 @@ function M.plan(cmd, sender, policy, item_db)
 		local who = cmd.rest ~= "" and cmd.rest or me
 		if not ok_arg(who) then return usage("&water [player]") end
 		return { actions = { { "character", "water", who, M.WATER_FILL } }, reply = who == me and "water refilled" or ("refilled " .. who .. "'s water") }
+	elseif n == "newbie" then
+		return { actions = {}, reply = newbie(cmd.rest, tips, pick or function(k) return math.random(k) end) }
 	elseif n == "fuel" then
 		local who = cmd.rest ~= "" and cmd.rest or me
 		if not ok_arg(who) then return usage("&fuel [player]") end

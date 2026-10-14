@@ -1,0 +1,60 @@
+start	Open the Journey menu (J) and follow the A New Beginning cards in order. They list exactly what to gather, research and craft next.
+start	Spend skill points and Intel as soon as you get them. Unspent points do nothing.
+start	Pick up loose rocks, ore pieces and salvage scrap as you walk. Small pieces are collected by hand; big wrecks need a Cutteray.
+start	Map colors: green markers (shipwrecks) hold weapon and armor parts, blue (testing stations) vehicle parts, orange (sealed caves) water and gathering parts.
+research	Research what the journey asks for first: clothing, pistol, binoculars, respawn beacon, construction kit, blood extractor, purifier, refinery.
+research	Get the Vehicle Backup Tool early. It stores a sandbike and can recover a destroyed vehicle for Solari.
+research	Enemy outposts hold Intel pickups marked on the map. Scout them with binoculars from a safe distance first.
+research	Each Cutteray tier mines new ores: Mk2 carbon, Mk3 aluminum, Mk4 jasmium. If a node will not mine, your Cutteray is too low.
+water	Keep hydration above one third for a stamina bonus, above two thirds for a bigger one. At zero you lose health.
+water	Dew Flowers only fill you to one third and too much causes nausea. Use them to top up, not as your main water.
+water	Carry a blood extractor and a blood sack. Every fight is a water refill.
+water	Drinking raw blood costs max health. Put it in a Blood Purifier at your base for clean water.
+water	Drink your stillsuit catchpockets first; they refill while you wear the suit.
+water	Dew Reapers work best at dawn.
+water	The world does not pause in the Escape menu. Your water keeps draining while you sit in menus.
+heat	Direct sun fills the sunstroke bar, and sunstroke speeds dehydration. Step into shadow to clear it.
+heat	Travel by night and do base chores at midday. The game itself gives this advice.
+heat	Hot regions drain water faster no matter what. Better stillsuits have more Heat Protection.
+worms	When the vibration bar turns red, a worm is close. Get onto rock immediately.
+worms	The worm threat meter does not drain while you are on sand. It only drains once you are on rock or in the air.
+worms	Cross open sand in short hops from rock to rock, by the shortest line. Never stop on sand to loot or mine.
+worms	Crouching makes as much worm threat as walking. Running only adds a third more. Dashing is much louder.
+worms	Never switch on a personal shield on open sand. It makes worm threat over 30 times faster than walking.
+worms	Suspensors and drumsand are loud too: about 13 times the threat of walking.
+worms	Watch the map for quicksand and drumsand markers. Quicksand can kill; drumsand calls the worm.
+worms	Do not stand near a spice blow when it erupts. The shockwave destroys everything nearby.
+worms	In an ornithopter, climb when a worm is near. Low flight is still vulnerable.
+worms	A thumper on open sand attracts and distracts the worm. Place it away from where you work.
+travel	Fire a survey probe from high ground to reveal the whole area: places, resources, hazards and terrain.
+travel	Use binoculars to spot outposts and set a waypoint before you walk into anything.
+travel	To leave a map you need a flying vehicle, at least 50% fuel and 30% hydration, and no passengers.
+travel	Tradepost taxi pilots fly you to another tradepost for 150 Solari or to a city for 500.
+travel	Cross to the Vermillius Gap on a sandbike, by the short flat route just northeast of Griffin's Reach.
+death	Place a Respawn Beacon before any risky trip. Only one is active; a new one replaces the old.
+death	When you die, your backpack drops at the Death Location marker. Go straight back; it does not last forever.
+death	Leave valuables in base storage before risky trips. Only what you carry can drop.
+death	A sandworm kill loses what you carry and destroys the vehicle you are in. On this server it takes your backpack.
+vehicles	Park inside your own claim under a roof. Vehicles outside a claim decay even when sheltered.
+vehicles	Never leave a ground vehicle behind when changing maps. It is destroyed; store it in the Vehicle Backup Tool first.
+vehicles	Vehicles burn Vehicle Fuel Cells made at a Chemical Refinery, not raw Fuel Cells. Carry a spare.
+vehicles	A destroyed vehicle can be rebuilt in the Vehicle Backup Tool's Recovery mode for Solari. Its cargo is lost.
+base	Build your first base small, on rock, in Hagga Basin South. The journey later has you move it north.
+base	Move your Sub-Fief Console inside your shelter, and feed the generator Fuel Cells to power machines and the base shield.
+base	Fuel Cells come from scavenger camps. Put them in base storage, then process them in the generator.
+base	Back up your base with the Base Reconstruction Tool before big moves. It keeps up to three bases.
+base	Base gone or vehicle missing? Check the Activity Log in the Communinet tab of the Social menu.
+base	When a sandstorm warning shows, get indoors, into a cave or a tradepost. Your shelter status shows above the water bar.
+combat	Three quick light attacks stagger. A heavy attack breaks block and gets through shields after a stagger.
+combat	Block just as the enemy swings to parry. It staggers them and gives you stamina back.
+combat	Beat shielded enemies with stagger plus heavy attack, or poison or fire, which pass through shields.
+combat	Staggered? Dash in any direction to snap out of it.
+combat	Craft Healkits from Plant Fiber, which grows everywhere. Keep a stack on your hotbar.
+combat	Holster your weapon to move faster when you are not fighting.
+money	Take contracts from tradepost boards. Rewards that do not fit your bag can be claimed later in the Journey menu.
+money	NPC vendors buy back at a small fraction of their price. Sell valuable items to players on the Exchange instead.
+keys	Keys: J journey, M map, I inventory, Y research, K skills, B crafting, P social, O guild, N Communinet, Enter chat.
+keys	Mark one item for Quick Swap on the loadout wheel, then double-tap Holster to switch to it.
+server	On this server, sandstorms give about two minutes of warning and never damage buildings.
+server	On this server, inventory volume is 10 times normal, but you still have 35 backpack slots.
+server	On this server, type &help in chat to see which & commands you may use.

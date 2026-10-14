@@ -69,9 +69,9 @@ if errors[1] and not errors[1]:find("line 9", 1, true) then fail("error does not
 
 -- Authorization as a classifier: every sender x command, allow/deny. Senders by name, by FLS id, unlisted,
 -- and unresolvable (whois failed: no name).
-local COMMANDS = { "help", "where", "goto", "bring", "say", "timeout", "give", "give-others", "fuel", "fuel-others", "kick", "thufir", "unlock", "unlock-others", "water", "water-others", "bogus" }
+local COMMANDS = { "help", "where", "goto", "bring", "say", "timeout", "give", "give-others", "fuel", "fuel-others", "kick", "newbie", "thufir", "unlock", "unlock-others", "water", "water-others", "bogus" }
 local senders = {
-	{ "alice by name", ALICE, "Alice", { help = 1, where = 1, goto = 1, bring = 1, say = 1, timeout = 1, give = 1, ["give-others"] = 1, fuel = 1, ["fuel-others"] = 1, kick = 1, thufir = 1, unlock = 1, ["unlock-others"] = 1, water = 1, ["water-others"] = 1 } },
+	{ "alice by name", ALICE, "Alice", { help = 1, where = 1, goto = 1, bring = 1, say = 1, timeout = 1, give = 1, ["give-others"] = 1, fuel = 1, ["fuel-others"] = 1, kick = 1, newbie = 1, thufir = 1, unlock = 1, ["unlock-others"] = 1, water = 1, ["water-others"] = 1 } },
 	{ "bob by fls", BOB, "Bob", { help = 1, where = 1, goto = 1 } },
 	{ "bob unresolved", BOB, nil, { help = 1, where = 1, goto = 1 } },
 	{ "carol spaced", CAROL, "Carol", { help = 1, say = 1, timeout = 1 } },
@@ -186,7 +186,7 @@ end
 p = gm.plan(gm.parse_command("&where"), { fls = ALICE, name = "Alice" }, policy)
 eq("where without origin: no actions", #p.actions, 0); eq("where without origin: reply", p.reply, "your position is unknown")
 -- help lists only what the sender may run.
-eq("help for alice", plan("&help").reply, "commands: bring, fuel, fuel-others, give, give-others, goto, kick, say, thufir, timeout, unlock, unlock-others, water, water-others, where")
+eq("help for alice", plan("&help").reply, "commands: bring, fuel, fuel-others, give, give-others, goto, kick, newbie, say, thufir, timeout, unlock, unlock-others, water, water-others, where")
 eq("help for bob", gm.plan(gm.parse_command("&help"), { fls = BOB, name = "Bob" }, policy).reply, "commands: goto, where")
 eq("not allowed reply", gm.NOT_ALLOWED, "not allowed")
 
@@ -262,6 +262,26 @@ do
 	for s in out:gmatch("([^%z]*)%z") do got[#got + 1] = s end
 	same("shell_quote round trip", got, nasty)
 	eq("argv to a command line", gm.command_line({ "/x/dune-live", "world", "say", "a'b" }), "'/x/dune-live' 'world' 'say' 'a'\\''b'")
+end
+
+-- &newbie: a random newcomer tip, optionally from one category. Tips come from a TSV (category<TAB>text); the
+-- choice is injected (pick(n) -> 1..n) so tests are deterministic.
+do
+	local tips = gm.parse_tips("# comment\nworms\tStay on rock.\n\nwater\tDrink early.\nWorms\tCross in hops.\nbroken line without tab\n")
+	same("parse_tips keeps category/text rows only", tips, {
+		{ category = "worms", text = "Stay on rock." }, { category = "water", text = "Drink early." }, { category = "worms", text = "Cross in hops." } })
+	local seen
+	local function pick(n) seen = n; return n end
+	local function nb(text) return gm.plan(gm.parse_command(text), alice, policy, nil, tips, pick) end
+	local r = nb("&newbie")
+	same("newbie: no actions", r.actions, {})
+	eq("newbie: random over all tips", seen, 3); eq("newbie reply", r.reply, "tip (worms): Cross in hops.")
+	r = nb("&newbie WATER")
+	eq("newbie category, any case", r.reply, "tip (water): Drink early."); eq("newbie category pool", seen, 1)
+	r = nb("&newbie worms"); eq("newbie category pool of two", seen, 2); eq("newbie worms reply", r.reply, "tip (worms): Cross in hops.")
+	eq("newbie unknown category lists categories", nb("&newbie lasguns").reply, "no tips about lasguns; try: water, worms")
+	eq("newbie with no tips loaded", gm.plan(gm.parse_command("&newbie"), alice, policy, nil, {}, pick).reply, "no tips available")
+	eq("newbie permission", gm.permission(gm.parse_command("&newbie worms"), "Alice"), "newbie")
 end
 
 os.exit(failures == 0 and 0 or 1)
