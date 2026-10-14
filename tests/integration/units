@@ -33,7 +33,7 @@ grep -q '^ExecStartPost=.*dune-awakening" backup prune$' "$out/dune-backup.servi
 grep -q '^SuccessExitStatus=1$' "$out/dune-update-check.service" || fail "update available should not mark the check failed"
 # Hourly, announcing each new build once (a daily check missed a build published mid-morning for 12 hours); it never
 # applies the update.
-grep -q '^OnCalendar=hourly$' "$out/dune-update-check.timer" || fail "update check not hourly: $(grep OnCalendar "$out/dune-update-check.timer")"
+grep -qFx 'OnCalendar=*-*-* 00/3:00:00' "$out/dune-update-check.timer" || fail "update check not every 3 hours: $(grep OnCalendar "$out/dune-update-check.timer")"
 grep -q '^ExecStart=.*dune-awakening" update check --json --notify$' "$out/dune-update-check.service" || fail "update check does not notify: $(grep ExecStart "$out/dune-update-check.service")"
 grep -q 'apply' "$out/dune-update-check.service" && fail "update check unit applies updates"
 p=$(sed -n 's/^Environment="PATH=\(.*\)"$/\1/p' "$out/dune-world.service"); [ "$(tr : '\n' <<<"$p" | collate | uniq -d)" = "" ] || fail "duplicate PATH entries: $p"

@@ -2,7 +2,7 @@
 # Render the systemd user units that run the Dune world unattended: the world itself (start at boot, stop at
 # shutdown), a self-heal timer (`dune-awakening heal` every 5 minutes while the world is meant to be up: cheap liveness
 # checks, and the idempotent `start` only when something is down),
-# a daily backup with pruning, a weekly restore drill and an hourly Steam update check that announces each new build once. Paths are filled in from this
+# a daily backup with pruning, a weekly restore drill and a Steam update check every 3 hours that announces each new build once. Paths are filled in from this
 # checkout and the host's nix/luajit, so nothing is hardcoded. Installing them is a host change for the host administrator.
 set -u
 NAME=dune-units
@@ -19,7 +19,7 @@ Write systemd user units for this checkout ($root) into DEST:
                                   active, so \`systemctl --user stop dune-world\` stays stopped
   dune-backup.timer/.service      daily 04:30 backup, then prune (7 days, then weekly for 3 months)
   dune-backup-verify.timer/...    weekly restore drill of the newest backup
-  dune-update-check.timer/...     hourly Steam build check; JSON result in the journal (exit 1 = update available);
+  dune-update-check.timer/...     Steam build check every 3 hours; JSON result in the journal (exit 1 = update available);
                                   one notice per new build through NOTIFY_CMD/NOTIFY_TO (never applies it)
 
 Install (host change): copy DEST/* to ~/.config/systemd/user/, then
@@ -142,10 +142,10 @@ ExecStart=$world update check --json --notify
 SuccessExitStatus=1"
 
 unit dune-update-check.timer "[Unit]
-Description=Hourly Dune server update check
+Description=Dune server update check every 3 hours
 
 [Timer]
-OnCalendar=hourly
+OnCalendar=*-*-* 00/3:00:00
 Persistent=true
 
 [Install]

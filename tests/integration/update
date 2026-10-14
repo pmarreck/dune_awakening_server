@@ -123,7 +123,7 @@ exec 8>&-
 [ "$rc" -eq 1 ] && [[ "$out" == *lock* ]] || fail "apply did not give up on a held lock: rc $rc: $out"
 grep -q '^world stop' "$work/calls" && fail "apply stopped the world without the lock"
 
-# check --notify (the hourly timer): one notice per new Steam build, through NOTIFY_CMD with the post tool's
+# check --notify (the scheduled timer): one notice per new Steam build, through NOTIFY_CMD with the post tool's
 # arguments; the build last announced is kept in DUNE_STATE_DIR/update-notified. Never an automatic apply.
 cat > "$work/fake/notify" <<EOF
 #!$BASH
@@ -148,7 +148,7 @@ n=$(cat "$work/last-notice" 2>/dev/null)
 for _ in 1 2; do libexec/dune-update check --notify >/dev/null 2>&1; done
 [ "$(notices)" = 1 ] || fail "notice repeated for the same build: $(notices)"
 grep -q '^world \|app_update' "$work/calls" && fail "check --notify applied the update: $(paste -sd, "$work/calls")"
-# A failed notice is not recorded, so the next hourly check tries again.
+# A failed notice is not recorded, so the next scheduled check tries again.
 echo 106 > "$work/latest"; touch "$work/notify-fails"
 out=$(libexec/dune-update check --notify 2>&1); [ $? -eq 1 ] || fail "check with a failed notice changed the exit status"
 [[ "$out" == *notice*failed* || "$out" == *failed*notice* ]] || fail "failed notice not reported: $out"
