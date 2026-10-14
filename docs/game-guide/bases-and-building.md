@@ -160,7 +160,7 @@ Chest, Small Storage Container, Medium Storage Container and Storage Container a
 
 ### Sandstorm damage on this server
 
-Damage per tick defaults to 5 for small and 7 for large sandstorms, separately for players, buildings, placeables and vehicles, with about 40 seconds between the warning and full strength (verified on this server). Coriolis storms here are warned 6 hours ahead and do no damage unless the owner enables it (verified on this server). Server owners can turn off environmental building damage entirely ("Base Decay", `bAllowDynamicBuildingDamage`) or make buildings ignore sandstorms (`m_bMitigateAllSandstormDamage`) (game text; this project's operations notes). On official Deep Desert instances, Coriolis storms wipe structures weekly (official blog 2025).
+Damage per tick defaults to 5 for small and 7 for large sandstorms, separately for players, buildings, placeables and vehicles, with Funcom's default of 40 seconds between the warning and full strength; this server lengthened that to about two minutes and set building and placeable damage to 0 (server config, docs/admin.md). Coriolis storms here are warned 6 hours ahead and do no damage unless the owner enables it (verified on this server). Server owners can turn off environmental building damage entirely ("Base Decay", `bAllowDynamicBuildingDamage`) or make buildings ignore sandstorms (`m_bMitigateAllSandstormDamage`) (game text; this project's operations notes). On official Deep Desert instances, Coriolis storms wipe structures weekly (official blog 2025).
 
 ## Moving, storing and copying bases
 

@@ -15,7 +15,7 @@ The guide lives in `docs/game-guide/`. Start at `docs/game-guide/README.md`, whi
 
 ## Answering
 
-1. Open the chapter for the topic and read its quick answers first; search it with `rg -i` for exact names.
+1. Search entry metadata first (the `frontmatter --json` recipe in the README) and read only matching entries; otherwise open the chapter for the topic and read its quick answers. When two places disagree, the newer, better-sourced statement wins; fix the older one.
 2. Answer with the exact in-game names, and say how sure you are: a `(verified on this server)` or `(game text)` fact can be stated plainly; a wiki or community fact, especially one marked pre-1.5, should be presented as probable.
 3. If the guide is silent or the question is about an exact item, check before guessing:
    - item ids and names: `bin/dune-awakening items find "<name>"`;

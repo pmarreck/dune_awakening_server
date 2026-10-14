@@ -13,6 +13,31 @@ Notes for answering gameplay questions about Dune: Awakening (Funcom) quickly an
 
 Each chapter opens with quick answers, then detail, then sources.
 
+## Detailed entries
+
+Beside the chapters, small entry files (one subject each, JSON frontmatter first) live in section directories. Each section has an `index.frontmatter.md`; the format is in [CONVENTIONS.md](CONVENTIONS.md).
+
+| Section | Holds |
+|---|---|
+| [npcs/](npcs/index.frontmatter.md) | trainers, vendors, faction contacts, story characters, bosses, NPC groups |
+| [zones/](zones/index.frontmatter.md) | regions, cities, tradeposts, points of interest, travel, the merchant directory |
+| [residences/](residences/index.frontmatter.md) | base sites, layout, building sets, ideas |
+| [quests/](quests/index.frontmatter.md) | the story and early-to-mid questlines in suggested order, trainer and faction contracts |
+| [tips/](tips/index.frontmatter.md) | newcomer techniques; `newbie-tips.tsv` feeds the in-game `&newbie` command |
+| [combat/](combat/index.frontmatter.md) | mechanics, weapon families, armor, builds per school |
+| [resources/](resources/index.frontmatter.md) | every resource, where it is, how to gather it, what it makes |
+| [crafting/](crafting/index.frontmatter.md) | tiers, stations, components, costs, with diagrams |
+| [spice/](spice/index.frontmatter.md) | spice fields, harvesting, melange and its uses |
+| [endgame/](endgame/index.frontmatter.md) | Deep Desert, Landsraad, top gear, this server's two-player endgame |
+
+Find entries by metadata before reading bodies:
+
+```
+glob frontmatter --json -- 'docs/game-guide/*/*.frontmatter.md' | jq -r '.documents[] | select((.frontmatter.tags + .frontmatter.aliases) | map(ascii_downcase) | index("buggy")) | "\(.path)\t\(.frontmatter.description)"'
+```
+
+Newer findings supersede older ones: when an entry and a chapter disagree, prefer the more recent and better-sourced statement, and fix the older text.
+
 ## How much to trust a fact
 
 Every substantive fact carries a tag. In decreasing order of authority:
