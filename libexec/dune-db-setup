@@ -27,6 +27,25 @@ rsync -a --delete "$DUNE_DB_UTILS_SRC/" "$instance/" || die "cannot copy db-util
 		"$DUNE_PG_PORT" "$(cat "$dune_pw_file")" "$(cat "$admin_pw_file")" > "$instance/DuneSandbox/Config/UserGame.ini"
 ) || die "cannot write credential ini"
 
+# The game database is named after the payload's version ("dune_" + the stream branch in perforce-keywords.json,
+# //seabass/sb-1.5.15.0/ -> dune_sb_1_5_15_0), so a game update would otherwise start the world on a new, empty one
+# (it did on 2026-10-20). When the payload's database does not exist and exactly one older game database does, rename
+# that one into place first; updatedb.py then applies only the new patches. More than one candidate is left to the operator.
+admin_sql() { PGPASSWORD="$(cat "$admin_pw_file")" psql -X -A -t -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d postgres -c "$1"; }
+carry_game_database() {
+	local target others n
+	target=$(jq -r '.path' "$instance/DuneSandbox/Config/perforce-keywords.json" | sed -E 's#.*//seabass/([^/]+)/.*#\1#; s/[-.]/_/g; s/^/dune_/')
+	[[ "$target" =~ ^dune_[a-z0-9_]+$ ]] || die "cannot derive the game database name from the payload (got '$target')"
+	[ -n "$(admin_sql "select 1 from pg_database where datname = '$target'")" ] && return 0
+	others=$(admin_sql "select datname from pg_database where datname ~ '^dune_sb_[0-9_]+\$' order by datname") || die "cannot list databases"
+	n=$(printf '%s' "$others" | grep -c .)
+	[ "$n" -eq 0 ] && return 0
+	[ "$n" -eq 1 ] || die "the payload's database $target does not exist and several older game databases do ($(printf '%s' "$others" | paste -sd' ' -)); rename the one to keep to $target"
+	admin_sql "alter database $others rename to $target" || die "cannot rename $others to $target (is something connected to it?)"
+	printf 'dune-db-setup: carried the game database over to the new version: %s -> %s\n' "$others" "$target" >&2
+}
+carry_game_database
+
 pg_prefix=$(dirname -- "$(dirname -- "$(command -v psql)")") || die "psql not on PATH"
 cd "$instance/PSQL" || die "cannot enter $instance/PSQL"
 # USERPROFILE points nowhere so no stray per-user ini can override ours.

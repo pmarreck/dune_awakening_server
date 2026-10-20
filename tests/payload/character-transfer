@@ -7,6 +7,7 @@ set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
 . libexec/dune-dirs.bash
 . tests/lib/ports.bash
+. tests/lib/payload.bash
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
@@ -21,7 +22,7 @@ cleanup() { libexec/dune-postgres stop >/dev/null 2>&1; rm -r -- "$work"; }
 trap cleanup EXIT
 libexec/dune-postgres init >/dev/null 2>&1 && libexec/dune-postgres start >/dev/null 2>&1 || { fail "cluster did not start"; exit 1; }
 out=$(libexec/dune-db-setup 2>&1) || { fail "schema install: $(printf '%s' "$out" | tail -5)"; exit 1; }
-db=dune_sb_1_5_3_0
+db=$(payload_db_name "$DUNE_DB_UTILS_SRC")
 dune_pw=$(cat "$DUNE_SECRETS_DIR/postgres_dune_password")
 q() { PGPASSWORD="$dune_pw" psql -X -A -t -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$DUNE_PG_PORT" -U dune -d "$db" -c "set search_path = dune, ext, public; $1"; }
 

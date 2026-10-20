@@ -17,7 +17,7 @@ The downloaded payload (Steam app 4754530, buildid 25486303) is the 1.5 server. 
 - image labels `code_branch=Seabass_sb-1.5.3.0`, `db_branch=sb_1_5_3_0`
 - `perforce-keywords.json`: stream `//seabass/sb-1.5.3.0/`, CL 2094257, 2026/09/02
 
-Database name for this build: `dune_sb_1_5_3_0`, schema `dune` [F, image-internals]. DASH's hardcoded `dune_sb_1_4_0_0` is wrong for it.
+Database name: `dune_` plus the payload's stream branch (`dune_sb_1_5_3_0` for the 1.5.3 builds, `dune_sb_1_5_15_0` from build 26051014), schema `dune` [F, image-internals]; carried across versions by `dune-db-setup` (docs/operations.md, "Game database across versions"). DASH's hardcoded `dune_sb_1_4_0_0` is wrong for it.
 
 Client and server must run the exact same build [community evidence: "M52 Outdated Client"]. Funcom publishes both Steam apps together: public branches updated 31 s apart on 2026-09-24 [F, api.steamcmd.net]. Every client patch therefore forces a same-day server update.
 

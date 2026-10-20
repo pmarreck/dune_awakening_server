@@ -5,6 +5,7 @@ set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
 . libexec/dune-dirs.bash
 . tests/lib/ports.bash
+. tests/lib/payload.bash
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
@@ -33,7 +34,7 @@ out=$(libexec/dune-textrouter start 2>&1) || fail "start: $out\n$(tail -15 "$DUN
 libexec/dune-textrouter status >/dev/null 2>&1 || fail "status nonzero while running"
 log="$DUNE_STATE_DIR/textrouter/textrouter.log"
 [ "$(stat -c %a "$log" 2>/dev/null)" = 600 ] || fail "TextRouter log (contains credentials) is not 0600"
-grep -q "Connecting to database: 'dune_sb_1_5_3_0'" "$log" || fail "TextRouter did not use the payload-derived DB name"
+grep -qF "Connecting to database: '$(payload_db_name "$unpacked/server-text-router/rootfs")'" "$log" || fail "TextRouter did not use the payload-derived DB name"
 
 [ "$(curl -s -m 5 -X POST "http://$DUNE_RMQ_AUTH_ADDRESS/v0/auth/user" -d 'username=nobody&password=x')" = deny ] || fail "unknown user was not denied"
 # The .NET runtime's diagnostics endpoint (a Unix socket any process of the same user can attach a debugger to, in a

@@ -6,6 +6,7 @@ set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
 . libexec/dune-dirs.bash
 . tests/lib/ports.bash
+. tests/lib/payload.bash
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
@@ -17,7 +18,7 @@ cleanup() { libexec/dune-postgres stop >/dev/null 2>&1; rm -r -- "$work"; }
 trap cleanup EXIT
 libexec/dune-postgres init >/dev/null && libexec/dune-postgres start >/dev/null && libexec/dune-db-setup >/dev/null 2>&1 || { fail "db setup"; exit 1; }
 admin_pw=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password")
-sql() { PGPASSWORD="$admin_pw" psql -X -A -t -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune_sb_1_5_3_0 -c "$1" 2>&1; }
+sql() { PGPASSWORD="$admin_pw" psql -X -A -t -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "$(payload_db_name "$DUNE_DB_UTILS_SRC")" -c "$1" 2>&1; }
 
 out1=$(libexec/dune-world-partitions 2>&1) || fail "first run: $out1"
 [[ "$out1" =~ ^Survival_1\ [0-9]+$ ]] || fail "did not print 'Survival_1 <id>': $out1"

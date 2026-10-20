@@ -4,6 +4,7 @@ set -u
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
 . libexec/dune-dirs.bash
 . tests/lib/ports.bash
+. tests/lib/payload.bash
 failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
@@ -21,7 +22,7 @@ admin_pw=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password")
 sql() { PGPASSWORD="$admin_pw" psql -X -A -t -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "$1" -c "$2" 2>&1; }
 
 out=$(libexec/dune-db-setup 2>&1) || fail "first setup exited nonzero: $(printf '%s' "$out" | tail -20)"
-db=dune_sb_1_5_3_0
+db=$(payload_db_name "$DUNE_DB_UTILS_SRC")
 [ "$(sql postgres "select pg_get_userbyid(datdba) from pg_database where datname = '$db'")" = dune ] || fail "database $db missing or not owned by dune"
 [ "$(sql postgres "select datlocprovider::text || ':' || coalesce(datlocale, '') || ':' || pg_encoding_to_char(encoding) from pg_database where datname = '$db'")" = b:C.UTF-8:UTF8 ] || fail "$db did not inherit builtin C.UTF-8 / UTF8"
 [ "$(sql "$db" "select string_agg(e.extname, ',' order by e.extname) from pg_extension e join pg_namespace n on n.oid = e.extnamespace where n.nspname = 'ext'")" = pg_trgm,pgcrypto ] || fail "pgcrypto/pg_trgm not installed in schema ext"
@@ -32,5 +33,21 @@ patches=$(sql "$db" "select count(*) from dune.applied_patches")
 
 out=$(libexec/dune-db-setup 2>&1) || fail "second setup exited nonzero: $(printf '%s' "$out" | tail -20)"
 [ "$(sql "$db" "select count(*) from dune.applied_patches")" = "$patches" ] || fail "second setup changed applied patch count"
+
+# A game update changes the derived name (dune_sb_1_5_3_0 -> dune_sb_1_5_15_0 on 2026-10-20, which started the world on
+# an empty database). With the payload's database absent and exactly one older game database present, setup renames
+# that one into place, so the world keeps its data and updatedb.py applies only the new patches.
+old=dune_sb_0_0_1_0
+sql postgres "create table public.carry_marker (v text)" >/dev/null; sql "$db" "create table public.carry_marker (v text); insert into public.carry_marker values ('kept')" >/dev/null
+sql postgres "alter database $db rename to $old" >/dev/null
+out=$(libexec/dune-db-setup 2>&1) || fail "setup after a version change exited nonzero: $(printf '%s' "$out" | tail -5)"
+[ "$(sql "$db" "select v from public.carry_marker")" = kept ] || fail "older game database not carried over to $db"
+[ -z "$(sql postgres "select datname from pg_database where datname = '$old'")" ] || fail "older name still present after the carry-over"
+[[ "$out" == *"$old"*"$db"* ]] || fail "carry-over not reported: $out"
+# Two older candidates are ambiguous: stop without renaming either.
+sql postgres "alter database $db rename to dune_sb_0_0_1_0" >/dev/null; sql postgres "create database dune_sb_0_0_2_0" >/dev/null
+out=$(libexec/dune-db-setup 2>&1); rc=$?
+[ "$rc" -ne 0 ] && [[ "$out" == *dune_sb_0_0_1_0* && "$out" == *dune_sb_0_0_2_0* ]] || fail "two older game databases not refused by name: rc $rc: $out"
+[ -z "$(sql postgres "select datname from pg_database where datname = '$db'")" ] || fail "ambiguous case created or renamed $db"
 
 exit "$failures"
