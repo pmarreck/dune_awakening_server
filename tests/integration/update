@@ -128,7 +128,7 @@ grep -q '^world stop' "$work/calls" && fail "apply stopped the world without the
 cat > "$work/fake/notify" <<EOF
 #!$BASH
 printf '%s\n' "\$*" > "$work/last-notice"; echo attempt >> "$work/notices"
-[ -e "$work/notify-fails" ] && exit 1
+[ -e "$work/notify-fails" ] && { echo "module 'luv' not found" >&2; exit 1; }
 exit 0
 EOF
 chmod +x "$work/fake/notify"
@@ -152,6 +152,7 @@ grep -q '^world \|app_update' "$work/calls" && fail "check --notify applied the 
 echo 106 > "$work/latest"; touch "$work/notify-fails"
 out=$(libexec/dune-update check --notify 2>&1); [ $? -eq 1 ] || fail "check with a failed notice changed the exit status"
 [[ "$out" == *notice*failed* || "$out" == *failed*notice* ]] || fail "failed notice not reported: $out"
+[[ "$out" == *"module 'luv' not found"* ]] || fail "the notifier's error is not in the report: $out"
 [ "$(cat "$DUNE_STATE_DIR/update-notified")" = 105 ] || fail "failed notice recorded as sent"
 rm "$work/notify-fails"
 libexec/dune-update check --notify >/dev/null 2>&1

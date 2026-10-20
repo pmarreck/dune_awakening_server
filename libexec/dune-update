@@ -123,11 +123,14 @@ Update when nobody is online:  dune-awakening update apply
 (it refuses while players are online, backs up, stops the world, downloads, unpacks and starts it again).
 
 This notice is sent once per build."
-	if "${DUNE_NOTIFY_CMD:-post}" to "$DUNE_NOTIFY_TO" --as "$NOTIFY_AS" --subject "$subject" --body "$body" --yes >/dev/null 2>&1; then
+	local err
+	if err=$("${DUNE_NOTIFY_CMD:-post}" to "$DUNE_NOTIFY_TO" --as "$NOTIFY_AS" --subject "$subject" --body "$body" --yes 2>&1 >/dev/null); then
 		mkdir -p -m 700 "$DUNE_STATE_DIR" && printf '%s\n' "$latest" > "$state" || printf '%s: cannot record the notice in %s\n' "$NAME" "$state" >&2
 		printf '%s: sent update notice for build %s to %s\n' "$NAME" "$latest" "$DUNE_NOTIFY_TO" >&2
 	else
-		printf '%s: update notice for build %s failed; retrying at the next check\n' "$NAME" "$latest" >&2
+		# The notifier's last error line goes to the journal: a failure with no reason went unexplained for days.
+		err=$(printf '%s\n' "$err" | sed '/^[[:space:]]*$/d' | tail -n 1)
+		printf '%s: update notice for build %s failed%s; retrying at the next check\n' "$NAME" "$latest" "${err:+ ($err)}" >&2
 	fi
 }
 
