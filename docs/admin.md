@@ -137,7 +137,7 @@ Why not a real pause: the engine drops a connection after 60 s without traffic (
 
 ## In-game chat commands (the GM bridge)
 
-A trusted player can run a few admin commands from game chat, without host access: they type `&goto Alice` in any chat channel, and `dune-gm-bridge` runs the matching `dune-live` command on the host and whispers the result back (shown as coming from `GM`). It exists because the game's own Admin Panel cannot be opened in the shipping client (see below). **Verified** against a real RabbitMQ 4.2.5 game broker in `tests/integration/gm-bridge`; **not yet verified in game**.
+A trusted player can run a few admin commands from game chat, without host access: they type `&goto Alice` in any chat channel, and `dune-gm-bridge` runs the matching `dune-live` command on the host and whispers the result back (shown as coming from `GM`). It exists because the game's own Admin Panel cannot be opened in the shipping client (see below). **Verified** against a real RabbitMQ 4.2.5 game broker in `tests/integration/gm-bridge`, and **verified in game** since 2026-09-28 by two players on this world: the bridge log records `&help`, `&where`, `&say`, `&timeout`, `&water`, `&fuel` and `&thufir` run from game chat, with commands refused to a player not yet listed in `gm_bridge.conf` and to commands that do not exist (`&heal`). `&goto`, `&bring`, `&give`, `&kick`, `&unlock` and `&newbie` have not yet been run through the bridge in game (`character give` and `character unlock-tree`, which `&give` and `&unlock` call, are verified from the host).
 
 | Command | Does |
 |---|---|
