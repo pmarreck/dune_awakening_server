@@ -19,5 +19,16 @@
 #IDLE_POLL=10
 #DEEP_IDLE_POLL=30
 #DEEP_IDLE_NOTICE=604800
+# Optional: the world watch's omens and session chronicle (docs/admin.md, "Omens and the session chronicle"). Defaults
+# shown; THUFIR_INBOX (the assistant's llmsend inbox directory) also receives the chronicle note.
+#OMENS=1
+#CHRONICLE=1
+#OMEN_FROM=Thufir
+#OMEN_COOLDOWN=60
+#STORM_OMEN_COOLDOWN=1800
+#CHRONICLE_GAP=900
+#CHRONICLE_MIN=600
+#WATCH_POLL=2
+#WATCH_ROSTER=60
 # The post-compatible command that sends notices to NOTIFY_TO (absolute path).
 #NOTIFY_CMD=/path/to/post

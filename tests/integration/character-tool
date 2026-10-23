@@ -57,6 +57,16 @@ json=$(char list --json 2>"$work/err") || fail "list --json failed: $(cat "$work
 out=$(char list --json --text 2>&1) || fail "list --text failed"
 jq -e . >/dev/null 2>&1 <<<"$out" && fail "later --text did not override earlier --json"
 [[ "$out" == *Alice* && "$out" == *Bob* ]] || fail "text list missing names: $out"
+# quests --json: completed quest steps (journey story nodes whose complete condition is true) by character id, for the
+# world watcher's chronicle. A world without the journey table has none.
+[ "$(char quests --json 2>"$work/err")" = '{}' ] || fail "quests without a journey table: $(cat "$work/err")"
+admin "create table dune.journey_story_node (story_node_id text not null, complete_condition_state jsonb, character_id bigint not null);
+insert into dune.journey_story_node values ('MQ.B', 'true', 1), ('MQ.A', 'true', 1), ('MQ.C', 'false', 1), ('MQ.D', '{}', 1), ('MQ.E', 'true', 2);
+alter table dune.journey_story_node owner to dune;"
+json=$(char quests --json 2>"$work/err") || fail "quests --json failed: $(cat "$work/err")"
+[ "$(jq -cS . <<<"$json" 2>/dev/null)" = '{"1":["MQ.A","MQ.B"],"2":["MQ.E"]}' ] || fail "quests --json wrong: $json"
+out=$(char quests 2>&1) || fail "quests text failed: $out"
+[[ "$out" == *Alice*2* && "$out" == *Bob*1* ]] || fail "quests text should count steps per character: $out"
 
 out=$(char set-intel Alice 100 2>&1) || fail "set-intel on offline Alice failed: $out"
 [ "$(intel 10)" = 100 ] || fail "Alice intel not 100: $(intel 10)"

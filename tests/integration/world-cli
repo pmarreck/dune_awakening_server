@@ -67,7 +67,7 @@ rm -r -- "$DUNE_CONFIG_DIR/UserSettings" "$DUNE_CONFIG_DIR/join_password.sample"
 fake="$work/fake bin"
 mkdir -p "$fake"
 allmaps=$(awk -F'\t' '!/^#/ && NF { print $1 }' data/maps.tsv)
-for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server map-scaler gm-bridge idle-throttle; do
+for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server map-scaler gm-bridge world-watch idle-throttle; do
 	cat > "$fake/dune-$c" <<EOF
 #!$BASH
 printf '%s %s|%s|%s\n' "$c" "\$*" "\${DUNE_PARTITION_INDEX:-}:\${DUNE_EXTERNAL_ADDRESS:-}" "\${DUNE_MAP:-}" >> "$work/calls"
@@ -115,7 +115,7 @@ out=$(DUNE_MAPS="SH_Arrakeen SH_HarkoVillage" DUNE_MAPS_ALWAYS_ON=Overmap world 
 out=$(DUNE_EXTERNAL_ADDRESS=10.9.8.7 world start 2>&1) || fail "start with healthy fakes failed: $out"
 got=$(cut -d'|' -f1 "$work/calls" | paste -sd, -)
 # By default every map of the table gets its partition (Survival_1 first) and the scaler starts after Survival_1.
-[ "$got" = "postgres init,postgres start,db-setup ,world-partitions $(paste -sd' ' - <<<"$allmaps"),rabbitmq init admin,rabbitmq start admin,rabbitmq init game,rabbitmq start game,textrouter status,dotnet-prepare $DUNE_UNPACKED_DIR/server-text-router/rootfs $DUNE_STATE_DIR/textrouter-root Tools/Battlegroups/TextRouter/TextRouter TextRouter,textrouter start,director status,dotnet-prepare $DUNE_UNPACKED_DIR/server-bg-director/rootfs $DUNE_STATE_DIR/director-root Tools/Battlegroups/Director/BattlegroupDirector Director,director start,gateway start,server start,map-scaler start,gm-bridge start,idle-throttle start" ] ||
+[ "$got" = "postgres init,postgres start,db-setup ,world-partitions $(paste -sd' ' - <<<"$allmaps"),rabbitmq init admin,rabbitmq start admin,rabbitmq init game,rabbitmq start game,textrouter status,dotnet-prepare $DUNE_UNPACKED_DIR/server-text-router/rootfs $DUNE_STATE_DIR/textrouter-root Tools/Battlegroups/TextRouter/TextRouter TextRouter,textrouter start,director status,dotnet-prepare $DUNE_UNPACKED_DIR/server-bg-director/rootfs $DUNE_STATE_DIR/director-root Tools/Battlegroups/Director/BattlegroupDirector Director,director start,gateway start,server start,map-scaler start,gm-bridge start,world-watch start,idle-throttle start" ] ||
 	fail "start order wrong: $got"
 [ "$(grep '^server start' "$work/calls" | cut -d'|' -f2,3)" = "7:10.9.8.7|" ] || fail "server not given partition 7 and address: $(grep '^server' "$work/calls")"
 [ "$(cat "$work/scaler-env" 2>/dev/null)" = "||" ] || fail "map settings invented when world.conf has none: $(cat "$work/scaler-env" 2>/dev/null)"
@@ -207,7 +207,7 @@ dirs() { printf '%s|%s|%s|%s' "$2/dune_awakening_server" "$1/dune_awakening_serv
 world stop >/dev/null 2>&1 || fail "stop failed"
 # (the players-online guard first asks dune-character; only component stops count for the order)
 got=$(grep -v '^dune-character ' "$work/calls" | cut -d'|' -f1 | uniq | paste -sd, -)
-[ "$got" = "idle-throttle stop,gm-bridge stop,map-scaler stop,server stop,gateway stop,director stop,textrouter stop,rabbitmq stop game,rabbitmq stop admin,postgres stop" ] || fail "stop order wrong: $got"
+[ "$got" = "idle-throttle stop,world-watch stop,gm-bridge stop,map-scaler stop,server stop,gateway stop,director stop,textrouter stop,rabbitmq stop game,rabbitmq stop admin,postgres stop" ] || fail "stop order wrong: $got"
 # Every map server in the table is stopped (whatever MAPS says now), the other maps before Survival_1.
 [ "$(grep '^server stop' "$work/calls" | cut -d'|' -f3 | paste -sd' ' -)" = "$(tac <<<"$allmaps" | grep -vx Survival_1 | paste -sd' ' -) " ] ||
 	fail "map servers stopped: $(grep '^server stop' "$work/calls" | cut -d'|' -f3 | paste -sd' ' -)"

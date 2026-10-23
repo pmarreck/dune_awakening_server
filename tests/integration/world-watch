@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# libexec/dune-world-watch: the component around lib/world_watch.lua. Fake dune-live (records whispers), fake ss (players
+# connected or not), fake dune-character (scripted character list and quests); the map server log and the GM bridge log
+# are files the test writes. `run --polls 1 --virtual-clock T` makes each step deterministic; state carries over.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-world-watch.XXXXXX") || exit 1
+trap 'libexec/dune-world-watch stop >/dev/null 2>&1; rm -r -- "$work"' EXIT
+export DUNE_STATE_DIR="$work/state dir" DUNE_LIVE="$work/fake/dune-live" DUNE_SS="$work/fake/ss" DUNE_CHARACTER="$work/fake/dune-character"
+export DUNE_SERVER_LOG="$work/server-console.log" DUNE_GM_BRIDGE_LOG="$work/gm-bridge.log" DUNE_THUFIR_INBOX="$work/inbox" DUNE_OMENS_FILE="$work/omens.tsv"
+export DUNE_WORLD_DISPLAY_NAME="My World" DUNE_NOTIFY_TO="op@example.org" DUNE_CHRONICLE_MIN=100
+unset DUNE_OMENS DUNE_CHRONICLE DUNE_OMEN_FROM DUNE_OMEN_COOLDOWN DUNE_STORM_OMEN_COOLDOWN DUNE_CHRONICLE_GAP DUNE_WATCH_POLL DUNE_WATCH_ROSTER DUNE_RMQ_GAME_PORT
+mkdir -p "$work/fake" "$work/inbox"
+cat > "$work/fake/dune-live" <<FAKE
+#!$BASH
+printf '%s\n' "\$*" >> "$work/live"
+[ -e "$work/live-fails" ] && { echo "dune-live: player is offline" >&2; exit 1; }
+exit 0
+FAKE
+cat > "$work/fake/ss" <<FAKE
+#!$BASH
+printf '0      0      127.0.0.1:31982 127.0.0.1:37078\n'
+[ -e "$work/players" ] && printf '0      0      192.0.2.10:31982 198.51.100.7:50001\n'
+exit 0
+FAKE
+cat > "$work/fake/dune-character" <<FAKE
+#!$BASH
+printf '%s\n' "\$*" >> "$work/char-calls"
+case "\$1" in list) cat "$work/roster.json" ;; quests) cat "$work/quests.json" ;; *) exit 2 ;; esac
+FAKE
+chmod +x "$work/fake/dune-live" "$work/fake/ss" "$work/fake/dune-character"
+printf 'worm-character\tWormsign!\nworm-vehicle\tYour engine sings.\nworm-thumper\tThe thumper calls.\nstorm\tStorm over {region}.\n' > "$DUNE_OMENS_FILE"
+W=libexec/dune-world-watch
+log="$DUNE_STATE_DIR/world-watch/world-watch.log"
+worm() { printf '[2026.10.24-01.00.00:000][1][1][1]LogDuneSandworm: Log: [BP_Crea_SandwormArrakis_C_1, ID: %s, V(X=1.0, Y=2.0, Z=3.0), RootBoneZ: -1, ESandwormSteeringMode::Attack, Sandworm isn'"'"'t playing any animation, ESandwormAnimationState::None, ESandwormChaseAttackStateType::None, InSafeZone:0, Enraged:0, EThreatBlobType::%s] hide 10.000000 seconds before teleporting to attack\n' "$1" "$2"; }
+storm() { printf '[2026.10.24-01.00.00:000][1][1][1]LogSandStormManager: Log: Requested a Sandstorm auto-spawn on [%s] Server 1 Dimension 0\n' "$1"; }
+roster() { printf '%s\n' "$1" > "$work/roster.json"; }
+runat() { "$W" run --polls 1 --virtual-clock "$1" >"$work/out" 2>&1; local rc=$?; [ -s "$work/out" ] && fail "run at $1 printed output: $(cat "$work/out")"; return $rc; }
+notes() { local n=0 f; for f in "$work/inbox"/*.frontmatter.md; do [ -e "$f" ] && n=$((n + 1)); done; echo "$n"; }
+note() { local f; for f in "$work/inbox"/*.frontmatter.md; do [ -e "$f" ] && cat "$f"; done; }
+
+out=$("$W" --help 2>&1) && [[ "$out" == *start* && "$out" == *OMEN_FROM* && "$out" == *CHRONICLE_GAP* && "$out" == *THUFIR_INBOX* ]] || fail "--help: $out"
+out=$("$W" --about 2>&1) && [ "$(printf '%s\n' "$out" | wc -l)" -eq 1 ] && [[ "$out" == dune-world-watch* ]] || fail "--about: $out"
+"$W" bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown action not a usage error"
+DUNE_OMEN_COOLDOWN=x "$W" run --polls 1 --virtual-clock 0 >/dev/null 2>&1; [ $? -eq 1 ] || fail "bad setting not refused"
+
+# A session: players connect; events logged before the watcher first started are history, not news.
+worm 1 Character > "$DUNE_SERVER_LOG"
+touch "$work/players"
+roster '[{"id":2,"name":"Alice","online":true,"xp_total":100,"intel_points":5,"skill_points_total":3},{"id":3,"name":"Bob","online":true,"xp_total":40,"intel_points":0,"skill_points_total":0},{"id":4,"name":"Carol","online":false,"xp_total":9}]'
+printf '{"2":["MQ.A"],"3":[]}\n' > "$work/quests.json"
+runat 1000 || fail "first run failed"
+[ -e "$work/live" ] && fail "history was announced: $(cat "$work/live")"
+
+# New lines: a worm going for a player and a storm reach every online player (not offline Carol), from Thufir;
+# a worm on a wreck stays quiet. A partial last line waits for its newline.
+{ worm 2 Character; worm 3 ValuableDesertWreck; storm HaggaBasin; } >> "$DUNE_SERVER_LOG"
+runat 1010 || fail "event run failed"
+want="character whisper Alice Wormsign! --from Thufir
+character whisper Bob Wormsign! --from Thufir
+character whisper Alice Storm over Hagga Basin. --from Thufir
+character whisper Bob Storm over Hagga Basin. --from Thufir"
+[ "$(cat "$work/live" 2>/dev/null)" = "$want" ] || fail "whispers: $(cat "$work/live" 2>/dev/null)"
+# A failed whisper is logged, not retried.
+: > "$work/live"; touch "$work/live-fails"
+# A line still being written (here cut inside "hide") waits for its newline.
+line=$(worm 5 Vehicle); printf '%s' "${line%%de 10.0*}" >> "$DUNE_SERVER_LOG"
+runat 1090 || fail "partial-line run failed"
+[ -s "$work/live" ] && fail "partial line acted on: $(cat "$work/live")"
+printf 'de 10.0%s\n' "${line#*de 10.0}" >> "$DUNE_SERVER_LOG"
+runat 1100 || fail "failing whisper run failed"
+[ "$(grep -c . "$work/live")" = 2 ] || fail "failed whispers retried or skipped: $(cat "$work/live")"
+grep -q 'whisper to Alice failed: dune-live: player is offline' "$log" || fail "whisper failure not logged: $(cat "$log")"
+rm -- "$work/live-fails"
+
+# Progress during the session, a GM bridge command, then everyone leaves; after the gap the chronicle goes to Thufir.
+roster '[{"id":2,"name":"Alice","online":true,"xp_total":950,"intel_points":7,"skill_points_total":4},{"id":3,"name":"Bob","online":true,"xp_total":40,"intel_points":0,"skill_points_total":0}]'
+runat 1200 || fail "roster run failed"
+printf '{"2":["MQ.A","MQ.Basic Loadout.Harvest 19 Plant fiber"],"3":[]}\n' > "$work/quests.json"
+printf '%s Alice allowed: &water\n' "$(date -u -d @1150 +%FT%TZ) 0123456789ABCDEF" > "$DUNE_GM_BRIDGE_LOG"
+rm -- "$work/players"
+runat 1300 || fail "leave run failed"
+[ "$(notes)" = 0 ] || fail "chronicle before the gap"
+runat 2300 || fail "close run failed"
+[ "$(notes)" = 1 ] || fail "no chronicle note after the gap: $(cat "$log")"
+text=$(note)
+[ "$(sed -n '2p' <<<"$text" | jq -r .schema 2>/dev/null)" = llmsend/v1 ] || fail "chronicle frontmatter: $(sed -n 2p <<<"$text")"
+for want in "My World" "op@example.org" "Alice" "+850 XP" "Harvest 19 Plant fiber" "&water" "Hagga Basin" "Vehicle: 1"; do
+	[[ "$text" == *"$want"* ]] || fail "chronicle lacks $want"
+done
+[[ "$text" == *"Completed: MQ.A"* ]] && fail "chronicle lists a quest done before the session"
+[[ "$text" == *Carol* ]] && fail "chronicle names a character who never came online"
+[ "$(find "$DUNE_STATE_DIR/world-watch/chronicles" -name '*.json' | wc -l)" = 1 ] || fail "chronicle facts not kept"
+# Rerunning after the close is a no-op: no second note.
+runat 2400 || fail "rerun failed"
+[ "$(notes)" = 1 ] || fail "chronicle sent twice"
+[ "$(stat -c %a "$DUNE_STATE_DIR/world-watch")" = 700 ] || fail "run dir not 0700"
+[ "$(stat -c %a "$log")" = 600 ] || fail "log not 0600"
+
+# The map server restarted (its log starts over): the new log is read from the top.
+: > "$work/live"; touch "$work/players"
+worm 9 Thumper > "$DUNE_SERVER_LOG"
+runat 3000 || fail "restart run failed"
+[ "$(head -1 "$work/live")" = "character whisper Alice The thumper calls. --from Thufir" ] || fail "restarted log not read: $(cat "$work/live")"
+
+# Omens off: nothing whispered. No THUFIR_INBOX: the chronicle is kept and the log says it was not delivered.
+: > "$work/live"
+worm 10 Character >> "$DUNE_SERVER_LOG"
+DUNE_OMENS=0 runat 3100 || fail "omens-off run failed"
+[ -s "$work/live" ] && fail "omens off still whispered: $(cat "$work/live")"
+rm -- "$work/players"
+DUNE_THUFIR_INBOX= DUNE_CHRONICLE_MIN=0 runat 5000 || fail "no-inbox close failed"
+[ "$(notes)" = 1 ] || fail "note written without THUFIR_INBOX"
+grep -q 'chronicle kept.*THUFIR_INBOX not set' "$log" || fail "missing inbox not logged: $(tail -3 "$log")"
+[ "$(find "$DUNE_STATE_DIR/world-watch/chronicles" -name '*.json' | wc -l)" = 2 ] || fail "second chronicle not kept"
+
+# CHRONICLE=0: a finished session leaves no note and no kept facts.
+touch "$work/players"; runat 6000 || fail "chronicle-off open failed"; rm -- "$work/players"
+DUNE_CHRONICLE=0 DUNE_CHRONICLE_MIN=0 runat 8000 || fail "chronicle-off close failed"
+[ "$(notes)" = 1 ] && [ "$(find "$DUNE_STATE_DIR/world-watch/chronicles" -name '*.json' | wc -l)" = 2 ] || fail "CHRONICLE=0 still wrote a chronicle"
+
+# Component interface: start runs it in the background, status reports it, stop ends it.
+"$W" status >/dev/null 2>&1 && fail "status 0 before start"
+DUNE_WATCH_POLL=1 "$W" start >/dev/null 2>&1 || fail "start failed"
+"$W" status >/dev/null 2>&1 || fail "status nonzero after start"
+"$W" start >/dev/null 2>&1 || fail "second start failed"
+"$W" stop >/dev/null 2>&1 || fail "stop failed"
+"$W" status >/dev/null 2>&1 && fail "status 0 after stop"
+exit "$failures"

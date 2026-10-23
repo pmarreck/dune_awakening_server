@@ -302,7 +302,7 @@ end
 -- Components ----------------------------------------------------------------------------------------------------
 
 local COMPONENTS = { { "postgres" }, { "rabbitmq", "admin" }, { "rabbitmq", "game" }, { "textrouter" }, { "director" }, { "gateway" }, { "server" },
-	{ "map-scaler" }, { "gm-bridge" }, { "idle-throttle" } }
+	{ "map-scaler" }, { "gm-bridge" }, { "world-watch" }, { "idle-throttle" } }
 local HOME_MAP = "Survival_1"
 
 local function comp(dir, name, ...)
@@ -387,6 +387,7 @@ local function cmd_start(dir, env)
 	end
 	step("map-scaler (starts the other maps when a player travels there)"); must("map-scaler", run(comp(dir, "map-scaler", "start")))
 	step("gm-bridge (in-game chat commands)"); must("gm-bridge", run(comp(dir, "gm-bridge", "start")))
+	step("world-watch (omens for worms and storms, session chronicle)"); must("world-watch", run(comp(dir, "world-watch", "start")))
 	step("idle-throttle (lower frame rate while nobody is connected)"); must("idle-throttle", run(comp(dir, "idle-throttle", "start")))
 end
 

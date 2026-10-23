@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# libexec/lib/world_watch.lua: the world watcher's pure logic (worm and storm log lines, omens and their cooldowns,
+# play sessions, the chronicle facts and its note to the assistant).
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+exec luajit tests/unit/world_watch.lua

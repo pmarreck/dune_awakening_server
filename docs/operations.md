@@ -8,7 +8,7 @@ How to run a private Dune: Awakening 1.5 world natively on NixOS: no Docker, no 
 |---|---|---|
 | `~/.config/dune_awakening_server/fls_secret` (0600) | the operator, from https://account.duneawakening.com/ | Funcom self-host (FLS) token, retail. It expires one year after it is issued. |
 | `~/.config/dune_awakening_server/world.private.conf` (0600) | `dune-awakening init --display-name "My World" --region "North America"` | `WORLD_UNIQUE_NAME=sh-<hostid>-<suffix>` (never change it after first registration), display name, region; add `EXTERNAL_ADDRESS` and `NOTIFY_TO` here too. Read after `world.conf`, so its keys win. Keep it out of any shared or version-controlled copy of the config directory |
-| `~/.config/dune_awakening_server/world.conf` (0600) | `config.sample/world.conf.sample` | shareable settings (idle throttle, maps, `NOTIFY_CMD`, `THUFIR_INBOX`); any key may also go in `world.private.conf`. Worlds set up before 2026-10-14 may still have their identity here, which keeps working |
+| `~/.config/dune_awakening_server/world.conf` (0600) | `config.sample/world.conf.sample` | shareable settings (idle throttle, world watch, maps, `NOTIFY_CMD`, `THUFIR_INBOX`); any key may also go in `world.private.conf`. Worlds set up before 2026-10-14 may still have their identity here, which keeps working |
 | `~/.config/dune_awakening_server/join_password` (0600) | dune-awakening init` | In-game join password. Read it with `cat` and share it with your players privately |
 
 ## Payload
@@ -100,6 +100,7 @@ The record commands read the database settings from the game's own ini chain, so
 
 ```bash
 dune-awakening character list                          # ● online / ○ offline, Intel, skill points, XP
+dune-awakening character quests [--json]               # completed quest steps per character (read-only)
 dune-awakening character set-intel PlayerOne 100        # Intel points (spent on research); add-intel adds
 dune-awakening character set-skill-points PlayerOne 10  # unspent pool; the lifetime total moves with it
 dune-awakening character add-skill-points PlayerOne 20  # unspent and lifetime total both grow

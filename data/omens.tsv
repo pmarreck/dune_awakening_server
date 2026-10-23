@@ -1,0 +1,16 @@
+# Omens dune-world-watch whispers to the online players (from OMEN_FROM, default Thufir). One line per omen:
+# kind<TAB>text. Kinds: worm-character (a worm goes for a player or a group of them), worm-vehicle, worm-thumper,
+# storm (may use {region}). One line of the kind is picked at random; edits apply at the next omen.
+worm-character	The sand trembles beneath you. Shai-Hulud has noticed.
+worm-character	Wormsign. Get to rock, now.
+worm-character	Walk without rhythm, they said. It is too late for that. Run.
+worm-character	Listen. That hiss is not the wind.
+worm-character	The desert remembers your footsteps, and something vast is following them.
+worm-vehicle	Your engine sings to the deep sand, and something is answering.
+worm-vehicle	Shai-Hulud hungers for metal tonight. Get that machine onto rock.
+worm-vehicle	The dunes behind you are rising. Do not slow down.
+worm-thumper	The thumper calls, and the Maker comes.
+worm-thumper	Someone has knocked on the desert's door. It is answering.
+storm	A Coriolis storm gathers over {region}. Seek shelter before it finds you.
+storm	The sky over {region} is turning the color of rust. A storm is coming.
+storm	The wind is rising in {region}. The Fremen are already underground.

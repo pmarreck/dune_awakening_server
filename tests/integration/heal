@@ -18,7 +18,7 @@ lock="$DUNE_STATE_DIR/update.lock"
 # Fake components: `status` fails for names listed in $work/down; every other call is logged, and each logs whether it
 # inherited a descriptor on the update lock (it must not: a daemon holding it would block updates forever).
 mkdir -p "$DUNE_COMPONENTS_DIR"
-for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server map-scaler gm-bridge idle-throttle; do
+for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server map-scaler gm-bridge world-watch idle-throttle; do
 	cat > "$DUNE_COMPONENTS_DIR/dune-$c" <<EOF
 #!$BASH
 printf '%s %s|%s\n' "$c" "\$*" "\${DUNE_MAP:-}" >> "$work/calls"

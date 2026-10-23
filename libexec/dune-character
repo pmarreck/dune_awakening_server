@@ -75,6 +75,7 @@ Everything about one character: records in the world database, and live commands
 Records (edits need the account offline):
   list                        List characters with online state, Intel points, skill points and XP
   show <character>            Show one character (name or numeric id)
+  quests                      Completed quest steps per character (--json: character id -> sorted step ids)
   set-intel <character> N     Set Intel points (spent on research) to N
   add-intel <character> N     Add N Intel points
   set-skill-points <character> N  Set unspent skill points to N (the lifetime total moves by the same amount)
@@ -743,12 +744,34 @@ local function hand_over_live(argv)
 	die(EXIT_ERR, "cannot run %s", out[1])
 end
 
+-- Completed quest steps: journey story nodes whose complete condition is JSON true, by character id (the
+-- encrypted_player_state id). A world without the journey table has none.
+local function cmd_quests(opts, db, schema)
+	local by = {}
+	local have = db:query([[select 1 from information_schema.tables where table_schema = 'dune' and table_name = 'journey_story_node']])
+	if #have > 0 then
+		for _, r in ipairs(db:query([[select character_id::text as c, story_node_id as id from dune.journey_story_node
+			where complete_condition_state = 'true'::jsonb order by character_id, story_node_id]])) do
+			by[r.c] = by[r.c] or setmetatable({}, cjson.array_mt)
+			table.insert(by[r.c], r.id)
+		end
+	end
+	if opts.json then
+		io.stdout:write(next(by) and cjson.encode(by) or "{}", "\n")
+		return
+	end
+	for _, c in ipairs(characters(db, schema)) do
+		local n = by[tostring(c.id)] and #by[tostring(c.id)] or 0
+		io.stdout:write(string.format("%-24s %d completed quest steps\n", c.name, n))
+	end
+end
+
 local function main(argv)
 	hand_over_live(argv)
 	local opts = parse_args(argv)
 	local cmd = table.remove(opts.positional, 1)
 	if not cmd then io.stderr:write(USAGE); os.exit(EXIT_USAGE) end
-	local want = { list = 0, show = 1, ["set-intel"] = 2, ["add-intel"] = 2, ["set-skill-points"] = 2, ["add-skill-points"] = 2,
+	local want = { list = 0, quests = 0, show = 1, ["set-intel"] = 2, ["add-intel"] = 2, ["set-skill-points"] = 2, ["add-skill-points"] = 2,
 		export = 1, validate = 1, import = 1, xp = 2, level = 2 }
 	if want[cmd] == nil then die(EXIT_USAGE, "unknown command %s (see --help)", cmd) end
 	local n = tonumber(opts.positional[2] or "")
@@ -773,6 +796,7 @@ local function main(argv)
 	local db = connect(db_settings(opts.server_root))
 	local schema = detect_schema(db)
 	if cmd == "list" then print_characters(opts, characters(db, schema))
+	elseif cmd == "quests" then cmd_quests(opts, db, schema)
 	elseif cmd == "show" then
 		local c = find_character(db, schema, opts.positional[1])
 		if opts.json then io.stdout:write(cjson.encode(c), "\n") else print_characters(opts, { c }) end

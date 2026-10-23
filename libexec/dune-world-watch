@@ -1,0 +1,386 @@
+#!/usr/bin/env luajit
+-- dune-world-watch: watches the world while people play. Whispers omens (data/omens.tsv) to the online players when a
+-- sandworm goes for a player, their vehicle or their thumper, and when a sandstorm forms; keeps a tally of each play
+-- session and, when it ends, hands its chronicle to the operator's assistant as an llmsend note. Logic lives in
+-- lib/world_watch.lua (pure); this file does the I/O: the map server log, ss, dune-character, dune-live, the GM bridge
+-- log, the inbox note and its pid/state/log files.
+-- Usage: dune-world-watch start|stop|status | run [--polls N] [--virtual-clock T]
+local ffi = require("ffi")
+ffi.cdef [[
+char *realpath(const char *path, char *resolved);
+void free(void *p);
+int kill(int pid, int sig);
+]]
+
+local NAME, VERSION = "dune-world-watch", "0.1.0"
+local EXIT_OK, EXIT_ERR, EXIT_USAGE = 0, 1, 2
+local STOP_WAIT_SECONDS = 15
+local EPERM = 1
+local READ_CHUNK = 4 * 1024 * 1024 -- most log bytes read per poll; a backlog is read over several polls
+
+local function self_path()
+	local r = ffi.C.realpath(arg[0], nil)
+	if r == nil then return arg[0] end
+	local s = ffi.string(r); ffi.C.free(r)
+	return s
+end
+local SELF = self_path()
+local DIR = SELF:match("^(.*)/[^/]*$") or "."
+package.path = DIR .. "/lib/?.lua;" .. package.path
+local ww = require("world_watch")
+local it = require("idle_throttle")
+local cjson = require("cjson")
+
+local USAGE = [[
+Usage: dune-world-watch start|stop|status
+       dune-world-watch run [--polls N] [--virtual-clock T]
+
+Watches the world while people play.
+
+Omens: when the map server logs a sandworm about to strike a player, a group of players, a vehicle or a thumper, or a
+sandstorm forming, every online player gets the same whispered line from OMEN_FROM, picked at random from the
+table (data/omens.tsv; storms may name the {region}). Worm attacks on wrecks get none. A worm's repeated attack
+lines within OMEN_COOLDOWN are one attack; omens of one kind come at most once per its cooldown.
+
+Chronicle: a session runs from the first player connection until CHRONICLE_GAP seconds with none. A session at
+least CHRONICLE_MIN long, with a character seen online, ends in a chronicle: per character the XP, Intel and skill
+points gained and the quest steps completed, the worm attacks by target, the sandstorms, and the GM bridge commands
+used. Its facts are kept in the state directory and sent as an llmsend note to the directory named by THUFIR_INBOX,
+asking the operator's assistant to write the chronicle and email it to NOTIFY_TO.
+
+Settings: world.conf keys, or DUNE_<key> environment variables, which win (defaults in parentheses):
+  OMENS (1)                 0 = no omens (events are still tallied)
+  CHRONICLE (1)             0 = no chronicle
+  OMEN_FROM (Thufir)        sender name of the omens
+  OMEN_COOLDOWN (60)        seconds between worm omens
+  STORM_OMEN_COOLDOWN (1800) seconds between storm omens
+  CHRONICLE_GAP (900)       seconds with nobody connected that end a session
+  CHRONICLE_MIN (600)       shortest session that gets a chronicle, in seconds
+  WATCH_POLL (2)            seconds between polls
+  WATCH_ROSTER (60)         seconds between reads of the character list during a session
+  THUFIR_INBOX              directory for the chronicle note (unset: the facts are only kept)
+  NOTIFY_TO                 recipient the assistant emails the chronicle to
+
+  start / stop / status  run in the background (component interface used by dune-awakening)
+  run                    foreground; --polls N exits after N polls, --virtual-clock T starts a simulated clock at
+                         T (seconds since 1970) that advances by the poll interval without sleeping (for tests)
+
+Log, state and kept chronicles: $DUNE_STATE_DIR/world-watch/. Environment: DUNE_STATE_DIR, DUNE_SERVER_LOG (default
+$DUNE_STATE_DIR/server/server-console.log), DUNE_GM_BRIDGE_LOG (default $DUNE_STATE_DIR/gm-bridge/gm-bridge.log),
+DUNE_OMENS_FILE (default data/omens.tsv), DUNE_RMQ_GAME_PORT (default 31982), DUNE_LIVE, DUNE_CHARACTER (default:
+next to this tool), DUNE_SS (default ss).
+]]
+
+local function die(code, fmt, ...)
+	io.stderr:write(NAME, ": ", string.format(fmt, ...), "\n")
+	os.exit(code)
+end
+local function getenv(k, default) local v = os.getenv(k); if v == nil or v == "" then return default end; return v end
+
+local function read_file(p)
+	local f = io.open(p, "rb"); if not f then return nil end
+	local s = f:read("*a"); f:close(); return s
+end
+
+local function q(s) return "'" .. tostring(s):gsub("'", "'\\''") .. "'" end
+
+local function run_ok(cmd)
+	local a, _, c = os.execute(cmd)
+	if type(a) == "number" then return a == 0 end
+	return a == true and (c == nil or c == 0)
+end
+
+-- Paths ---------------------------------------------------------------------------------------------------------
+local state_dir = getenv("DUNE_STATE_DIR", "")
+local run_dir = state_dir .. "/world-watch"
+local pid_file, log_file, state_file = run_dir .. "/pid", run_dir .. "/world-watch.log", run_dir .. "/state"
+local chronicle_dir, err_file = run_dir .. "/chronicles", run_dir .. "/stderr"
+local LIVE = getenv("DUNE_LIVE", DIR .. "/dune-live")
+local CHARACTER = getenv("DUNE_CHARACTER", DIR .. "/dune-character")
+local PORT = getenv("DUNE_RMQ_GAME_PORT", "31982")
+local SERVER_LOG = getenv("DUNE_SERVER_LOG", state_dir .. "/server/server-console.log")
+local BRIDGE_LOG = getenv("DUNE_GM_BRIDGE_LOG", state_dir .. "/gm-bridge/gm-bridge.log")
+local OMENS_FILE = getenv("DUNE_OMENS_FILE", DIR .. "/../data/omens.tsv")
+
+-- Run argv (each element quoted, nothing shell-interpreted). Returns ok, stdout, and the last line of stderr.
+local function capture(argv)
+	local parts = {}
+	for i, a in ipairs(argv) do parts[i] = q(a) end
+	local p = io.popen(table.concat(parts, " ") .. " 2>" .. q(err_file) .. " </dev/null; printf '\\n%d' $?")
+	local out = p:read("*a"); p:close()
+	local body, code = out:match("^(.*)\n(%d+)$")
+	local err = ((read_file(err_file) or ""):gsub("%s+$", ""):match("([^\n]*)$") or ""):sub(1, 200)
+	if code ~= "0" and err == "" then err = "exit status " .. tostring(code) end
+	return code == "0", body or out, err
+end
+
+local function alive(pid)
+	pid = tonumber(pid)
+	if not pid or pid <= 0 then return false end
+	return ffi.C.kill(pid, 0) == 0 or ffi.errno() == EPERM
+end
+
+local function pid_running()
+	local pid = (read_file(pid_file) or ""):match("^(%d+)")
+	return pid and alive(pid) and pid or nil
+end
+
+local function ensure_dir(d) return run_ok("umask 077; mkdir -p " .. q(d) .. " && chmod 700 " .. q(d)) end
+
+-- Log: private file, one line per event (never one per poll).
+local log_fh
+local function log(fmt, ...)
+	if not log_fh then
+		ensure_dir(run_dir)
+		run_ok("umask 077; touch " .. q(log_file) .. " && chmod 600 " .. q(log_file))
+		log_fh = io.open(log_file, "a")
+		if not log_fh then die(EXIT_ERR, "cannot write %s", log_file) end
+	end
+	log_fh:write(os.date("!%Y-%m-%dT%H:%M:%SZ"), " ", string.format(fmt, ...), "\n")
+	log_fh:flush()
+end
+
+-- Write a file atomically (temporary name, then rename) with mode 0600.
+local function write_atomic(path, text)
+	local dir, base = path:match("^(.*)/([^/]+)$")
+	local tmp = dir .. "/." .. base .. ".tmp"
+	run_ok("umask 077; : > " .. q(tmp))
+	local f = io.open(tmp, "wb")
+	if not (f and f:write(text) and f:close() and os.rename(tmp, path)) then return false end
+	return true
+end
+
+local function save(st)
+	ensure_dir(run_dir)
+	if not write_atomic(state_file, ww.encode(st)) then log("cannot write %s", state_file) end
+end
+
+local function config()
+	local cfg, err = ww.parse_config(os.getenv)
+	if not cfg then die(EXIT_ERR, "invalid setting: %s (world.conf key or DUNE_ environment variable)", err) end
+	return cfg
+end
+
+local function random_id()
+	local rnd = io.open("/dev/urandom", "rb"); local raw = rnd and rnd:read(4) or tostring(os.time()); if rnd then rnd:close() end
+	return (raw:gsub(".", function(c) return string.format("%02x", c:byte()) end))
+end
+
+local function local_iso(t)
+	local z = os.date("%z", t)
+	return os.date("%Y-%m-%dT%H:%M:%S", t) .. z:sub(1, 3) .. ":" .. z:sub(4, 5)
+end
+
+-- Inputs --------------------------------------------------------------------------------------------------------
+
+local complaints = {}
+-- Log a failing input once until it works again.
+local function complain(key, fmt, ...)
+	local msg = string.format(fmt, ...)
+	if complaints[key] ~= msg then log("%s", msg) end
+	complaints[key] = msg
+end
+local function recovered(key) complaints[key] = nil end
+
+local function connections()
+	local ok, out, err = capture({ getenv("DUNE_SS", "ss"), "-Htn", "state", "established", "( sport = :" .. PORT .. " )" })
+	if not ok then complain("ss", "cannot list connections (%s); presence unknown until it works", err); return nil end
+	recovered("ss")
+	return it.count_connections(out, PORT)
+end
+
+local function character_json(what)
+	local ok, out, err = capture({ CHARACTER, what, "--json" })
+	local good, t = false, nil
+	if ok then good, t = pcall(cjson.decode, out) end
+	if not (good and type(t) == "table") then
+		complain(what, "cannot read the character %s (%s)", what, ok and "not JSON" or err); return nil
+	end
+	recovered(what)
+	return t
+end
+
+-- Completed quest steps by numeric character id, as sets.
+local function quests()
+	local t = character_json("quests")
+	if not t then return nil end
+	local by = {}
+	for id, list in pairs(t) do
+		local set = {}
+		for _, node in ipairs(list) do set[node] = true end
+		by[tonumber(id)] = set
+	end
+	return by
+end
+
+-- New complete lines of the map server log since st.offset. On the first start the existing log is history; a log
+-- shorter than the offset was started over by a map server restart and is read from the top.
+local function new_lines(st)
+	local f = io.open(SERVER_LOG, "rb")
+	if not f then complain("server log", "cannot read %s; no omens until it exists", SERVER_LOG); return {} end
+	recovered("server log")
+	local size = f:seek("end")
+	if not st.offset then st.offset = size end
+	if size < st.offset then log("map server log started over; reading it from the top"); st.offset = 0 end
+	f:seek("set", st.offset)
+	local chunk = f:read(math.min(size - st.offset, READ_CHUNK)) or ""
+	f:close()
+	local last = chunk:match("^.*()\n")
+	if not last then return {} end
+	st.offset = st.offset + last
+	local lines = {}
+	for line in chunk:sub(1, last):gmatch("([^\n]*)\n") do lines[#lines + 1] = line end
+	return lines
+end
+
+-- Actions -------------------------------------------------------------------------------------------------------
+
+local function whisper(cfg, w)
+	local ok, _, err = capture({ LIVE, "character", "whisper", w.to, w.text, "--from", cfg.from })
+	if ok then log("omen to %s: %s", w.to, w.text) else log("whisper to %s failed: %s", w.to, err) end
+end
+
+-- The finished session's chronicle: facts kept as JSON, and the note for the assistant when THUFIR_INBOX is set.
+local function chronicle(s, now)
+	local final = quests() or {}
+	local commands = ww.parse_bridge_log(read_file(BRIDGE_LOG) or "", s.start, s.finish)
+	local facts = ww.chronicle(s, final, commands)
+	ensure_dir(chronicle_dir)
+	local kept = chronicle_dir .. "/" .. os.date("!%Y%m%dT%H%M%SZ", s.start) .. ".json"
+	if not write_atomic(kept, cjson.encode(facts)) then log("cannot write %s", kept) end
+	local inbox = getenv("DUNE_THUFIR_INBOX", "")
+	if inbox == "" then log("chronicle kept in %s (THUFIR_INBOX not set, not sent)", kept); return end
+	local note = ww.chronicle_note(facts, { datetime = local_iso(now), id = random_id(), world = getenv("DUNE_WORLD_DISPLAY_NAME"),
+		to = getenv("DUNE_NOTIFY_TO"), time = function(t) return os.date("%Y-%m-%d %H:%M %Z", t) end })
+	if write_atomic(inbox .. "/" .. note.name, note.text) then log("chronicle of the %d-minute session sent to Thufir", facts.minutes)
+	else log("chronicle note to %s failed; kept in %s", inbox, kept) end
+end
+
+-- One poll: presence (which may end a session), the character list when due, then the new log lines.
+local function poll(st, cfg, now, rng)
+	local n = connections()
+	if n then
+		local done
+		st, done = ww.on_presence(st, n, now, cfg)
+		if not st.session then st.roster_at, st.online = nil, nil end
+		if done and cfg.chronicle then chronicle(done, now) end
+	end
+	local s = st.session
+	if s and (not st.roster_at or now - st.roster_at >= cfg.roster_every) then
+		local roster = character_json("list")
+		if roster then
+			local need, online = false, {}
+			for _, c in ipairs(roster) do
+				if c.online then
+					online[#online + 1] = c.name
+					if not s.players[tostring(c.id)] then need = true end
+				end
+			end
+			-- A new character's baseline needs its completed quests; without them, retry at the next poll rather than
+			-- take an empty baseline that would count every quest it ever finished as done tonight.
+			local q = {}
+			if need then q = quests() end
+			st.online = online
+			if q then st = ww.on_roster(st, roster, q, now); st.roster_at = now end
+		end
+	end
+	local lines = new_lines(st)
+	local omens
+	for _, line in ipairs(lines) do
+		local ev = ww.parse_line(line)
+		if ev then
+			if not omens then
+				local err
+				omens, err = ww.parse_omens(read_file(OMENS_FILE) or "")
+				if not omens then complain("omens", "omen table %s: %s", OMENS_FILE, err or "unreadable"); omens = {} else recovered("omens") end
+			end
+			local whispers
+			st, whispers = ww.on_event(st, ev, now, cfg, omens, rng, st.online or {})
+			for _, w in ipairs(whispers) do whisper(cfg, w) end
+		end
+	end
+	return st
+end
+
+local function cmd_run(max_polls, virtual)
+	local cfg = config()
+	local socket = (not virtual) and require("socket") or nil
+	local now = virtual or os.time()
+	math.randomseed(now)
+	local rng = function(k) return math.random(k) end
+	local st = ww.decode(read_file(state_file))
+	log("started: omens %s, chronicle %s", cfg.omens and "on" or "off", cfg.chronicle and "on" or "off")
+	local saved = ww.encode(st)
+	local polls = 0
+	while not max_polls or polls < max_polls do
+		polls = polls + 1
+		st = poll(st, cfg, now, rng)
+		local text = ww.encode(st)
+		if text ~= saved then save(st); saved = text end
+		if max_polls and polls >= max_polls then break end
+		if virtual then now = now + cfg.poll else socket.sleep(cfg.poll); now = os.time() end
+	end
+	log("stopping after %d polls", polls)
+	return EXIT_OK
+end
+
+local function cmd_start()
+	if pid_running() then return EXIT_OK end
+	config()
+	if not ensure_dir(run_dir) then die(EXIT_ERR, "cannot create %s", run_dir) end
+	local cmd = "umask 077; setsid " .. q(SELF) .. " run >> " .. q(log_file) .. " 2>&1 < /dev/null & echo $! > " .. q(pid_file)
+	if not run_ok(cmd) then die(EXIT_ERR, "cannot start") end
+	return EXIT_OK
+end
+
+local function cmd_stop()
+	local pid = pid_running()
+	if not pid then return EXIT_OK end
+	local socket = require("socket")
+	-- The loop runs in its own session (setsid): signal the whole group, so a dune-live it started goes too.
+	for _, sig in ipairs({ "TERM", "KILL" }) do
+		run_ok("kill -" .. sig .. " -- -" .. pid .. " 2>/dev/null || kill -" .. sig .. " " .. pid .. " 2>/dev/null")
+		for _ = 1, STOP_WAIT_SECONDS * 10 do
+			if not alive(pid) then
+				local f = io.open(pid_file, "w"); if f then f:close() end
+				return EXIT_OK
+			end
+			socket.sleep(0.1)
+		end
+	end
+	die(EXIT_ERR, "world watch (pid %s) did not stop", pid)
+end
+
+local action = arg[1]
+if action == "-h" or action == "--help" then io.stdout:write(USAGE); os.exit(EXIT_OK) end
+if action == "--about" then
+	local map = { x64 = "x86_64", arm64 = "aarch64" }
+	io.stdout:write(string.format("%s %s: omens for worms and storms, and a chronicle of each play session (%s %s)\n", NAME, VERSION,
+		(jit.os or "unknown"):lower(), map[jit.arch] or jit.arch))
+	os.exit(EXIT_OK)
+end
+if action == "start" or action == "stop" or action == "status" or action == "run" then
+	if state_dir == "" then die(EXIT_ERR, "set DUNE_STATE_DIR") end
+end
+if action == "start" then os.exit(cmd_start())
+elseif action == "stop" then os.exit(cmd_stop())
+elseif action == "status" then os.exit(pid_running() and EXIT_OK or EXIT_ERR)
+elseif action == "run" then
+	local max, virtual
+	local i = 2
+	while arg[i] do
+		local v = arg[i + 1]
+		if arg[i] == "--polls" then
+			max = tonumber(v or "")
+			if not max or max < 1 or max ~= math.floor(max) then die(EXIT_USAGE, "--polls needs a whole number >= 1") end
+		elseif arg[i] == "--virtual-clock" then
+			virtual = tonumber(v or "")
+			if not virtual or virtual < 0 or virtual ~= math.floor(virtual) then die(EXIT_USAGE, "--virtual-clock needs whole seconds >= 0") end
+		else die(EXIT_USAGE, "unknown option %s (see --help)", arg[i]) end
+		i = i + 2
+	end
+	os.exit(cmd_run(max, virtual))
+else
+	io.stderr:write(USAGE)
+	os.exit(EXIT_USAGE)
+end
