@@ -17,7 +17,8 @@ cat > "$work/fake/dune-live" <<FAKE
 #!$BASH
 printf '%s\n' "\$*" >> "$work/live"
 [ -e "$work/live-fails" ] && { n=\$(cat "$work/live-fails"); [ "\$n" -gt 0 ] && { echo \$((n - 1)) > "$work/live-fails"; echo "dune-live: could not verify" >&2; exit 1; }; }
-printf '%s = %s\n' "\$3" "\$4"
+# A read (no value) prints the variable's value, as dune-live does: from cvar-<name>, else 1.
+if [ \$# -eq 3 ]; then cat "$work/cvar-\$3" 2>/dev/null || echo 1; else printf '%s = %s\n' "\$3" "\$4"; fi
 FAKE
 # ss: poll K prints poll-K's lines (players) after the world's own loopback connections; ss-fails makes it fail.
 cat > "$work/fake/ss" <<FAKE
@@ -39,7 +40,7 @@ chmod +x "$work/fake/dune-live" "$work/fake/ss" "$work/fake/notify"
 T=libexec/dune-idle-throttle
 log="$DUNE_STATE_DIR/idle-throttle/idle-throttle.log"
 player() { printf '0      0      192.0.2.10:31982 198.51.100.7:5%04d\n' "$2" > "$work/poll-$1"; }
-reset() { rm -rf -- "$DUNE_STATE_DIR/idle-throttle"; rm -f -- "$work/live" "$work/notices" "$work/ss-count" "$work/live-fails" "$work/notify-fails" "$work/ss-fails"; glob_rm_polls; }
+reset() { rm -rf -- "$DUNE_STATE_DIR/idle-throttle"; rm -f -- "$work/live" "$work/notices" "$work/ss-count" "$work/live-fails" "$work/notify-fails" "$work/ss-fails" "$work"/cvar-*; glob_rm_polls; }
 glob_rm_polls() { local f; for f in "$work"/poll-*; do [ -e "$f" ] && rm -- "$f"; done; }
 # Log lines without their timestamps.
 events() { sed -E 's/^[0-9TZ:-]+ //' "$log" 2>/dev/null; }
@@ -141,6 +142,25 @@ rm -f -- "$work/live"; printf 'server=%s\napplied=5\n' $$ > "$DUNE_STATE_DIR/idl
 echo $$ > "$DUNE_STATE_DIR/server/pid"
 echo 5 > "$work/live-fails"
 out=$("$T" stop 2>&1); [ $? -eq 1 ] && [[ "$out" == *restore* ]] || fail "failed restore on stop not reported: $out"
+
+# Hazard pause: with the first throttle, worms and storms are read, then switched off; the first connection puts back
+# what was read (storms already off stay off). Polls as in the first case: t=30 throttle, 60 deep, 100 player.
+reset; player 8 1; echo 0 > "$work/cvar-Sandstorm.Enabled"; echo 0 > "$work/cvar-Coriolis.Enabled"
+DUNE_HAZARD_PAUSE=1 runit --polls 9 --virtual-clock 0 || fail "hazard run exited nonzero"
+want="world cvar t.MaxFPS 5,world cvar sandworm.dune.Enabled,world cvar Sandstorm.Enabled,world cvar Coriolis.Enabled,world cvar sandworm.dune.Enabled 0,world cvar Sandstorm.Enabled 0,world cvar Coriolis.Enabled 0,world cvar t.MaxFPS 1,world cvar t.MaxFPS 20,world cvar sandworm.dune.Enabled 1,world cvar Sandstorm.Enabled 0,world cvar Coriolis.Enabled 0"
+[ "$(paste -sd, "$work/live" 2>/dev/null)" = "$want" ] || fail "hazard pause calls: $(paste -sd, "$work/live" 2>/dev/null)"
+events | grep -qx 'paused worms and storms (nobody connected; were sandworm.dune.Enabled=1 Sandstorm.Enabled=0 Coriolis.Enabled=0)' || fail "pause not logged: $(events)"
+events | grep -qx 'restored worms and storms (sandworm.dune.Enabled=1 Sandstorm.Enabled=0 Coriolis.Enabled=0)' || fail "restore not logged: $(events)"
+grep -q '^hazards_' "$DUNE_STATE_DIR/idle-throttle/state" && fail "pause left in the state after the restore: $(cat "$DUNE_STATE_DIR/idle-throttle/state")"
+# Without the switch nothing but the rate is touched.
+reset; runit --polls 4 --virtual-clock 0
+grep -q 'Enabled' "$work/live" && fail "hazards touched with HAZARD_PAUSE unset: $(paste -sd, "$work/live")"
+# stop puts paused hazards back for the same map server.
+reset; mkdir -p -m 700 "$DUNE_STATE_DIR/idle-throttle"
+printf 'server=%s\napplied=20\nhazards_server=%s\nhazards_paused=1\nhazards_saved=sandworm.dune.Enabled:1,Sandstorm.Enabled:0,Coriolis.Enabled:1\n' $$ $$ > "$DUNE_STATE_DIR/idle-throttle/state"
+"$T" stop >/dev/null 2>&1 || fail "stop with paused hazards failed"
+[ "$(paste -sd, "$work/live" 2>/dev/null)" = "world cvar sandworm.dune.Enabled 1,world cvar Sandstorm.Enabled 0,world cvar Coriolis.Enabled 1" ] || fail "stop did not restore hazards: $(paste -sd, "$work/live" 2>/dev/null)"
+grep -q '^hazards_' "$DUNE_STATE_DIR/idle-throttle/state" && fail "restored pause still in the state"
 
 # Lifecycle: start runs it in the background (real clock), status sees it, stop ends it (its whole process group).
 reset; export DUNE_IDLE_AFTER=3600 DUNE_DEEP_IDLE_AFTER=7200

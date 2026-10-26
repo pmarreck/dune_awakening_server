@@ -11,6 +11,7 @@
 #   NOTIFY_TO=someone            who gets the weekly deep-idle notice and update notices
 # Optional: idle frame-rate throttle (docs/operations.md, "Idle frame-rate throttle"). Defaults shown.
 #IDLE_THROTTLE=1
+#HAZARD_PAUSE=0     1 = worms and storms off while nobody is connected, back at the first connection
 #ACTIVE_FPS=20
 #IDLE_FPS=5
 #IDLE_AFTER=300

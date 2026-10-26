@@ -23,6 +23,10 @@ function M.parse_config(get)
 	if sw == nil or sw == "" then c.enabled = true
 	elseif SWITCH[sw:lower()] ~= nil then c.enabled = SWITCH[sw:lower()]
 	else return nil, "IDLE_THROTTLE must be 1 or 0 (on/off), got " .. sw end
+	local hz = get("DUNE_HAZARD_PAUSE")
+	if hz == nil or hz == "" then c.hazard_pause = false
+	elseif SWITCH[hz:lower()] ~= nil then c.hazard_pause = SWITCH[hz:lower()]
+	else return nil, "HAZARD_PAUSE must be 1 or 0 (on/off), got " .. hz end
 	for _, s in ipairs(SETTINGS) do
 		local field, name, default, min = s[1], s[2], s[3], s[4]
 		local v = get("DUNE_" .. name)
@@ -79,6 +83,7 @@ function M.initial_state(now, cfg, persisted, server)
 	local s = { started = now, server = server, connected = false, count = 0, applied = cfg.active_fps,
 		idle_since = p.idle_since or now }
 	if p.idle_since then s.deep_since, s.last_notice = p.deep_since, p.last_notice end
+	s.hazards_saved, s.hazards_server, s.hazards_paused = p.hazards_saved, p.hazards_server, p.hazards_paused
 	if persisted and p.server ~= nil and p.server == server then s.applied = p.applied end
 	return s
 end
@@ -168,8 +173,70 @@ function M.notified(state, ok, now)
 	return s
 end
 
-local PERSISTED = { server = "string", applied = "number", idle_since = "number", deep_since = "number", last_notice = "number" }
-local ORDER = { "server", "applied", "idle_since", "deep_since", "last_notice" }
+-- Hazard pause (HAZARD_PAUSE): worms and storms are switched off while nobody is connected, so vehicles parked in the
+-- open are not worn down by storms nobody is there to see, and switched back to the values they had at the first
+-- connection. These console variables are read before the pause and restored from what was read.
+M.HAZARD_CVARS = { "sandworm.dune.Enabled", "Sandstorm.Enabled", "Coriolis.Enabled" }
+
+-- One poll of the hazard pause, after step (it reads the idle clock step keeps). Returns the new state and an action:
+-- nil, {hazards = "pause", values = nil | saved} (values nil: read the current values first, then set each to 0;
+-- saved: a retry, set them to 0 without reading zeros back) or {hazards = "restore", values = saved}. It pauses with
+-- the first throttle (idle_after of absence and the start grace) and restores at once on a connection, or when the
+-- switch is turned off. A map server that restarted starts from its configured values, so a pause on the old one is
+-- forgotten rather than restored over them.
+function M.hazard_step(state, obs, now, cfg)
+	local s = copy(state)
+	if obs.server == nil then return s, nil end
+	if s.hazards_saved and s.hazards_server ~= obs.server then
+		s.hazards_saved, s.hazards_server, s.hazards_paused = nil, nil, nil
+	end
+	if not cfg.hazard_pause or (obs.connections or 0) > 0 then
+		if s.hazards_saved then return s, { hazards = "restore", values = s.hazards_saved } end
+		return s, nil
+	end
+	if s.hazards_paused then return s, nil end
+	if s.hazards_saved then return s, { hazards = "pause", values = s.hazards_saved } end
+	if s.idle_since and now - s.idle_since >= cfg.idle_after and now - s.started >= cfg.idle_after then
+		return s, { hazards = "pause" }
+	end
+	return s, nil
+end
+
+-- Outcome of a pause: values = what was read (nil: the read failed, nothing changed); ok = every variable was set to 0.
+-- The values read first are kept through retries.
+function M.hazards_paused(state, values, ok, server)
+	local s = copy(state)
+	if values then
+		s.hazards_saved, s.hazards_server = s.hazards_saved or values, server
+		s.hazards_paused = ok or nil
+	end
+	return s
+end
+
+-- Outcome of a restore: on success the pause is over; on failure it is retried at the next poll.
+function M.hazards_restored(state, ok)
+	local s = copy(state)
+	if ok then s.hazards_saved, s.hazards_server, s.hazards_paused = nil, nil, nil end
+	return s
+end
+
+local function encode_saved(v)
+	local out = {}
+	for _, c in ipairs(M.HAZARD_CVARS) do out[#out + 1] = c .. ":" .. tostring(v[c]) end
+	return table.concat(out, ",")
+end
+
+-- Inverse of encode_saved; nil unless every hazard variable has a plain value.
+local function decode_saved(text)
+	local v, n = {}, 0
+	for c, val in text:gmatch("([%w%.]+):([%w%.%-]+)") do v[c] = val end
+	for _, c in ipairs(M.HAZARD_CVARS) do if v[c] then n = n + 1 end end
+	return n == #M.HAZARD_CVARS and v or nil
+end
+
+local PERSISTED = { server = "string", applied = "number", idle_since = "number", deep_since = "number", last_notice = "number",
+	hazards_server = "string" }
+local ORDER = { "server", "applied", "idle_since", "deep_since", "last_notice", "hazards_server", "hazards_paused", "hazards_saved" }
 
 -- key=value lines for the component's state file; an unknown rate is written as applied=unknown.
 function M.encode(state)
@@ -177,6 +244,8 @@ function M.encode(state)
 	for _, k in ipairs(ORDER) do
 		local v = state[k]
 		if k == "applied" and v == nil then v = "unknown" end
+		if k == "hazards_paused" then v = v and "1" or nil end
+		if k == "hazards_saved" and v ~= nil then v = encode_saved(v) end
 		if v ~= nil then out[#out + 1] = k .. "=" .. tostring(v) end
 	end
 	return table.concat(out, "\n") .. "\n"
@@ -188,7 +257,9 @@ function M.decode(text)
 	for line in (text or ""):gmatch("[^\n]+") do
 		local k, v = line:match("^([%w_]+)=(.+)$")
 		if k and PERSISTED[k] == "string" then p[k] = v
-		elseif k and PERSISTED[k] == "number" and v:match("^%-?%d+$") then p[k] = tonumber(v) end
+		elseif k and PERSISTED[k] == "number" and v:match("^%-?%d+$") then p[k] = tonumber(v)
+		elseif k == "hazards_paused" and v == "1" then p.hazards_paused = true
+		elseif k == "hazards_saved" then p.hazards_saved = decode_saved(v) end
 	end
 	return p
 end

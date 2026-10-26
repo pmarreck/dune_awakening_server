@@ -44,6 +44,7 @@ or the map server starts. stop restores ACTIVE_FPS when the rate may be lowered.
 
 Settings: world.conf keys, or DUNE_<key> environment variables, which win (defaults in parentheses):
   IDLE_THROTTLE (1)        0 = never change the rate (connections are still logged)
+  HAZARD_PAUSE (0)         1 = also switch worms and storms off with the first throttle, and back at a connection
   ACTIVE_FPS (20)          the game's default cap
   IDLE_FPS (5)             IDLE_AFTER (300)
   DEEP_IDLE_FPS (1)        DEEP_IDLE_AFTER (86400)
@@ -151,6 +152,62 @@ end
 
 local function set_rate(fps) return capture({ LIVE, "world", "cvar", "t.MaxFPS", tostring(fps) }) end
 
+local function hazard_list(values)
+	local out = {}
+	for _, c in ipairs(it.HAZARD_CVARS) do out[#out + 1] = c .. "=" .. tostring(values[c]) end
+	return table.concat(out, " ")
+end
+
+-- Current values of the hazard variables (dune-live prints a read value alone); nil, reason if one cannot be read.
+local function read_hazards()
+	local v = {}
+	for _, c in ipairs(it.HAZARD_CVARS) do
+		local ok, out = capture({ LIVE, "world", "cvar", c })
+		local val = ok and last_line(out):match("^%s*([%w%.%-]+)%s*$")
+		if not val then return nil, c .. ": " .. last_line(out) end
+		v[c] = val
+	end
+	return v
+end
+
+-- Set every hazard variable (to 0, or to its saved value); true, or false and the first failure.
+local function set_hazards(values)
+	for _, c in ipairs(it.HAZARD_CVARS) do
+		local ok, out = capture({ LIVE, "world", "cvar", c, values and values[c] or "0" })
+		if not ok then return false, c .. ": " .. last_line(out) end
+	end
+	return true
+end
+
+-- Carry out a hazard_step action; the values read are saved before anything is switched off. Each failure is logged
+-- once until the action succeeds.
+local hazard_failing
+local function do_hazards(st, action, server)
+	if action.hazards == "pause" then
+		local values, err = action.values, nil
+		if not values then values, err = read_hazards() end
+		if not values then
+			if hazard_failing ~= "read" then log("could not read worm and storm settings (%s); retrying at each poll", err) end
+			hazard_failing = "read"
+			return st
+		end
+		save(it.hazards_paused(st, values, false, server))
+		local ok, why = set_hazards(nil)
+		if ok then
+			log("paused worms and storms (nobody connected; were %s)", hazard_list(values)); hazard_failing = nil
+		elseif hazard_failing ~= "pause" then
+			log("could not pause worms and storms (%s); retrying at each poll", why); hazard_failing = "pause"
+		end
+		return it.hazards_paused(st, values, ok, server)
+	end
+	local ok, why = set_hazards(action.values)
+	if ok then log("restored worms and storms (%s)", hazard_list(action.values)); hazard_failing = nil
+	elseif hazard_failing ~= "restore" then
+		log("could not restore worms and storms (%s); retrying at each poll", why); hazard_failing = "restore"
+	end
+	return it.hazards_restored(st, ok)
+end
+
 -- Established connections on the broker port; nil, reason when ss fails.
 local function connections()
 	local ok, out = capture({ getenv("DUNE_SS", "ss"), "-Htn", "state", "established", "( sport = :" .. PORT .. " )" })
@@ -192,7 +249,8 @@ local function cmd_run(max_polls, virtual)
 		else
 			blind = nil
 			local action, events
-			st, action, poll, events = it.step(st, { connections = n, server = server_id() }, now, cfg)
+			local obs = { connections = n, server = server_id() }
+			st, action, poll, events = it.step(st, obs, now, cfg)
 			for _, e in ipairs(events) do log("%s", e) end
 			if action and action.set_fps then
 				save(it.applied(st, action, false, now)) -- the rate is unknown until the change is verified
@@ -206,6 +264,9 @@ local function cmd_run(max_polls, virtual)
 			elseif action and action.notify then
 				st = it.notified(st, notify(cfg, action), now)
 			end
+			local hz
+			st, hz = it.hazard_step(st, obs, now, cfg)
+			if hz then st = do_hazards(st, hz, obs.server) end
 			local text = it.encode(st)
 			if text ~= saved then save(st); saved = text end
 		end
@@ -221,6 +282,14 @@ local function restore()
 	local cfg = it.parse_config(os.getenv) or it.parse_config(function() return nil end)
 	local p = it.decode(read_file(state_file))
 	local server = server_id()
+	-- Worms and storms paused on this map server come back first, so stopping the throttle never leaves them off.
+	if p.hazards_saved and server and p.hazards_server == server then
+		local ok, why = set_hazards(p.hazards_saved)
+		if not ok then log("could not restore worms and storms on stop (%s)", why); return false, why end
+		log("restored worms and storms (%s; stopping)", hazard_list(p.hazards_saved))
+		p = it.hazards_restored(p, true)
+		save(p)
+	end
 	if not (p.server and server and p.server == server) or p.applied == cfg.active_fps then return true end
 	local ok, out = set_rate(cfg.active_fps)
 	if not ok then log("could not restore %d fps on stop (%s)", cfg.active_fps, last_line(out)); return false, last_line(out) end

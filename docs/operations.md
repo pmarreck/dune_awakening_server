@@ -183,6 +183,8 @@ Hagga Basin (`Survival_1`) is the world's home map and always runs. Every other 
 
 **How it works.** At `start`, `dune-world-partitions` gives every served map its database partition (one row in `world_partition`, dimension 0; existing rows are kept). When a player asks to travel, Director logs the request (`Received travel request for 1 player(s) to SH_Arrakeen …`) and, while the map has no server, keeps the player queued (`Processing travel queue for … SH_Arrakeen (… num: 1)`) for up to `TravelRequestExpirationTimeSeconds` (300 s in Funcom's Director config). The scaler reads Director's log every `MAP_POLL` seconds, starts the map's server with its partition, and Director routes the waiting player once the server registers. That Director queues the player while the server starts is inferred from DASH, which scales maps from the same log lines in production; it was not yet observed on this world (see [architecture.md](architecture.md#map-scaling)). An isolated test boot of Arrakeen loaded the map, bound its ports and claimed its partition about 10 s after launch. The scaler stops a map once nobody has been on it (the players its server reports in `farm_state`) for `MAP_IDLE_AFTER` seconds, counted from its start, the last travel request for it or the last player seen on it, whichever is latest. It never stops a map while the database cannot say who is on it, never touches `Survival_1` or an always-on map, and never copies a line of Director's log (it holds credentials) into its own log.
 
+**Worms and storms while nobody plays** (`HAZARD_PAUSE=1`). The world keeps running with nobody connected, and its sandstorms keep wearing down vehicles parked in the open; on this world a buggy left outside was destroyed overnight. With the switch on, the throttle reads `sandworm.dune.Enabled`, `Sandstorm.Enabled` and `Coriolis.Enabled` when it first lowers the rate, sets each to `0` (verified, as the rate is), and at the first connection sets them back to the values it read, so a storm switched off in `UserEngine.ini` stays off. The values read are kept in the state file; a failed change is retried at each poll; `stop` puts them back; a map server that restarted starts from its configured values, so a pause on the previous one is dropped rather than restored over them.
+
 **Settings** go in `world.conf` (read at every `dune-awakening start`); an environment variable `DUNE_<key>` wins over the file. Invalid values stop `start` with a message naming the setting.
 
 | Key | Default | Meaning |
@@ -255,6 +257,7 @@ Nothing is lowered in the first 5 minutes after the throttle or the map server s
 | Key | Default | Meaning |
 |---|---|---|
 | `IDLE_THROTTLE` | `1` | `0` leaves the rate alone (connections are still logged, and a lowered rate is restored) |
+| `HAZARD_PAUSE` | `0` | `1` switches worms and storms off together with the first throttle and puts them back at the first connection (below) |
 | `ACTIVE_FPS` | `20` | the rate while anyone is connected |
 | `IDLE_FPS` / `IDLE_AFTER` | `5` / `300` | idle tier: rate, and seconds with nobody connected before it |
 | `DEEP_IDLE_FPS` / `DEEP_IDLE_AFTER` | `1` / `86400` | deep-idle tier: rate, and seconds with nobody connected before it |

@@ -288,4 +288,96 @@ do
 	eq("decode nil", next(it.decode(nil)), nil)
 end
 
+-- Hazard pause: worms and storms off while nobody is connected ------------------------------------------------------
+do
+	eq("hazard pause off by default", CFG.hazard_pause, false)
+	for v, want in pairs({ ["0"] = false, off = false, ["false"] = false, no = false, ["1"] = true, on = true, ["true"] = true, yes = true, [""] = false }) do
+		local cc = it.parse_config(env({ DUNE_HAZARD_PAUSE = v }))
+		eq("hazard switch " .. v, cc and cc.hazard_pause, want)
+	end
+	local cc, err = it.parse_config(env({ DUNE_HAZARD_PAUSE = "maybe" }))
+	eq("hazard switch garbage rejected", cc, nil)
+	eq("hazard switch error names it", (err or ""):find("HAZARD_PAUSE", 1, true) ~= nil, true)
+	eq("hazard cvars", table.concat(it.HAZARD_CVARS, ","), "sandworm.dune.Enabled,Sandstorm.Enabled,Coriolis.Enabled")
+end
+
+local HZ = assert(it.parse_config(env({ DUNE_HAZARD_PAUSE = "1" })))
+local LIVE_VALUES = { ["sandworm.dune.Enabled"] = "1", ["Sandstorm.Enabled"] = "0", ["Coriolis.Enabled"] = "0" }
+
+-- Drive step + hazard_step together. read(t) gives the values the caller reads before pausing (nil = read failed);
+-- set_ok(action, t) says whether setting succeeded. Logs "t:pause" (with "(saved)" when no read was needed) and
+-- "t:restore k=v;...".
+local function drive_hz(o)
+	local cfg = o.cfg or HZ
+	local t = o.t0 or 0
+	local st = o.state or it.initial_state(t, cfg, o.persisted, SERVER)
+	local log = {}
+	while t <= o.t1 do
+		local n = o.conn and o.conn(t) or 0
+		local server = o.server and o.server(t) or SERVER
+		local obs = { connections = n, server = server }
+		local fps_action, poll
+		st, fps_action, poll = it.step(st, obs, t, cfg)
+		if fps_action and fps_action.set_fps then st = it.applied(st, fps_action, true, t) end
+		local a
+		st, a = it.hazard_step(st, obs, t, cfg)
+		if a then
+			local good = not o.set_ok or o.set_ok(a, t)
+			if a.hazards == "pause" then
+				local values = a.values
+				if not values then values = (o.read and o.read(t)) or (not o.read and LIVE_VALUES) or nil end
+				log[#log + 1] = t .. ":pause" .. (a.values and "(saved)" or "") .. (values and "" or "(read failed)")
+				st = it.hazards_paused(st, values, values ~= nil and good, server)
+			else
+				local kv = {}
+				for _, c in ipairs(it.HAZARD_CVARS) do kv[#kv + 1] = c .. "=" .. tostring(a.values[c]) end
+				log[#log + 1] = t .. ":restore " .. table.concat(kv, ";")
+				st = it.hazards_restored(st, good)
+			end
+		end
+		t = t + poll
+	end
+	return table.concat(log, ","), st
+end
+
+local RESTORE = "restore sandworm.dune.Enabled=1;Sandstorm.Enabled=0;Coriolis.Enabled=0"
+do
+	-- Off: nothing ever happens, connected or not.
+	eq("hazard pause off: nothing", (drive_hz({ cfg = CFG, t1 = 2000 })), "")
+	-- Nobody from startup: paused once, together with the first throttle (idle_after and the start grace), never again.
+	eq("pause once after idle_after", (drive_hz({ t1 = 2000 })), "300:pause")
+	-- Someone connects: the values read before the pause come back at once; leaving again pauses again after idle_after.
+	eq("restore on connection, pause again later", (drive_hz({ t1 = 2000, conn = function(t) return (t >= 1000 and t < 1100) and 1 or 0 end })),
+		"300:pause,1000:" .. RESTORE .. ",1400:pause")
+	-- A blip shorter than idle_after never pauses; connected all along never pauses.
+	eq("blip: no pause", (drive_hz({ t1 = 280, conn = function(t) return t == 100 and 1 or 0 end })), "")
+	eq("connected: no pause", (drive_hz({ t1 = 2000, conn = function() return 1 end })), "")
+	-- A failed read pauses nothing and is retried at the next poll.
+	eq("read failure retried", (drive_hz({ t1 = 320, read = function(t) if t >= 310 then return LIVE_VALUES end end })),
+		"300:pause(read failed),310:pause")
+	-- A failed set keeps the values read first and retries with them (no second read, which would see zeros).
+	eq("set failure retried without rereading", (drive_hz({ t1 = 330, set_ok = function(_, t) return t >= 320 end })),
+		"300:pause,310:pause(saved),320:pause(saved)")
+	-- A failed restore is retried at each poll while the player stays.
+	eq("restore failure retried", (drive_hz({ t1 = 1020, conn = function(t) return t >= 1000 and 1 or 0 end,
+		set_ok = function(a, t) return a.hazards == "pause" or t >= 1010 end })), "300:pause,1000:" .. RESTORE .. ",1010:" .. RESTORE)
+	-- The map server restarted while paused: it starts from its configured values, so nothing is restored over them.
+	eq("server restart drops the pause", (drive_hz({ t1 = 1100, server = function(t) return t >= 900 and "5151" or SERVER end,
+		conn = function(t) return t >= 1000 and 1 or 0 end })), "300:pause")
+	-- The switch turned off while paused: restored even with nobody connected.
+	local _, paused = drive_hz({ t1 = 300 })
+	eq("switch off while paused: restore", (drive_hz({ cfg = CFG, state = paused, t0 = 310, t1 = 320 })), "310:" .. RESTORE)
+	-- Persistence: the pause survives a component restart for the same map server.
+	local again = it.decode(it.encode(paused))
+	eq("persisted pause restores on connection", (drive_hz({ persisted = again, t0 = 5000, t1 = 5000, conn = function() return 1 end })), "5000:" .. RESTORE)
+	eq("persisted pause not repeated", (drive_hz({ persisted = again, t0 = 5000, t1 = 6000 })), "")
+	-- Zeros read back after a partial pause never replace the values read before it.
+	local zeros = { ["sandworm.dune.Enabled"] = "0", ["Sandstorm.Enabled"] = "0", ["Coriolis.Enabled"] = "0" }
+	local partial = it.hazards_paused(it.initial_state(0, HZ, nil, SERVER), LIVE_VALUES, false, SERVER)
+	eq("saved values kept over a reread", it.hazards_paused(partial, zeros, true, SERVER).hazards_saved["sandworm.dune.Enabled"], "1")
+	local text = it.encode(paused)
+	eq("encode saved values", text:match("hazards_saved=([^\n]+)"), "sandworm.dune.Enabled:1,Sandstorm.Enabled:0,Coriolis.Enabled:0")
+	eq("decode drops malformed saved values", it.decode("hazards_saved=bogus\n").hazards_saved, nil)
+end
+
 if failures > 0 then io.stderr:write(failures, " failure(s)\n"); os.exit(1) end
