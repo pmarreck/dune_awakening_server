@@ -64,7 +64,7 @@ Character (online or offline is detected; offline changes take a backup first):
                                   that is already near them at them (experimental; needs them online on open sand)
 
 Options: --json (partitions, where), --about, -h/--help.
-Environment: DUNE_STATE_DIR, DUNE_SECRETS_DIR, DUNE_PG_PORT, DUNE_DB_NAME (default: the newest dune_sb_* database).
+Environment: DUNE_STATE_DIR, DUNE_SECRETS_DIR, DUNE_PG_PORT, DUNE_DB_NAME (default: the one the payload's perforce-keywords.json names).
 EOF
 }
 die() { printf '%s: %s\n' "$NAME" "$1" >&2; exit "${2:-1}"; }
@@ -74,10 +74,13 @@ sql() {
 	local db=${DUNE_DB_NAME:-}
 	PGPASSWORD=$(cat "$DUNE_SECRETS_DIR/postgres_admin_password" 2>/dev/null) || die "no postgres admin password in $DUNE_SECRETS_DIR"
 	export PGPASSWORD
+	# The payload names the game database (perforce-keywords.json, as dune-db-setup and the server derive it). Picking
+	# the "newest" dune_sb_* by name chose a kept copy (dune_sb_1_5_15_0_empty_20261020) over the live database.
 	if [ -z "$db" ]; then
-		db=$(psql -X -A -t -q -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d postgres \
-			-c "select datname from pg_database where datname like 'dune\_sb\_%' order by 1 desc limit 1" 2>/dev/null) || die "cannot reach postgres"
-		[ -n "$db" ] || die "no dune_sb_* database found"
+		local keywords="$DUNE_STATE_DIR/db-utils/DuneSandbox/Config/perforce-keywords.json"
+		[ -s "$keywords" ] || die "no $keywords to name the game database (run dune-db-setup, or set DUNE_DB_NAME)"
+		db=$(jq -r '.path' "$keywords" | sed -E 's#.*//seabass/([^/]+)/.*#\1#; s/[-.]/_/g; s/^/dune_/')
+		[[ "$db" =~ ^dune_[a-z0-9_]+$ ]] || die "cannot derive the game database name from $keywords (got '$db')"
 	fi
 	# Funcom's procedures name their tables without a schema, as the game server's own connections do.
 	PGOPTIONS="-c search_path=dune,public" psql -X -A -t -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "$db" "$@"

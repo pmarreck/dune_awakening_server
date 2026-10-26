@@ -261,6 +261,16 @@ char whois "fls-1' or '1'='1" >/dev/null 2>&1; [ $? -eq 1 ] || fail "whois accep
 char whois >/dev/null 2>&1; [ $? -eq 2 ] || fail "whois without an id is not a usage error"
 [ -s "$work/argv" ] && fail "whois touched the broker"
 
+# Without DUNE_DB_NAME the game database is the one the payload names (perforce-keywords.json), as the server uses it.
+# A kept copy whose name sorts after it (dune-db-setup leaves dune_sb_X_empty_<date> behind) must not be picked.
+mkdir -p "$DUNE_STATE_DIR/db-utils/DuneSandbox/Config"
+printf '{"path": "//seabass/sb-9.9.9.9/DuneSandbox"}\n' > "$DUNE_STATE_DIR/db-utils/DuneSandbox/Config/perforce-keywords.json"
+q "create database dune_sb_9_9_9_9_empty_20261020" postgres
+out=$(DUNE_DB_NAME= char whisper Tester "Water is life" 2>&1) || fail "no DUNE_DB_NAME: lookup did not use the payload's database: $out"
+mv -- "$DUNE_STATE_DIR/db-utils/DuneSandbox/Config/perforce-keywords.json" "$work/keywords.away"
+out=$(DUNE_DB_NAME= char whisper Tester "Water is life" 2>&1); [ $? -eq 1 ] && [[ "$out" == *perforce-keywords.json* ]] || fail "missing perforce-keywords.json not reported: $out"
+mv -- "$work/keywords.away" "$DUNE_STATE_DIR/db-utils/DuneSandbox/Config/perforce-keywords.json"
+
 touch "$work/broker-down"
 out=$(char kick Tester 2>&1); [ $? -eq 1 ] && [[ "$out" == *publish* ]] || fail "broker failure not reported: $out"
 [ -z "$(find "$DUNE_SECRETS_DIR" -name '*.cmd.json')" ] || fail "command body file left behind after a failed publish"

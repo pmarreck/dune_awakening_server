@@ -87,6 +87,15 @@ touch "$work/down-map-scaler"; expect components warn "the map scaler down"; unl
 (umask 077; printf 'wrong\n' > "$DUNE_SECRETS_DIR/postgres_dune_password"); expect database fail "game role cannot log in"
 (umask 077; printf 'dune-pw-for-test\n' > "$DUNE_SECRETS_DIR/postgres_dune_password")
 DUNE_DB_NAME=dune_sb_0_0_0_0 expect database fail "game database missing"
+# Without DUNE_DB_NAME the game database is the one the payload names; a kept copy whose name sorts after it (and that
+# the game role cannot use) must not be checked instead.
+mkdir -p "$DUNE_STATE_DIR/db-utils/DuneSandbox/Config"
+printf '{"path": "//seabass/sb-9.9.9.9/DuneSandbox"}\n' > "$DUNE_STATE_DIR/db-utils/DuneSandbox/Config/perforce-keywords.json"
+q "create database dune_sb_9_9_9_9_empty_20261020" && q "revoke connect on database dune_sb_9_9_9_9_empty_20261020 from public" || fail "decoy database"
+DUNE_DB_NAME= expect database ok "payload names the database, decoy sorts after it"
+mv -- "$DUNE_STATE_DIR/db-utils/DuneSandbox/Config/perforce-keywords.json" "$work/keywords.away"
+DUNE_DB_NAME= expect database fail "no perforce-keywords.json to name the database"
+mv -- "$work/keywords.away" "$DUNE_STATE_DIR/db-utils/DuneSandbox/Config/perforce-keywords.json"
 mv "$DUNE_BACKUP_DIR/20260925T040000.000Z-scheduled" "$work/old-backup"; expect backups warn "no backups"
 mv "$work/old-backup" "$DUNE_BACKUP_DIR/20260925T040000.000Z-scheduled"
 DUNE_NOW=2026-10-05T00:00:00Z expect backups warn "newest backup ten days old"

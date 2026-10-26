@@ -152,8 +152,13 @@ check_database() {
 	listen=$(PGPASSWORD=$admin psql -X -A -t -q -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d postgres -c 'show listen_addresses' 2>/dev/null) ||
 		{ report database fail "cannot log in to postgres as the admin on 127.0.0.1:$DUNE_PG_PORT (is it running?)"; return; }
 	[ "$listen" = 127.0.0.1 ] || { report database fail "postgres listens on '$listen', not loopback only"; return; }
-	db=${DUNE_DB_NAME:-$(PGPASSWORD=$admin psql -X -A -t -q -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d postgres \
-		-c "select datname from pg_database where datname like 'dune\_sb\_%' order by 1 desc limit 1" 2>/dev/null)}
+	# The payload names the game database (perforce-keywords.json); the "newest" dune_sb_* by name can be a kept copy.
+	local keywords="$DUNE_STATE_DIR/db-utils/DuneSandbox/Config/perforce-keywords.json"
+	db=${DUNE_DB_NAME:-}
+	if [ -z "$db" ]; then
+		[ -s "$keywords" ] || { report database fail "no $keywords to name the game database (run: dune-awakening start)"; return; }
+		db=$(jq -r '.path' "$keywords" | sed -E 's#.*//seabass/([^/]+)/.*#\1#; s/[-.]/_/g; s/^/dune_/')
+	fi
 	[ -n "$db" ] && PGPASSWORD=$admin psql -X -A -t -q -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d "$db" -c 'select 1' >/dev/null 2>&1 ||
 		{ report database fail "the game database ${db:-dune_sb_*} does not exist (run: dune-awakening start, which installs it)"; return; }
 	dune=$(cat "$DUNE_SECRETS_DIR/postgres_dune_password" 2>/dev/null) || { report database fail "no password for the game's database role"; return; }
