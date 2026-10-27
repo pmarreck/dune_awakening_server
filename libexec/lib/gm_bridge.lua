@@ -10,9 +10,12 @@ local M = {}
 M.NOT_ALLOWED = "not allowed"
 -- Permissions a policy line can grant. give puts items into your own inventory; give-others into another player's;
 -- water and water-others likewise refill water containers, fuel and fuel-others hand out vehicle fuel cells, unlock and unlock-others open a school's skill tree;
--- thufir sends a message to the operator's assistant; newbie whispers a newcomer tip; time tells the player's local time.
+-- thufir sends a message to the operator's assistant; newbie whispers a newcomer tip; time tells the player's local time;
+-- worm switches the world's sandworms on or off.
 M.COMMANDS = { "bring", "fuel", "fuel-others", "give", "give-others", "goto", "kick", "newbie", "say", "thufir", "time", "timeout", "unlock", "unlock-others", "water",
-	"water-others", "where" }
+	"water-others", "where", "worm" }
+-- The console variable &worm switches (the same one the world timeout and the idle throttle's hazard pause use).
+M.WORM_CVAR = "sandworm.dune.Enabled"
 -- Longest &thufir message passed on (chat lines are shorter; this only bounds a hostile client).
 local MAX_NOTE = 2000
 -- Amount &water asks dune-live to put into the player's containers: more than any loadout holds, so every container
@@ -265,6 +268,18 @@ function M.plan(cmd, sender, policy, item_db, tips, pick)
 		local a = (cmd.args[1] or "status"):lower()
 		if #cmd.args > 1 or not (a == "on" or a == "off" or a == "status") then return usage("&timeout on|off|status") end
 		return { actions = { { "world", "timeout", a } }, reply = "timeout " .. a }
+	elseif n == "worm" then
+		local a = (cmd.args[1] or "status"):lower()
+		if #cmd.args > 1 or not (a == "on" or a == "off" or a == "status") then return usage("&worm on|off|status") end
+		if a == "status" then
+			return { actions = { { "world", "cvar", M.WORM_CVAR } }, reply = "worm state unknown",
+				reply_from_output = function(out)
+					local v = (out or ""):match("([^\n]*)$"):gsub("^%s+", ""):gsub("%s+$", "")
+					if v == "1" then return "worms are on" elseif v == "0" then return "worms are off" end
+					return "the worm switch reads " .. v
+				end }
+		end
+		return { actions = { { "world", "cvar", M.WORM_CVAR, a == "on" and "1" or "0" } }, reply = "worms " .. a }
 	elseif n == "time" then
 		if #cmd.args > 0 then return usage("&time") end
 		return { actions = {}, clock = { tz = M.timezone(policy, sender.fls, me) or false }, reply = "the time is unknown" }

@@ -35,6 +35,7 @@ cat > "$DUNE_LIVE" <<FAKE
 case "\$1 \$2" in
 	"character whois") case "\$3" in $ALICE) echo Alice ;; $BOB) echo Bob ;; $CAROL) echo Carol ;; *) echo "dune-live: no character for account \$3" >&2; exit 1 ;; esac ;;
 	"character move") [ "\$5" = Nobody ] && { echo "dune-live: no character named Nobody with a body in the world" >&2; exit 1; } ;;
+	"world cvar") [ \$# -eq 3 ] && echo 0 ;;
 	"character give") [ "\$3" = Nobody ] && { echo "dune-live: Nobody is not online; items can only be given to an online player" >&2; exit 1; } ;;
 esac
 exit 0
@@ -58,7 +59,7 @@ libexec/dune-gm-bridge status && fail "status says running before start"
 
 out=$(libexec/dune-rabbitmq init game 2>&1 && libexec/dune-rabbitmq start game 2>&1) || { fail "game broker: $out"; exit 1; }
 log="$DUNE_STATE_DIR/gm-bridge/gm-bridge.log"
-libexec/dune-gm-bridge run --max-messages 16 > "$work/run.out" 2>&1 &
+libexec/dune-gm-bridge run --max-messages 18 > "$work/run.out" 2>&1 &
 bridge_pid=$!
 # Before chat.intercept exists the bridge retries; once it exists, it binds and logs that it is listening.
 for _ in $(seq 1 30); do grep -q 'retrying' "$log" 2>/dev/null && break; sleep 0.1; done
@@ -89,8 +90,10 @@ send "$BOB" 'Bob#5' '&time' 1 2 3
 send "$CAROL" 'Carol#77' '&time' 1 2 3
 # The game delivers one copy of a line per online player: an identical line from the same sender seconds later runs once.
 send "$CAROL" 'Carol#77' '&time' 1 2 3
+send "$ALICE" 'Alice#1234' '&worm off' 1 2 3
+send "$ALICE" 'Alice#1234' '&worm status' 1 2 3
 for _ in $(seq 1 300); do kill -0 "$bridge_pid" 2>/dev/null || break; sleep 0.1; done
-if kill -0 "$bridge_pid" 2>/dev/null; then fail "bridge did not exit after 16 messages"; kill "$bridge_pid"; fi
+if kill -0 "$bridge_pid" 2>/dev/null; then fail "bridge did not exit after 18 messages"; kill "$bridge_pid"; fi
 wait "$bridge_pid"; rc=$?; bridge_pid=
 [ "$rc" -eq 0 ] || fail "bridge run exited $rc: $(cat "$work/run.out")"
 [ -s "$work/run.out" ] && fail "bridge run wrote to stdout/stderr: $(cat "$work/run.out")"
@@ -125,7 +128,13 @@ expected=$(printf '%s\n' \
 	"character${us}whois${us}$BOB${us}" \
 	"character${us}whisper${us}Bob${us}it is $(date -d @1793074800 '+%-I:%M %p %Z, %a %b %-d') (the server's time zone; the operator can set yours in gm_bridge.conf)${us}--from${us}GM${us}" \
 	"character${us}whois${us}$CAROL${us}" \
-	"character${us}whisper${us}Carol${us}failed: unknown time zone Mars/Olympus_Mons in gm_bridge.conf${us}--from${us}GM${us}")
+	"character${us}whisper${us}Carol${us}failed: unknown time zone Mars/Olympus_Mons in gm_bridge.conf${us}--from${us}GM${us}" \
+	"character${us}whois${us}$ALICE${us}" \
+	"world${us}cvar${us}sandworm.dune.Enabled${us}0${us}" \
+	"character${us}whisper${us}Alice${us}worms off${us}--from${us}GM${us}" \
+	"character${us}whois${us}$ALICE${us}" \
+	"world${us}cvar${us}sandworm.dune.Enabled${us}" \
+	"character${us}whisper${us}Alice${us}worms are off${us}--from${us}GM${us}")
 got=$(cat "$work/calls" 2>/dev/null)
 [ "$got" = "$expected" ] || fail "dune-live calls:
 $(tr "$us" '|' <<<"$got")

@@ -55,6 +55,8 @@ the bridge runs it through dune-live and whispers the result back (sender shown 
                          unlock-others for another online player); school: bg, mentat, planetologist, sword, trooper
   &water [player]        fill every water container you carry (permission water) or an online player's
                          (water-others)
+  &worm on|off|status    switch the world's sandworms on or off, or say which (permission worm); off lasts
+                         across sessions until on or a world restart (the idle throttle's pause keeps it)
   &time                  the time in your own time zone, which the operator sets per player with tz=<zone> on
                          your gm_bridge.conf line (the game does not report it); otherwise the server's
   &newbie [category]     a random newcomer tip (from docs/game-guide/tips/newbie-tips.tsv), optionally from
@@ -63,7 +65,7 @@ the bridge runs it through dune-live and whispers the result back (sender shown 
                          player's (fuel-others); load one into the vehicle to refuel it
 
 Who may use what: $DUNE_CONFIG_DIR/gm_bridge.conf, one line per player, `<character name or FLS id>: <command>...`
-or `<who>: *` for every command (permissions: help, where, goto, bring, say, timeout, give, give-others, fuel, fuel-others, kick, newbie, thufir, time, unlock, unlock-others, water, water-others; a `tz=<zone>` word such as tz=America/New_York sets the player's time zone for &time and grants nothing);
+or `<who>: *` for every command (permissions: help, where, goto, bring, say, timeout, give, give-others, fuel, fuel-others, kick, newbie, thufir, time, unlock, unlock-others, water, water-others, worm; a `tz=<zone>` word such as tz=America/New_York sets the player's time zone for &time and grants nothing);
 `#` starts a comment. No file, or nobody listed, means nobody (fail closed). The
 file is read for every command, so edits apply at once. Senders are identified only by the account id the broker
 stamps on each message; ordinary chat is never logged, only `&` commands (log: $DUNE_STATE_DIR/gm-bridge/).
@@ -237,10 +239,14 @@ local function handle(d)
 		local text, err = local_time(plan.clock.tz)
 		answer = text and gm.time_reply(text, plan.clock.tz) or ("failed: " .. err)
 	end
+	local all_ok, last_out = true, ""
 	for _, argv in ipairs(plan.actions) do
-		local aok, out = live(argv)
-		if not aok then answer = "failed: " .. reason(out); log("  failed: %s", reason(out)); break end
+		local aok, out = live(argv, plan.reply_from_output ~= nil)
+		if not aok then answer = "failed: " .. reason(out); log("  failed: %s", reason(out)); all_ok = false; break end
+		last_out = out
 	end
+	-- A read (&worm status) answers with what dune-live printed.
+	if all_ok and plan.reply_from_output then answer = plan.reply_from_output(last_out) end
 	reply(name, answer)
 end
 

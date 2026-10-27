@@ -69,9 +69,9 @@ if errors[1] and not errors[1]:find("line 9", 1, true) then fail("error does not
 
 -- Authorization as a classifier: every sender x command, allow/deny. Senders by name, by FLS id, unlisted,
 -- and unresolvable (whois failed: no name).
-local COMMANDS = { "help", "where", "goto", "bring", "say", "timeout", "give", "give-others", "fuel", "fuel-others", "kick", "newbie", "thufir", "time", "unlock", "unlock-others", "water", "water-others", "bogus" }
+local COMMANDS = { "help", "where", "goto", "bring", "say", "timeout", "give", "give-others", "fuel", "fuel-others", "kick", "newbie", "thufir", "time", "unlock", "unlock-others", "water", "water-others", "worm", "bogus" }
 local senders = {
-	{ "alice by name", ALICE, "Alice", { help = 1, where = 1, goto = 1, bring = 1, say = 1, timeout = 1, give = 1, ["give-others"] = 1, fuel = 1, ["fuel-others"] = 1, kick = 1, newbie = 1, thufir = 1, time = 1, unlock = 1, ["unlock-others"] = 1, water = 1, ["water-others"] = 1 } },
+	{ "alice by name", ALICE, "Alice", { help = 1, where = 1, goto = 1, bring = 1, say = 1, timeout = 1, give = 1, ["give-others"] = 1, fuel = 1, ["fuel-others"] = 1, kick = 1, newbie = 1, thufir = 1, time = 1, unlock = 1, ["unlock-others"] = 1, water = 1, ["water-others"] = 1, worm = 1 } },
 	{ "bob by fls", BOB, "Bob", { help = 1, where = 1, goto = 1 } },
 	{ "bob unresolved", BOB, nil, { help = 1, where = 1, goto = 1 } },
 	{ "carol spaced", CAROL, "Carol", { help = 1, say = 1, timeout = 1 } },
@@ -186,7 +186,7 @@ end
 p = gm.plan(gm.parse_command("&where"), { fls = ALICE, name = "Alice" }, policy)
 eq("where without origin: no actions", #p.actions, 0); eq("where without origin: reply", p.reply, "your position is unknown")
 -- help lists only what the sender may run.
-eq("help for alice", plan("&help").reply, "commands: bring, fuel, fuel-others, give, give-others, goto, kick, newbie, say, thufir, time, timeout, unlock, unlock-others, water, water-others, where")
+eq("help for alice", plan("&help").reply, "commands: bring, fuel, fuel-others, give, give-others, goto, kick, newbie, say, thufir, time, timeout, unlock, unlock-others, water, water-others, where, worm")
 eq("help for bob", gm.plan(gm.parse_command("&help"), { fls = BOB, name = "Bob" }, policy).reply, "commands: goto, where")
 eq("not allowed reply", gm.NOT_ALLOWED, "not allowed")
 
@@ -344,6 +344,23 @@ do
 	for i = 1, 50 do _, big = gm.is_repeat(big, ALICE, "&say " .. i, i, "k") end
 	local n = 0; for _ in pairs(big) do n = n + 1 end
 	eq("old entries pruned", n <= gm.REPEAT_WINDOW + 1, true)
+end
+
+-- &worm on|off|status: the live sandworm switch (sandworm.dune.Enabled), set and verified by dune-live world cvar.
+do
+	same("worm on", plan("&worm on").actions, { { "world", "cvar", "sandworm.dune.Enabled", "1" } })
+	eq("worm on reply", plan("&worm on").reply, "worms on")
+	same("worm off", plan("&worm OFF").actions, { { "world", "cvar", "sandworm.dune.Enabled", "0" } })
+	eq("worm off reply", plan("&worm off").reply, "worms off")
+	local st = plan("&worm status")
+	same("worm status reads", st.actions, { { "world", "cvar", "sandworm.dune.Enabled" } })
+	eq("status reply on", st.reply_from_output("1"), "worms are on")
+	eq("status reply off", st.reply_from_output("0"), "worms are off")
+	eq("status reply odd", st.reply_from_output("garbage"), "the worm switch reads garbage")
+	same("bare worm is status", plan("&worm").actions, st.actions)
+	eq("worm usage", plan("&worm maybe").reply, "usage: &worm on|off|status")
+	eq("worm two words usage", plan("&worm on now").reply, "usage: &worm on|off|status")
+	eq("worm permission", gm.permission(gm.parse_command("&worm on"), "Alice"), "worm")
 end
 
 os.exit(failures == 0 and 0 or 1)
