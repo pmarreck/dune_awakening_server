@@ -10,8 +10,8 @@ local M = {}
 M.NOT_ALLOWED = "not allowed"
 -- Permissions a policy line can grant. give puts items into your own inventory; give-others into another player's;
 -- water and water-others likewise refill water containers, fuel and fuel-others hand out vehicle fuel cells, unlock and unlock-others open a school's skill tree;
--- thufir sends a message to the operator's assistant; newbie whispers a newcomer tip.
-M.COMMANDS = { "bring", "fuel", "fuel-others", "give", "give-others", "goto", "kick", "newbie", "say", "thufir", "timeout", "unlock", "unlock-others", "water",
+-- thufir sends a message to the operator's assistant; newbie whispers a newcomer tip; time tells the player's local time.
+M.COMMANDS = { "bring", "fuel", "fuel-others", "give", "give-others", "goto", "kick", "newbie", "say", "thufir", "time", "timeout", "unlock", "unlock-others", "water",
 	"water-others", "where" }
 -- Longest &thufir message passed on (chat lines are shorter; this only bounds a hostile client).
 local MAX_NOTE = 2000
@@ -56,8 +56,18 @@ function M.parse_command(text)
 	return { name = name ~= "" and name or "help", args = args, rest = rest }
 end
 
+-- An IANA zone name (America/New_York, UTC): letters first, then letters, digits, _ + -, slash-separated parts.
+local function valid_zone(z)
+	if not z or z == "" or z:find("..", 1, true) then return false end
+	for part in (z .. "/"):gmatch("([^/]*)/") do
+		if not part:match("^[%w][%w_+%-]*$") then return false end
+	end
+	return z:match("^%a") ~= nil
+end
+
 -- parse_policy(text) -> policy, errors. Lines `<character name or FLS id>: <cmd> <cmd>...` (`*` = every command),
--- `#` comments and blank lines. nil text (no file) gives an empty policy: nobody is authorized.
+-- `#` comments and blank lines. nil text (no file) gives an empty policy: nobody is authorized. A `tz=<zone>` word
+-- assigns the player's time zone for &time (the game does not report one), and grants nothing.
 function M.parse_policy(text)
 	local policy, errors = { entries = {} }, {}
 	local n = 0
@@ -70,13 +80,20 @@ function M.parse_policy(text)
 			if not who or who == "" then
 				errors[#errors + 1] = string.format("line %d: expected `<character name or FLS id>: <command>...`", n)
 			else
-				local set = {}
-				for c in cmds:gmatch("%S+") do
-					c = c:lower()
-					if c == "*" or KNOWN[c] then set[c] = true
-					else errors[#errors + 1] = string.format("line %d: unknown command %s", n, c) end
+				local set, tz = {}, nil
+				for word in cmds:gmatch("%S+") do
+					local z = word:match("^[Tt][Zz]=(.*)$")
+					if z then
+						if tz then errors[#errors + 1] = string.format("line %d: more than one tz=", n)
+						elseif not valid_zone(z) then errors[#errors + 1] = string.format("line %d: tz=%s is not a time zone name like America/New_York", n, z)
+						else tz = z end
+					else
+						local c = word:lower()
+						if c == "*" or KNOWN[c] then set[c] = true
+						else errors[#errors + 1] = string.format("line %d: unknown command %s", n, c) end
+					end
 				end
-				policy.entries[#policy.entries + 1] = { who = who, cmds = set }
+				policy.entries[#policy.entries + 1] = { who = who, cmds = set, tz = tz }
 			end
 		end
 	end
@@ -108,6 +125,19 @@ function M.authorize(policy, fls, name, cmd)
 	if cmd == "help" then return true end
 	for _, e in ipairs(es) do if e.cmds["*"] or e.cmds[cmd] then return true end end
 	return false
+end
+
+-- timezone(policy, fls, name): the zone the operator assigned to this sender (first matching entry with tz=), or nil.
+function M.timezone(policy, fls, name)
+	if type(fls) ~= "string" then return nil end
+	for _, e in ipairs(entries_for(policy, fls:upper(), name)) do if e.tz then return e.tz end end
+	return nil
+end
+
+-- The &time reply around the formatted time; zone false means it is the server's own zone.
+function M.time_reply(text, zone)
+	if zone then return string.format("it is %s (%s, set for you in gm_bridge.conf)", text, zone) end
+	return string.format("it is %s (the server's time zone; the operator can set yours in gm_bridge.conf)", text)
 end
 
 local GIVE_USAGE = "&give <item name or id> [count] [to <player>]"
@@ -235,6 +265,9 @@ function M.plan(cmd, sender, policy, item_db, tips, pick)
 		local a = (cmd.args[1] or "status"):lower()
 		if #cmd.args > 1 or not (a == "on" or a == "off" or a == "status") then return usage("&timeout on|off|status") end
 		return { actions = { { "world", "timeout", a } }, reply = "timeout " .. a }
+	elseif n == "time" then
+		if #cmd.args > 0 then return usage("&time") end
+		return { actions = {}, clock = { tz = M.timezone(policy, sender.fls, me) or false }, reply = "the time is unknown" }
 	elseif n == "thufir" then
 		if cmd.rest == "" or #cmd.rest > MAX_NOTE then return usage("&thufir <message>") end
 		return { actions = {}, note = { from = me, text = cmd.rest }, reply = "sent to Thufir" }

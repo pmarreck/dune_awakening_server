@@ -153,15 +153,18 @@ A trusted player can run a few admin commands from game chat, without host acces
 | `&unlock <school> [[to\|for] <player>]` | opens a school's skill tree (`character unlock-tree`, see [Skill trees](#skill-trees-unlocking-a-school-without-its-trainer-quests)); permissions `unlock` (yourself) and `unlock-others` |
 | `&water [player]` | fills every water container you carry, or with a name another online player's (`character water`); permissions `water` (yourself) and `water-others`. Useful after time in the Escape menu, where water keeps draining because the world never pauses |
 | `&fuel [player]` | puts 5 Large Vehicle Fuel Cells (the vehicle "battery") into your inventory, or with a name another online player's (`character give`); permissions `fuel` and `fuel-others`. The server has no command that fills a vehicle's tank directly, so load a cell into the vehicle yourself. |
+| `&time` | whispers the time in your own time zone, for example `it is 12:20 AM EDT, Tue Oct 27 (America/New_York, set for you in gm_bridge.conf)`. **The time zone is not detected.** The game never tells the server a player's time zone (it sees only an account id and a network address), so the operator assigns one per player with a `tz=<zone>` word on that player's `gm_bridge.conf` line, using an IANA zone name such as `America/New_York` or `America/Los_Angeles`; daylight saving follows from the zone. Without one the reply is in the server's time zone and says so. A zone name the host's zone database lacks is refused rather than shown as UTC. Permission `time`. |
 | `&newbie [category]` | whispers a random newcomer tip from the player guide (`docs/game-guide/tips/newbie-tips.tsv`), or one from a category (worms, water, base, travel, ...); an unknown category lists the valid ones. Permission `newbie`. |
 
 To enable it, write `gm_bridge.conf` in the config directory (template: `config.sample/gm_bridge.conf.sample`) and `chmod 600` it. One line per player, `<character name or FLS id>: <command>...`, or `<who>: *` for every command; `#` starts a comment. The permissions are the command names, except that giving is split: `give` lets a player give to themselves, `give-others` to anyone else (`*` grants both). An entry of 16 hex digits is an FLS id and matches that account only; `dune-awakening character whois <FLS id>` names the character of an id. The file is read for every command, so edits apply at once; `dune-awakening doctor` fails if others can read or write it.
 
 ```
 # ~/.config/dune_awakening_server/gm_bridge.conf
-Alice: *
-0123456789ABCDEF: where goto bring
+Alice: * tz=America/New_York
+0123456789ABCDEF: where goto bring time tz=America/Los_Angeles
 ```
+
+A `tz=<zone>` word sets that player's time zone for `&time` and grants nothing; a malformed one is logged as a configuration error.
 
 How `&give` reads its words: everything after the last standalone `to` (any case) is the player; a standalone whole number just before it (or at the end) is always the count. So names containing numbers are typed hyphenated, and replies and suggestions show them that way: `&give karpov-38` is one Karpov-38 rifle, `&give karpov-38 2` is two, and `&give karpov 38` is 38 of the item called "karpov". Matching ignores spacing and punctuation, so `karpov-38` finds an item the game calls "Karpov 38". The same goes for an item name containing the word `to`: type it hyphenated (`ticket-to-ride`), since only a standalone `to` starts the player name. A give to another player needs them online; otherwise the reply says so and nothing is sent. The reply names what was given, to whom, with the item's name and id, notes ids not yet verified in game, and reminds that a full inventory can drop items.
 

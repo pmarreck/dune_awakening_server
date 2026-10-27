@@ -69,9 +69,9 @@ if errors[1] and not errors[1]:find("line 9", 1, true) then fail("error does not
 
 -- Authorization as a classifier: every sender x command, allow/deny. Senders by name, by FLS id, unlisted,
 -- and unresolvable (whois failed: no name).
-local COMMANDS = { "help", "where", "goto", "bring", "say", "timeout", "give", "give-others", "fuel", "fuel-others", "kick", "newbie", "thufir", "unlock", "unlock-others", "water", "water-others", "bogus" }
+local COMMANDS = { "help", "where", "goto", "bring", "say", "timeout", "give", "give-others", "fuel", "fuel-others", "kick", "newbie", "thufir", "time", "unlock", "unlock-others", "water", "water-others", "bogus" }
 local senders = {
-	{ "alice by name", ALICE, "Alice", { help = 1, where = 1, goto = 1, bring = 1, say = 1, timeout = 1, give = 1, ["give-others"] = 1, fuel = 1, ["fuel-others"] = 1, kick = 1, newbie = 1, thufir = 1, unlock = 1, ["unlock-others"] = 1, water = 1, ["water-others"] = 1 } },
+	{ "alice by name", ALICE, "Alice", { help = 1, where = 1, goto = 1, bring = 1, say = 1, timeout = 1, give = 1, ["give-others"] = 1, fuel = 1, ["fuel-others"] = 1, kick = 1, newbie = 1, thufir = 1, time = 1, unlock = 1, ["unlock-others"] = 1, water = 1, ["water-others"] = 1 } },
 	{ "bob by fls", BOB, "Bob", { help = 1, where = 1, goto = 1 } },
 	{ "bob unresolved", BOB, nil, { help = 1, where = 1, goto = 1 } },
 	{ "carol spaced", CAROL, "Carol", { help = 1, say = 1, timeout = 1 } },
@@ -186,7 +186,7 @@ end
 p = gm.plan(gm.parse_command("&where"), { fls = ALICE, name = "Alice" }, policy)
 eq("where without origin: no actions", #p.actions, 0); eq("where without origin: reply", p.reply, "your position is unknown")
 -- help lists only what the sender may run.
-eq("help for alice", plan("&help").reply, "commands: bring, fuel, fuel-others, give, give-others, goto, kick, newbie, say, thufir, timeout, unlock, unlock-others, water, water-others, where")
+eq("help for alice", plan("&help").reply, "commands: bring, fuel, fuel-others, give, give-others, goto, kick, newbie, say, thufir, time, timeout, unlock, unlock-others, water, water-others, where")
 eq("help for bob", gm.plan(gm.parse_command("&help"), { fls = BOB, name = "Bob" }, policy).reply, "commands: goto, where")
 eq("not allowed reply", gm.NOT_ALLOWED, "not allowed")
 
@@ -282,6 +282,32 @@ do
 	eq("newbie unknown category lists categories", nb("&newbie lasguns").reply, "no tips about lasguns; try: water, worms")
 	eq("newbie with no tips loaded", gm.plan(gm.parse_command("&newbie"), alice, policy, nil, {}, pick).reply, "no tips available")
 	eq("newbie permission", gm.permission(gm.parse_command("&newbie worms"), "Alice"), "newbie")
+end
+
+-- &time: the game does not report a player's time zone, so the operator assigns one per player (tz= on the policy
+-- line); without one the reply uses the server's zone and says so. The plan only names the zone; the bridge formats.
+do
+	local p, errs = gm.parse_policy(table.concat({ "Alice: * tz=America/New_York", BOB .. ": time tz=America/Los_Angeles",
+		"Carol: time", "Erin: time tz=", "Frank: time tz=../../etc/passwd", "Gina: time tz=America/New_York tz=UTC" }, "\n"))
+	eq("tz errors: empty, path, repeated", #errs, 3)
+	eq("empty tz names its line", (errs[1] or ""):find("line 4", 1, true) ~= nil, true)
+	eq("path-like tz rejected", (errs[2] or ""):find("line 5", 1, true) ~= nil, true)
+	eq("repeated tz rejected", (errs[3] or ""):find("line 6", 1, true) ~= nil, true)
+	eq("tz does not grant a command", gm.authorize(p, ALICE, "Alice", "time"), true)
+	eq("tz=... is not a command name", gm.authorize(p, "00000000000000EE", "Erin", "time"), true)
+	eq("zone by name", gm.timezone(p, ALICE, "Alice"), "America/New_York")
+	eq("zone by fls", gm.timezone(p, BOB, "Bob"), "America/Los_Angeles")
+	eq("no zone set", gm.timezone(p, CAROL, "Carol"), nil)
+	eq("unlisted sender has no zone", gm.timezone(p, DAVE, "Dave"), nil)
+	local t = gm.plan(gm.parse_command("&time"), alice, p)
+	same("time: no actions", t.actions, {})
+	same("time: zone to format", t.clock, { tz = "America/New_York" })
+	eq("time with an argument is a usage error", gm.plan(gm.parse_command("&time now"), alice, p).reply, "usage: &time")
+	same("time without a zone", gm.plan(gm.parse_command("&time"), { fls = CAROL, name = "Carol" }, p).clock, { tz = false })
+	eq("reply with a zone", gm.time_reply("12:20 AM EDT, Tue Oct 27", "America/New_York"),
+		"it is 12:20 AM EDT, Tue Oct 27 (America/New_York, set for you in gm_bridge.conf)")
+	eq("reply without a zone", gm.time_reply("4:20 AM UTC, Tue Oct 27", false),
+		"it is 4:20 AM UTC, Tue Oct 27 (the server's time zone; the operator can set yours in gm_bridge.conf)")
 end
 
 os.exit(failures == 0 and 0 or 1)

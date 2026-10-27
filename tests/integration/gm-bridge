@@ -40,7 +40,9 @@ esac
 exit 0
 FAKE
 chmod +x "$DUNE_LIVE"
-printf '# who: commands\nAlice: *\n%s: where give\n' "$BOB" > "$DUNE_CONFIG_DIR/gm_bridge.conf"
+printf '# who: commands\nAlice: * tz=America/New_York\n%s: where give time\nCarol: time tz=Mars/Olympus_Mons\n' "$BOB" > "$DUNE_CONFIG_DIR/gm_bridge.conf"
+# &time formats this instant (2026-10-27 04:20 UTC) instead of the clock.
+export DUNE_NOW=1793074800
 # &thufir notes land here (world.conf THUFIR_INBOX in real use).
 export DUNE_THUFIR_INBOX="$work/thufir inbox"; mkdir -p "$DUNE_THUFIR_INBOX"
 # &newbie tips (the guide's docs/game-guide/tips/newbie-tips.tsv in real use): one tip, so the reply is deterministic.
@@ -56,7 +58,7 @@ libexec/dune-gm-bridge status && fail "status says running before start"
 
 out=$(libexec/dune-rabbitmq init game 2>&1 && libexec/dune-rabbitmq start game 2>&1) || { fail "game broker: $out"; exit 1; }
 log="$DUNE_STATE_DIR/gm-bridge/gm-bridge.log"
-libexec/dune-gm-bridge run --max-messages 12 > "$work/run.out" 2>&1 &
+libexec/dune-gm-bridge run --max-messages 15 > "$work/run.out" 2>&1 &
 bridge_pid=$!
 # Before chat.intercept exists the bridge retries; once it exists, it binds and logs that it is listening.
 for _ in $(seq 1 30); do grep -q 'retrying' "$log" 2>/dev/null && break; sleep 0.1; done
@@ -82,8 +84,11 @@ send "$BOB" 'Bob#5' '&give solari 5 to Alice' 1 2 3
 send "$ALICE" 'Alice#1234' '&give solari to Nobody' 1 2 3
 send "$ALICE" 'Alice#1234' '&thufir where is Arno? $(touch x)' 1 2 3
 send "$ALICE" 'Alice#1234' '&newbie' 1 2 3
+send "$ALICE" 'Alice#1234' '&time' 1 2 3
+send "$BOB" 'Bob#5' '&time' 1 2 3
+send "$CAROL" 'Carol#77' '&time' 1 2 3
 for _ in $(seq 1 300); do kill -0 "$bridge_pid" 2>/dev/null || break; sleep 0.1; done
-if kill -0 "$bridge_pid" 2>/dev/null; then fail "bridge did not exit after 12 messages"; kill "$bridge_pid"; fi
+if kill -0 "$bridge_pid" 2>/dev/null; then fail "bridge did not exit after 15 messages"; kill "$bridge_pid"; fi
 wait "$bridge_pid"; rc=$?; bridge_pid=
 [ "$rc" -eq 0 ] || fail "bridge run exited $rc: $(cat "$work/run.out")"
 [ -s "$work/run.out" ] && fail "bridge run wrote to stdout/stderr: $(cat "$work/run.out")"
@@ -112,7 +117,13 @@ expected=$(printf '%s\n' \
 	"character${us}whois${us}$ALICE${us}" \
 	"character${us}whisper${us}Alice${us}sent to Thufir${us}--from${us}GM${us}" \
 	"character${us}whois${us}$ALICE${us}" \
-	"character${us}whisper${us}Alice${us}tip (worms): Stay on rock.${us}--from${us}GM${us}")
+	"character${us}whisper${us}Alice${us}tip (worms): Stay on rock.${us}--from${us}GM${us}" \
+	"character${us}whois${us}$ALICE${us}" \
+	"character${us}whisper${us}Alice${us}it is 12:20 AM EDT, Tue Oct 27 (America/New_York, set for you in gm_bridge.conf)${us}--from${us}GM${us}" \
+	"character${us}whois${us}$BOB${us}" \
+	"character${us}whisper${us}Bob${us}it is $(date -d @1793074800 '+%-I:%M %p %Z, %a %b %-d') (the server's time zone; the operator can set yours in gm_bridge.conf)${us}--from${us}GM${us}" \
+	"character${us}whois${us}$CAROL${us}" \
+	"character${us}whisper${us}Carol${us}failed: unknown time zone Mars/Olympus_Mons in gm_bridge.conf${us}--from${us}GM${us}")
 got=$(cat "$work/calls" 2>/dev/null)
 [ "$got" = "$expected" ] || fail "dune-live calls:
 $(tr "$us" '|' <<<"$got")

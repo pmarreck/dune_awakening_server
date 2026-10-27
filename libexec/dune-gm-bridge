@@ -55,13 +55,15 @@ the bridge runs it through dune-live and whispers the result back (sender shown 
                          unlock-others for another online player); school: bg, mentat, planetologist, sword, trooper
   &water [player]        fill every water container you carry (permission water) or an online player's
                          (water-others)
+  &time                  the time in your own time zone, which the operator sets per player with tz=<zone> on
+                         your gm_bridge.conf line (the game does not report it); otherwise the server's
   &newbie [category]     a random newcomer tip (from docs/game-guide/tips/newbie-tips.tsv), optionally from
                          one category such as worms, water or base (permission newbie)
   &fuel [player]         5 large vehicle fuel cells into your inventory (permission fuel) or an online
                          player's (fuel-others); load one into the vehicle to refuel it
 
 Who may use what: $DUNE_CONFIG_DIR/gm_bridge.conf, one line per player, `<character name or FLS id>: <command>...`
-or `<who>: *` for every command (permissions: help, where, goto, bring, say, timeout, give, give-others, fuel, fuel-others, kick, newbie, thufir, unlock, unlock-others, water, water-others);
+or `<who>: *` for every command (permissions: help, where, goto, bring, say, timeout, give, give-others, fuel, fuel-others, kick, newbie, thufir, time, unlock, unlock-others, water, water-others; a `tz=<zone>` word such as tz=America/New_York sets the player's time zone for &time and grants nothing);
 `#` starts a comment. No file, or nobody listed, means nobody (fail closed). The
 file is read for every command, so edits apply at once. Senders are identified only by the account id the broker
 stamps on each message; ordinary chat is never logged, only `&` commands (log: $DUNE_STATE_DIR/gm-bridge/).
@@ -147,6 +149,34 @@ end
 local NEWBIE_TIPS = DIR .. "/../docs/game-guide/tips/newbie-tips.tsv"
 local function newbie_tips() return gm.parse_tips(read_file(getenv("DUNE_NEWBIE_TIPS", NEWBIE_TIPS))) end
 
+-- &time: format now (DUNE_NOW, seconds since 1970, for tests) in a zone from the system's zone database, or in
+-- the server's own zone when zone is false. A zone the database lacks is refused rather than shown as UTC, which is
+-- what date does with an unknown TZ. date is told where the zone was found (TZDIR): a Nix-built date does not look
+-- in /etc/zoneinfo by itself.
+local ZONE_DIRS = {}
+for _, d in ipairs({ os.getenv("TZDIR") or "", "/etc/zoneinfo", "/usr/share/zoneinfo" }) do
+	if d ~= "" then ZONE_DIRS[#ZONE_DIRS + 1] = d end
+end
+local function local_time(zone)
+	local prefix = ""
+	if zone then
+		local dir
+		for _, d in ipairs(ZONE_DIRS) do
+			local zf = io.open(d .. "/" .. zone, "rb")
+			if zf then zf:close(); dir = d; break end
+		end
+		if not dir then return nil, "unknown time zone " .. zone .. " in gm_bridge.conf" end
+		prefix = "TZDIR=" .. gm.shell_quote(dir) .. " TZ=" .. gm.shell_quote(zone) .. " "
+	end
+	local now = tonumber(os.getenv("DUNE_NOW") or "") or os.time()
+	local cmd = prefix .. "date -d @" .. string.format("%d", now) ..
+		" '+%-I:%M %p %Z, %a %b %-d' 2>/dev/null"
+	local p = io.popen(cmd); local out = p and p:read("*a") or ""; if p then p:close() end
+	out = out:gsub("%s+$", "")
+	if out == "" then return nil, "could not read the clock" end
+	return out
+end
+
 local function reply(name, text)
 	local ok, out = live({ "character", "whisper", name, text, "--from", REPLY_FROM })
 	if not ok then log("reply to %s failed: %s", name, reason(out)) end
@@ -192,6 +222,10 @@ local function handle(d)
 		cmd.name == "newbie" and newbie_tips() or nil)
 	local answer = plan.reply
 	if plan.note then answer = deliver_note(plan.note) or answer end
+	if plan.clock then
+		local text, err = local_time(plan.clock.tz)
+		answer = text and gm.time_reply(text, plan.clock.tz) or ("failed: " .. err)
+	end
 	for _, argv in ipairs(plan.actions) do
 		local aok, out = live(argv)
 		if not aok then answer = "failed: " .. reason(out); log("  failed: %s", reason(out)); break end
