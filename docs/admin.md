@@ -34,7 +34,7 @@ The server logs each command: `LogDuneServerCommands: Now running ServerCommand 
 
 `dune-awakening character give <player> ITEM [COUNT]` sends Funcom's `AddItemToInventory` server command (fields `PlayerId`, `ItemName`, `Quantity`); the item appears in their inventory at once (verified in game with `HarkAr2`, 2026-09-26). The player must be online: the tool refuses an offline player (Funcom's `is_player_offline`) before publishing anything. The server logs `Now running ServerCommand 'AddItemToInventory'`; for an item id it does not know it adds `LogCheatManager: Warning: Cannot find item associated with spawn command <ID>` (**verified** on this world), so grep the server log after a give. The command itself reports success either way.
 
-A full inventory appears to lose given items silently (not yet confirmed), so have the player free some space first.
+With a full inventory the given item is dropped on the ground at the player's feet, not lost (verified in game with `PowerPack6`, 2026-10-26); have the player free a slot first or look down.
 
 Item ids are the row names of the game's item tables (`DT_BaseItems_*` in the cooked content). Some verified or read from those tables:
 
