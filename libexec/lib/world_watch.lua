@@ -44,17 +44,24 @@ end
 
 -- Log lines ----------------------------------------------------------------------------------------------------
 
--- A worm about to strike logs "hide N seconds before teleporting to attack" once per attack, with its target's
--- threat type; its other Attack-mode lines (is hidden, animations) repeat and are ignored. Storms log one request
--- per spawn, naming the region in brackets.
+-- Worm lines, in any steering mode: the target a worm picks ("SetCurrentThreatBlob; Type: EThreatBlobType::X",
+-- logged first), and "hide N seconds before teleporting to breach|attack" with the target's threat type. A worm
+-- after players breaches beside them in Roam mode, sometimes many times, before it attacks or gives up (a live
+-- crossing, 2026-10-27, showed only breaches), so an omen keyed on the attack line alone came too late or never.
+-- The other approach lines (wants to breach, is hidden, teleport and execute, animations) repeat these and are
+-- ignored. Storms log one request per spawn, naming the region in brackets.
 function M.parse_line(line)
-	if line:find("ESandwormSteeringMode::Attack", 1, true) then
-		local lead = line:match("%] hide ([%d%.]+) seconds before teleporting to attack")
-		if not lead then return nil end
-		local id = tonumber(line:match("ID: (%d+)"))
-		local target = line:match("EThreatBlobType::(%w+)")
-		if not (id and target) then return nil end
-		return { kind = "worm", worm = id, target = target, enraged = line:match("Enraged:1") ~= nil, lead = math.floor(tonumber(lead) + 0.5) }
+	local id = tonumber(line:match("ID: (%d+)") or "")
+	if id and line:find("ESandwormSteeringMode::", 1, true) then
+		local enraged = line:match("Enraged:1") ~= nil
+		local picked = line:match("SetCurrentThreatBlob; Type: EThreatBlobType::(%w+)")
+		if picked then return { kind = "worm", worm = id, target = picked, enraged = enraged, stage = "target" } end
+		local lead, stage = line:match("%] hide ([%d%.]+) seconds before teleporting to (%a+)")
+		local target = line:match("EThreatBlobType::(%w+)%]")
+		if lead and target and (stage == "attack" or stage == "breach") then
+			return { kind = "worm", worm = id, target = target, enraged = enraged, stage = stage, lead = math.floor(tonumber(lead) + 0.5) }
+		end
+		return nil
 	end
 	local region = line:match("LogSandStormManager: Log: Requested a Sandstorm auto%-spawn on %[(%w+)%]")
 	if region then return { kind = "storm", region = region } end
@@ -111,15 +118,17 @@ end
 local function bump(t, k) t[k] = (t[k] or 0) + 1 end
 
 -- One log event. Returns state and the whispers to send ({to, text}); online = names of the online characters.
--- Nothing is tallied or sent outside a session. A worm's repeated attack line within OMEN_COOLDOWN is the same
--- attack; omens of one kind (worm, storm) are at most one per its cooldown, and every recipient gets the same line.
+-- Nothing is tallied or sent outside a session. One hunt is a worm after one sort of target, players (character,
+-- group, vehicle, thumper) or not (wrecks, spice, NPCs): its further lines within OMEN_COOLDOWN, including a switch
+-- between player targets, are the same hunt, while a turn from a wreck to a player is a new one. Omens of one kind
+-- (worm, storm) are at most one per its cooldown, and every recipient gets the same line.
 function M.on_event(st, ev, now, cfg, omens, rng, online)
 	local out = {}
 	local s = st.session
 	if not s then return st, out end
 	local kind
 	if ev.kind == "worm" then
-		local key = tostring(ev.worm)
+		local key = tostring(ev.worm) .. (M.omen_target(ev.target) and ":players" or ":other")
 		local seen = st.worms_seen[key]
 		if seen and now - seen < cfg.worm_cooldown then return st, out end
 		st.worms_seen[key] = now
@@ -241,7 +250,7 @@ function M.chronicle_note(f, meta)
 	w("## Facts\n")
 	w("- Session: ", meta.time(f.start), " to ", meta.time(f.finish), " (", f.minutes, " minutes)")
 	w("- Omens whispered: ", f.omens)
-	for _, k in ipairs(sorted_keys(f.worms)) do w("- Worm attacks on ", k, ": ", f.worms[k]) end
+	for _, k in ipairs(sorted_keys(f.worms)) do w("- Worms went after ", k, ": ", f.worms[k]) end
 	for _, k in ipairs(sorted_keys(f.storms)) do w("- Sandstorms over ", M.region_name(k), ": ", f.storms[k]) end
 	for _, p in ipairs(f.players) do
 		w("\n### ", p.name, "\n")

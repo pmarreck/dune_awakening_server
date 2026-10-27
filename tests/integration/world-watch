@@ -35,6 +35,8 @@ printf 'worm-character\tWormsign!\nworm-vehicle\tYour engine sings.\nworm-thumpe
 W=libexec/dune-world-watch
 log="$DUNE_STATE_DIR/world-watch/world-watch.log"
 worm() { printf '[2026.10.24-01.00.00:000][1][1][1]LogDuneSandworm: Log: [BP_Crea_SandwormArrakis_C_1, ID: %s, V(X=1.0, Y=2.0, Z=3.0), RootBoneZ: -1, ESandwormSteeringMode::Attack, Sandworm isn'"'"'t playing any animation, ESandwormAnimationState::None, ESandwormChaseAttackStateType::None, InSafeZone:0, Enraged:0, EThreatBlobType::%s] hide 10.000000 seconds before teleporting to attack\n' "$1" "$2"; }
+# A worm picking a target (logged before it breaches or attacks; Roam mode), as a live crossing logged it.
+pick() { printf '[2026.10.27-03.57.13:611][1][1][1]LogDuneSandworm: Log: [BP_Crea_SandwormArrakis_C_1, ID: %s, V(X=1.0, Y=2.0, Z=3.0), RootBoneZ: -1, ESandwormSteeringMode::Roam, Sandworm isn'"'"'t playing any animation, ESandwormAnimationState::None, ESandwormChaseAttackStateType::None, InSafeZone:0, Enraged:0, NoTargetBlob] SetCurrentThreatBlob; Type: EThreatBlobType::%s, Location V(X=75437.01, Y=209783.68, Z=712.15)\n' "$1" "$2"; }
 storm() { printf '[2026.10.24-01.00.00:000][1][1][1]LogSandStormManager: Log: Requested a Sandstorm auto-spawn on [%s] Server 1 Dimension 0\n' "$1"; }
 roster() { printf '%s\n' "$1" > "$work/roster.json"; }
 runat() { "$W" run --polls 1 --virtual-clock "$1" >"$work/out" 2>&1; local rc=$?; [ -s "$work/out" ] && fail "run at $1 printed output: $(cat "$work/out")"; return $rc; }
@@ -104,6 +106,12 @@ runat 2400 || fail "rerun failed"
 worm 9 Thumper > "$DUNE_SERVER_LOG"
 runat 3000 || fail "restart run failed"
 [ "$(head -1 "$work/live")" = "character whisper Alice The thumper calls. --from Thufir" ] || fail "restarted log not read: $(cat "$work/live")"
+
+# A hunt that never reaches the attack stage still warns: the target pick alone is enough.
+: > "$work/live"
+pick 11 Vehicle >> "$DUNE_SERVER_LOG"
+runat 3070 || fail "target-pick run failed"
+[ "$(head -1 "$work/live")" = "character whisper Alice Your engine sings. --from Thufir" ] || fail "target pick did not warn: $(cat "$work/live")"
 
 # Omens off: nothing whispered. No THUFIR_INBOX: the chronicle is kept and the log says it was not delivered.
 : > "$work/live"

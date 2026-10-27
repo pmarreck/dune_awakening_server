@@ -47,7 +47,25 @@ do
 	-- Only the line announcing the attack counts: the same attack logs "is hidden" and animation lines too.
 	eq("is hidden ignored", ww.parse_line(worm_line(7, "Character", false, "is hidden")), nil)
 	eq("animation ignored", ww.parse_line(worm_line(7, "Character", false, "Finished playing animation: AnimMontage /Game/X")), nil)
-	eq("roam ignored", ww.parse_line((worm_line(7, "Character", false):gsub("SteeringMode::Attack", "SteeringMode::Roam"))), nil)
+	eq("attack stage", e and e.stage, "attack")
+	-- A worm hunting players breaches beside them in Roam mode before (or instead of) attacking, and logs the
+	-- target it picks before either (shapes from a live crossing, 2026-10-27): both count, in any steering mode.
+	local roam = function(l) return (l:gsub("SteeringMode::Attack", "SteeringMode::Roam")) end
+	local b = ww.parse_line(roam(worm_line(100, "Group", false, "hide 5.000000 seconds before teleporting to breach")))
+	eq("breach kind", b and b.kind, "worm"); eq("breach target", b and b.target, "Group"); eq("breach lead", b and b.lead, 5)
+	eq("breach stage", b and b.stage, "breach")
+	local picked = roam(worm_line(100, "Vehicle", false, "x")):gsub("EThreatBlobType::Vehicle%] x",
+		"NoTargetBlob] SetCurrentThreatBlob; Type: EThreatBlobType::Vehicle, Location V(X=75437.01, Y=209783.68, Z=712.15)")
+	local t = ww.parse_line(picked)
+	eq("target pick kind", t and t.kind, "worm"); eq("target pick worm", t and t.worm, 100)
+	eq("target pick target", t and t.target, "Vehicle"); eq("target pick stage", t and t.stage, "target"); eq("target pick lead", t and t.lead, nil)
+	eq("roam attack counted", ww.parse_line(roam(worm_line(7, "Character", false))) ~= nil, true)
+	-- The other approach lines repeat what those say and are ignored.
+	for _, tail in ipairs({ "wants to breach", "is shown", "no longer wants to breach",
+		"teleport and execute breach. TeleportLocation: V(X=1, Y=2, Z=3)", "teleport and execute vertical attack. TeleportLocation: V(X=1, Y=2, Z=3)",
+		"Sandworm starts playing Breach animation at time: 2026.10.26-14.03.22." }) do
+		eq("ignored: " .. tail, ww.parse_line(roam(worm_line(100, "Group", false, tail))), nil)
+	end
 	local s = ww.parse_line("[2026.10.20-18.10.01:100][771][3733012][1]LogSandStormManager: Log: Requested a Sandstorm auto-spawn on [HaggaBasin] Server 1 Dimension 0")
 	eq("storm kind", s and s.kind, "storm"); eq("storm region", s and s.region, "HaggaBasin")
 	eq("storm begin ignored", ww.parse_line("[x][1]LogSandStorm: Log: Sandstorm BeginPlay on [HaggaBasin] Server 1 Dimension 0"), nil)
@@ -130,6 +148,19 @@ do
 	eq("unheard not counted", st.session.omens, 3)
 	st, w = ww.on_event(st, worm(7, "Character"), 1401, cfg, omens, first(), ONLINE)
 	eq("unheard omen leaves no cooldown", #w, 2)
+
+	-- A worm that turns from a wreck to a player within the cooldown is a new hunt: the player hears it.
+	local st2 = ww.on_presence(ww.new_state(), 1, 5000, cfg)
+	local w2
+	st2, w2 = ww.on_event(st2, worm(9, "ValuableDesertWreck"), 5001, cfg, omens, first(), ONLINE)
+	eq("wreck hunt quiet", #w2, 0)
+	st2, w2 = ww.on_event(st2, worm(9, "Vehicle"), 5010, cfg, omens, first(), ONLINE)
+	eq("same worm, now after a vehicle: omen", #w2, 2)
+	-- Switching between player targets (vehicle, group) within the cooldown is the same hunt: one tally, no repeat.
+	st2, w2 = ww.on_event(st2, worm(9, "Group"), 5015, cfg, omens, first(), ONLINE)
+	eq("vehicle to group: same hunt", #w2, 0)
+	eq("one wreck hunt", st2.session.worms.ValuableDesertWreck, 1); eq("one vehicle hunt", st2.session.worms.Vehicle, 1)
+	eq("group switch not tallied", st2.session.worms.Group, nil)
 
 	-- Storms: region filled in, one omen per storm cooldown, every storm tallied.
 	local storm = { kind = "storm", region = "HaggaBasin" }
