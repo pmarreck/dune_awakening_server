@@ -201,11 +201,22 @@ local function deliver_note(note)
 end
 
 -- One chat delivery. Everything that is not an `&` command from a stamped sender is dropped without a trace.
+-- Recent & command lines, for dropping the extra copies the game delivers (one per online player); only command
+-- lines are kept, and only for gm.REPEAT_WINDOW seconds.
+local recent = {}
+
 local function handle(d)
 	local m = gm.parse_delivery(d)
 	if not m then return end
 	local cmd = gm.parse_command(m.text)
 	if not cmd then return end
+	local rep, first_key
+	rep, recent, first_key = gm.is_repeat(recent, m.sender_fls, m.text, os.time(), d.routing_key)
+	if rep then
+		log("%s", gm.log_line(m.sender_fls, nil, m.text,
+			string.format("copy ignored (routing key %s; first copy %s)", tostring(d.routing_key), tostring(first_key))))
+		return
+	end
 	local ok, name = live({ "character", "whois", m.sender_fls }, true)
 	name = ok and name:match("^([^\n]+)") or nil
 	if not name then log("%s", gm.log_line(m.sender_fls, nil, m.text, "unknown account")); return end

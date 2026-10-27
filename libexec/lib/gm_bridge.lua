@@ -322,6 +322,24 @@ function M.plan(cmd, sender, policy, item_db, tips, pick)
 	return { actions = {}, reply = "unknown command; try &help" }
 end
 
+-- Copies of one chat line: the game hands the bridge one per online player (two copies a second apart with two
+-- players, 2026-10-27), so a line identical to one the same sender sent at most REPEAT_WINDOW seconds earlier is a
+-- copy. is_repeat(recent, fls, text, now, routing_key) -> repeat?, the new recent table (entries older than the
+-- window dropped), and the first copy's routing key when it is a repeat. The window runs from the first copy, so a
+-- line a player really sends again later runs again.
+M.REPEAT_WINDOW = 3
+function M.is_repeat(recent, fls, text, now, routing_key)
+	local out = {}
+	for k, e in pairs(recent or {}) do
+		if now - e.t <= M.REPEAT_WINDOW then out[k] = e end
+	end
+	local k = tostring(fls) .. "\0" .. tostring(text)
+	local e = out[k]
+	if e then return true, out, e.key end
+	out[k] = { t = now, key = routing_key }
+	return false, out, nil
+end
+
 -- The log line for one command (only `&` commands are ever logged; ordinary chat never is).
 function M.log_line(fls, name, text, verdict)
 	return string.format("%s %s %s: %s", fls, name or "?", verdict, (text:gsub("%c", " ")))

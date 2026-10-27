@@ -310,4 +310,40 @@ do
 		"it is 4:20 AM UTC, Tue Oct 27 (the server's time zone; the operator can set yours in gm_bridge.conf)")
 end
 
+-- Repeats: the game hands the bridge one copy of a chat line per online player, so a line identical to one the same
+-- sender sent within REPEAT_WINDOW seconds is a copy and runs once. A classifier over sender, text and age.
+do
+	eq("repeat window", gm.REPEAT_WINDOW, 3)
+	local cases = {
+		-- { label, earlier {fls, text, t} or nil, now {fls, text, t}, want repeat }
+		{ "first line", nil, { ALICE, "&time", 100 }, false },
+		{ "copy one second later", { ALICE, "&time", 100 }, { ALICE, "&time", 101 }, true },
+		{ "copy in the same second", { ALICE, "&time", 100 }, { ALICE, "&time", 100 }, true },
+		{ "copy at the window's edge", { ALICE, "&time", 100 }, { ALICE, "&time", 103 }, true },
+		{ "same line after the window", { ALICE, "&time", 100 }, { ALICE, "&time", 104 }, false },
+		{ "other text", { ALICE, "&time", 100 }, { ALICE, "&where", 101 }, false },
+		{ "other sender, same text", { ALICE, "&time", 100 }, { BOB, "&time", 101 }, false },
+		{ "case differs", { ALICE, "&give solari 5", 100 }, { ALICE, "&give Solari 5", 101 }, false },
+	}
+	for _, c in ipairs(cases) do
+		local recent = {}
+		if c[2] then local _; _, recent = gm.is_repeat(recent, c[2][1], c[2][2], c[2][3], "rk.first") end
+		local rep, _, first = gm.is_repeat(recent, c[3][1], c[3][2], c[3][3], "rk.second")
+		eq("repeat: " .. c[1], rep, c[4])
+		if c[4] then eq("repeat names the first copy's routing key: " .. c[1], first, "rk.first") end
+	end
+	-- A third copy (three players online) is still a repeat of the first; the window runs from the first copy.
+	local r = {}
+	local _; _, r = gm.is_repeat(r, ALICE, "&time", 100, "a")
+	local rep2; rep2, r = gm.is_repeat(r, ALICE, "&time", 101, "b")
+	local rep3; rep3, r = gm.is_repeat(r, ALICE, "&time", 102, "c")
+	eq("third copy is a repeat", rep3, true)
+	eq("a line repeated every second for long is not held back forever", (gm.is_repeat(r, ALICE, "&time", 104, "d")), false)
+	-- Entries older than the window are pruned, so the table stays small.
+	local big = {}
+	for i = 1, 50 do _, big = gm.is_repeat(big, ALICE, "&say " .. i, i, "k") end
+	local n = 0; for _ in pairs(big) do n = n + 1 end
+	eq("old entries pruned", n <= gm.REPEAT_WINDOW + 1, true)
+end
+
 os.exit(failures == 0 and 0 or 1)
