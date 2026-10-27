@@ -8,6 +8,7 @@ set -u
 : "${DUNE_SECRETS_DIR:?set DUNE_SECRETS_DIR to the private secrets directory}"
 : "${DUNE_RMQ_AUTH_ADDRESS:?set DUNE_RMQ_AUTH_ADDRESS to the TextRouter auth host:port}"
 DUNE_RMQ_ADMIN_PORT=${DUNE_RMQ_ADMIN_PORT:-5673}
+DUNE_RMQ_ADMIN_HTTP_PORT=${DUNE_RMQ_ADMIN_HTTP_PORT:-15672}
 DUNE_RMQ_GAME_PORT=${DUNE_RMQ_GAME_PORT:-31982}
 DUNE_RMQ_DIST_BASE=${DUNE_RMQ_DIST_BASE:-25672}
 # Game broker only: a loopback plain-AMQP listener for the GM bridge's own account (see write_config).
@@ -105,9 +106,18 @@ write_config() {
 			printf 'ssl_options.keyfile = %s/key.pem\nssl_options.verify = verify_none\nssl_options.fail_if_no_peer_cert = false\n' "$tls_dir"
 		else
 			printf 'listeners.tcp.default = 127.0.0.1:%s\n' "$DUNE_RMQ_ADMIN_PORT"
+			# The management API, loopback only: the map server registers each player here at login
+			# (PUT /api/users/<FLS id>, the game's RMQHttpPort, 15672). This broker's logins go through the cached HTTP
+			# backend alone, so users it creates here open no login path. The game broker, which tries its internal
+			# database first, gets no management API.
+			printf 'management.tcp.ip = 127.0.0.1\nmanagement.tcp.port = %s\n' "$DUNE_RMQ_ADMIN_HTTP_PORT"
 		fi
 	} > "$RABBITMQ_CONFIG_FILE"
-	printf '[rabbitmq_auth_backend_http,rabbitmq_auth_backend_cache].\n' > "$RABBITMQ_ENABLED_PLUGINS_FILE"
+	if [ "$broker" = admin ]; then
+		printf '[rabbitmq_auth_backend_http,rabbitmq_auth_backend_cache,rabbitmq_management].\n' > "$RABBITMQ_ENABLED_PLUGINS_FILE"
+	else
+		printf '[rabbitmq_auth_backend_http,rabbitmq_auth_backend_cache].\n' > "$RABBITMQ_ENABLED_PLUGINS_FILE"
+	fi
 }
 
 cmd_init() {

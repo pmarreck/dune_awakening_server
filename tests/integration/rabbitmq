@@ -9,10 +9,10 @@ failures=0
 fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/dune-rmq-test.XXXXXX") || exit 1
-base=$(pick_port_base 7) || { printf "FAIL no free port block\n" >&2; exit 1; }
+base=$(pick_port_base 8) || { printf "FAIL no free port block\n" >&2; exit 1; }
 export DUNE_STATE_DIR="$work/state" DUNE_SECRETS_DIR="$work/secrets"
 export DUNE_RMQ_ADMIN_PORT=$base DUNE_RMQ_GAME_PORT=$((base + 1)) DUNE_RMQ_AUTH_ADDRESS="127.0.0.1:$((base + 2))"
-export DUNE_RMQ_GAME_LOCAL_PORT=$((base + 6))
+export DUNE_RMQ_GAME_LOCAL_PORT=$((base + 6)) DUNE_RMQ_ADMIN_HTTP_PORT=$((base + 7))
 export ERL_EPMD_PORT=$((base + 3)) DUNE_RMQ_DIST_BASE=$((base + 4)) DUNE_RMQ_LOG_LEVEL=debug
 # Hide the OS CA store from the brokers (the Nix build sandbox has none): Erlang's httpc resolves it even for plain-HTTP
 # auth requests unless the broker is given a CA bundle, and crashes when it is missing (see docs/operations.md).
@@ -63,6 +63,16 @@ perms=$(libexec/dune-rabbitmq ctl game list_permissions --formatter json 2>/dev/
 [ "$(libexec/dune-rabbitmq ctl game eval 'application:get_env(rabbit, auth_backends).' 2>/dev/null)" = '{ok,[rabbit_auth_backend_internal,rabbit_auth_backend_cache]}' ] ||
 	fail "game auth backends: $(libexec/dune-rabbitmq ctl game eval 'application:get_env(rabbit, auth_backends).' 2>&1)"
 [ "$(libexec/dune-rabbitmq ctl game eval 'application:get_env(rabbit, loopback_users).' 2>/dev/null)" = '{ok,[<<"gm_bridge">>]}' ] || fail "gm_bridge not loopback-only"
+# The admin broker serves RabbitMQ's management API on loopback only, where the map server registers players
+# (PUT /api/users/<id>, the game's RMQHttpPort); its logins still go through the cached HTTP backend alone, so users
+# created there open no login path. The game broker, which tries its internal database first, has no such API.
+[ "$(libexec/dune-rabbitmq ctl admin eval 'application:get_env(rabbit, auth_backends).' 2>/dev/null)" = '{ok,[rabbit_auth_backend_cache]}' ] ||
+	fail "admin auth backends: $(libexec/dune-rabbitmq ctl admin eval 'application:get_env(rabbit, auth_backends).' 2>&1)"
+mgmt=$(ss -Hltn "sport = :$DUNE_RMQ_ADMIN_HTTP_PORT" | awk '{print $4}' | paste -sd, -)
+[ "$mgmt" = "127.0.0.1:$DUNE_RMQ_ADMIN_HTTP_PORT" ] || fail "admin management API should listen on loopback only: '$mgmt'"
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$DUNE_RMQ_ADMIN_HTTP_PORT/api/overview")
+[ "$code" = 401 ] || fail "admin management API should answer and demand credentials: HTTP $code"
+grep -q rabbitmq_management "$DUNE_STATE_DIR/rabbitmq-game/enabled_plugins" && fail "game broker must not enable the management API"
 listeners=$(ss -Hltn "sport = :$DUNE_RMQ_GAME_LOCAL_PORT" | awk '{print $4}' | paste -sd, -)
 [ "$listeners" = "127.0.0.1:$DUNE_RMQ_GAME_LOCAL_PORT" ] || fail "game broker local plain listener should be loopback only: '$listeners'"
 pid_before=$(libexec/dune-rabbitmq ctl admin eval "os:getpid()." 2>/dev/null)

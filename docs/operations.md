@@ -73,6 +73,7 @@ Runtime state: `~/.local/share/dune_awakening_server/runtime/` (0700). Logs, all
 |---|---|---|
 | 15431/tcp | Postgres | 127.0.0.1 only |
 | 5673/tcp | admin RabbitMQ (plain AMQP) | 127.0.0.1 only |
+| 15672/tcp | admin RabbitMQ management API (`DUNE_RMQ_ADMIN_HTTP_PORT`): the map server registers each player here at login (`PUT /api/users/<FLS id>`); logins to this broker still go through the TextRouter alone | 127.0.0.1 only |
 | 31982/tcp | game RabbitMQ (AMQPS) | all interfaces; needed by game clients |
 | 5674/tcp | game RabbitMQ (plain AMQP, for the GM bridge's `gm_bridge` user only) | 127.0.0.1 only |
 | 18081/tcp | TextRouter auth API | 127.0.0.1 only |
