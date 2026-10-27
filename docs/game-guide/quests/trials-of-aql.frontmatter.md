@@ -10,7 +10,7 @@
   "region": "Hagga Basin South, Vermillius Gap, Hagga Rift, Jabal Eifrit",
   "related": ["quests/footsteps-of-the-fremen", "quests/a-new-beginning", "quests/regional-journeys", "quests/index"],
   "game_version": "1.5.x",
-  "last_researched": "2026-10-13",
+  "last_researched": "2026-10-26",
   "confidence": "medium"
 }
 ---
@@ -51,4 +51,5 @@ Conflict to note: the Jabal Eifrit regional card "Calling the Worm" lists "Compl
 ## Trouble on this server
 
 - On 2026-10-13 a player got stuck on a "Connecting..." screen at the end of one of the trial visions while the operator's "timeout" mode had damage disabled (observed on this server, cause unconfirmed). The vision appears to be a scripted sequence that hands you back to the open world when it ends (inference, unverified), so if this recurs, note which trial, whether damage was disabled, and whether relogging clears it. No public report of the same symptom was found (web search, 2026-10-13).
+- It recurred on 2026-10-26 with damage on, in the first trial ("Ibn qirtaiba" vision): the vision ended and the client disconnected while the server still held the player in its challenge room; after several such drops he relogged and the server logged "First trial completed!" eight seconds after he was back in the world (verified on this server, server log). If the vision ends in a disconnect, log back in: the trial counts.
 - The Fremen Deathstill, Stilltent and other Fremen recipes reward finishing the whole chain; see the sietch entry.

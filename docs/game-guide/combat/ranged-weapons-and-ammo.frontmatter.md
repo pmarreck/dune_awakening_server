@@ -9,7 +9,7 @@
   "aliases": ["darts", "bullets", "ammo types"],
   "related": ["combat/pistols", "combat/rifles", "combat/scatterguns", "combat/disruptors", "combat/light-machine-guns", "combat/lasguns", "combat/flamethrowers-and-pyrocket", "combat/missile-launchers", "combat/shields-and-the-slow-blade"],
   "game_version": "1.5.x",
-  "last_researched": "2026-10-13",
+  "last_researched": "2026-10-26",
   "confidence": "medium"
 }
 ---
@@ -22,7 +22,7 @@ Quick answer: most guns fire darts. Light Darts (`Ammo`) feed most weapons, Heav
 
 | Ammo (id) | Stack/give cap | Used by |
 |---|---|---|
-| Light Darts (`Ammo`) | 1,000 | "Standard ammunition for most ranged weapons": Maula pistols, Karpov 38, JABAL Spitdart, Disruptor M11 and others (game text; community, https://game8.co/games/Dune-Awakening/archives/528662) |
+| Light Darts (`Ammo`) | 1,000 | "Standard ammunition for most ranged weapons": Maula pistols, Karpov 38, Disruptor M11 and others (game text; community, https://game8.co/games/Dune-Awakening/archives/528662). Not the JABAL Spitdart: an Adept JABAL Spitdart would not take Light Darts (verified on this server, 2026-10-26), although the same community source lists it here |
 | Heavy Darts (`HeavyAmmo`) | 1,000 (unverified) | "Standard ammunition for more advanced weapons"; can pierce certain armor; also loads the Heavy Turret. The unique disruptors Abulurd's Rapture, Piter's Disruptor and Sardaukar Intimidator fire heavy darts (game text). |
 | Incendiary Gel (`Napalm`) | not checked | Incendiary weapons: flamethrowers, Pyrocket (game text) |
 | Missile (`InfantryRocketAmmo`) | 250 | Infantry missile launchers (game text; item data) |

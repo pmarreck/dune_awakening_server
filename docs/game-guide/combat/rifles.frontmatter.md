@@ -9,7 +9,7 @@
   "aliases": ["Karpov 38", "JABAL Spitdart", "battle rifle", "sniper rifle"],
   "related": ["combat/ranged-weapons-and-ammo", "combat/headshots-and-weak-points", "combat/mentat-build", "combat/unique-weapons"],
   "game_version": "1.5.x",
-  "last_researched": "2026-10-13",
+  "last_researched": "2026-10-26",
   "confidence": "high"
 }
 ---
@@ -25,7 +25,7 @@ Quick answer: the Karpov 38 is the gas-powered automatic assault rifle for mediu
 | Karpov 38 | Karpov 38 `HarkAr2`, Standard `HarkAr3`, Artisan, House, Adept, Regis `HarkAr7` |
 | JABAL Spitdart | JABAL Spitdart Rifle, Artisan `SmugDmr3`, House `SmugDmr4`, Adept `SmugDmr5`, Regis `SmugDmr6` |
 
-The Spitdart applies its own "Spitdart Poison" debuff (game text).
+The Spitdart applies its own "Spitdart Poison" debuff (game text). It does not take Light Darts (verified on this server, 2026-10-26, Adept `SmugDmr5`), whatever some community guides say; Heavy Darts (`HeavyAmmo`) are the likely ammo but are unverified.
 
 ## Unique rifles (effects game text)
 
