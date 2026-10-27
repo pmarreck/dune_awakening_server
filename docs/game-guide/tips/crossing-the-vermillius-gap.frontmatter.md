@@ -30,7 +30,7 @@
 
 1. Start from the rock nearest the far side; the game's tutorial for this crossing says "avoid lingering and take the shortest path to safety" (game text, "Crossing to Vermillius Gap").
 2. Drive straight; do not stop to look at loot on the sand. The vibration meter does not drain while you are on sand (server config; see [Avoiding sandworms](worm-avoidance.frontmatter.md)).
-3. Watch for quicksand and drumsand markers on the map; quicksand can kill and drumsand attracts the worm (game text). Western Vermillius Gap is known for quicksand (community, pre-1.5).
+3. Watch for quicksand and drumsand markers on the map; quicksand can kill and drumsand attracts the worm (game text). Drumsand shows on the map as red spots (verified on this server, 2026-10-26, during a buggy crossing that drew a worm). Western Vermillius Gap is known for quicksand (community, pre-1.5).
 4. If the meter goes red, steer for the nearest rock rather than pressing on.
 5. On arrival, get off the sand before stopping. Ground vehicles left on open sand are worm bait.
 

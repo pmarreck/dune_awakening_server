@@ -30,7 +30,7 @@ Values are Funcom's defaults in the server's `DefaultGame.ini`, section `[/Scrip
 | Running or sprinting | 20 |
 | Dashing or hyper-sprinting | 90 |
 | Suspensor (`Suspending`) | 200 |
-| Standing on drumsand | 200 |
+| Standing on drumsand (red spots on the map, verified on this server) | 200 |
 | Personal shield active | 500 |
 | Vehicle shield active | 50 |
 
