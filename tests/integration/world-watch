@@ -11,6 +11,8 @@ trap 'libexec/dune-world-watch stop >/dev/null 2>&1; rm -r -- "$work"' EXIT
 export DUNE_STATE_DIR="$work/state dir" DUNE_LIVE="$work/fake/dune-live" DUNE_SS="$work/fake/ss" DUNE_CHARACTER="$work/fake/dune-character"
 export DUNE_SERVER_LOG="$work/server-console.log" DUNE_GM_BRIDGE_LOG="$work/gm-bridge.log" DUNE_THUFIR_INBOX="$work/inbox" DUNE_OMENS_FILE="$work/omens.tsv"
 export DUNE_WORLD_DISPLAY_NAME="My World" DUNE_NOTIFY_TO="op@example.org" DUNE_CHRONICLE_MIN=100
+# Each worm step below is its own chase: a gap shorter than the steps (at least 60 s apart).
+export DUNE_WORM_CHASE_GAP=30
 unset DUNE_OMENS DUNE_CHRONICLE DUNE_OMEN_FROM DUNE_OMEN_COOLDOWN DUNE_STORM_OMEN_COOLDOWN DUNE_CHRONICLE_GAP DUNE_WATCH_POLL DUNE_WATCH_ROSTER DUNE_RMQ_GAME_PORT
 mkdir -p "$work/fake" "$work/inbox"
 cat > "$work/fake/dune-live" <<FAKE

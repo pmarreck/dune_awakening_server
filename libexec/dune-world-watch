@@ -37,10 +37,11 @@ Usage: dune-world-watch start|stop|status
 
 Watches the world while people play.
 
-Omens: when the map server logs a sandworm about to strike a player, a group of players, a vehicle or a thumper, or a
-sandstorm forming, every online player gets the same whispered line from OMEN_FROM, picked at random from the
-table (data/omens.tsv; storms may name the {region}). Worm attacks on wrecks get none. A worm's repeated attack
-lines within OMEN_COOLDOWN are one attack; omens of one kind come at most once per its cooldown.
+Omens: when the map server logs a sandworm picking or approaching a player, a group of players, a vehicle or a
+thumper, or a sandstorm forming, every online player gets the same whispered line from OMEN_FROM, picked at random
+from the table (data/omens.tsv; storms may name the {region}). Worms after wrecks get none. All worm lines after
+players with gaps of at most WORM_CHASE_GAP seconds are one chase, warned once; worm omens are at least
+OMEN_COOLDOWN apart, storm omens STORM_OMEN_COOLDOWN.
 
 Chronicle: a session runs from the first player connection until CHRONICLE_GAP seconds with none. A session at
 least CHRONICLE_MIN long, with a character seen online, ends in a chronicle: per character the XP, Intel and skill
@@ -52,6 +53,7 @@ Settings: world.conf keys, or DUNE_<key> environment variables, which win (defau
   OMENS (1)                 0 = no omens (events are still tallied)
   CHRONICLE (1)             0 = no chronicle
   OMEN_FROM (Thufir)        sender name of the omens
+  WORM_CHASE_GAP (180)      seconds without a worm line after players that end a chase
   OMEN_COOLDOWN (60)        seconds between worm omens
   STORM_OMEN_COOLDOWN (1800) seconds between storm omens
   CHRONICLE_GAP (900)       seconds with nobody connected that end a session

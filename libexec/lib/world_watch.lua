@@ -10,7 +10,7 @@ local M = {}
 local SWITCH = { ["0"] = false, off = false, ["false"] = false, no = false, ["1"] = true, on = true, ["true"] = true, yes = true }
 local SWITCHES = { { "omens", "OMENS" }, { "chronicle", "CHRONICLE" } }
 local SETTINGS = {
-	{ "worm_cooldown", "OMEN_COOLDOWN", 60, 0 }, { "storm_cooldown", "STORM_OMEN_COOLDOWN", 1800, 0 },
+	{ "chase_gap", "WORM_CHASE_GAP", 180, 1 }, { "worm_cooldown", "OMEN_COOLDOWN", 60, 0 }, { "storm_cooldown", "STORM_OMEN_COOLDOWN", 1800, 0 },
 	{ "session_gap", "CHRONICLE_GAP", 900, 1 }, { "session_min", "CHRONICLE_MIN", 600, 0 },
 	{ "poll", "WATCH_POLL", 2, 1 }, { "roster_every", "WATCH_ROSTER", 60, 1 },
 }
@@ -98,7 +98,7 @@ end
 
 -- State --------------------------------------------------------------------------------------------------------
 
-function M.new_state() return { last_omen = {}, worms_seen = {} } end
+function M.new_state() return { last_omen = {}, chases = {} } end
 
 function M.encode(st) return cjson.encode(st) end
 
@@ -106,7 +106,8 @@ function M.decode(text)
 	local ok, t = pcall(cjson.decode, text or "")
 	if not ok or type(t) ~= "table" then return M.new_state() end
 	t.last_omen = type(t.last_omen) == "table" and t.last_omen or {}
-	t.worms_seen = type(t.worms_seen) == "table" and t.worms_seen or {}
+	t.chases = type(t.chases) == "table" and t.chases or {}
+	t.worms_seen = nil
 	if type(t.session) ~= "table" then t.session = nil end
 	return t
 end
@@ -118,23 +119,29 @@ end
 local function bump(t, k) t[k] = (t[k] or 0) + 1 end
 
 -- One log event. Returns state and the whispers to send ({to, text}); online = names of the online characters.
--- Nothing is tallied or sent outside a session. One hunt is a worm after one sort of target, players (character,
--- group, vehicle, thumper) or not (wrecks, spice, NPCs): its further lines within OMEN_COOLDOWN, including a switch
--- between player targets, are the same hunt, while a turn from a wreck to a player is a new one. Omens of one kind
--- (worm, storm) are at most one per its cooldown, and every recipient gets the same line.
+-- Nothing is tallied or sent outside a session. A chase is every worm line after one sort of target, players
+-- (character, group, vehicle, thumper) or not (wrecks, spice, NPCs), with gaps of at most WORM_CHASE_GAP seconds,
+-- whatever the worm id (it changes mid-chase) or the player target; it is tallied once, by its first target, and a
+-- player chase is warned once, at its first line that can be heard (someone online, outside OMEN_COOLDOWN). Storm
+-- omens are at most one per STORM_OMEN_COOLDOWN, and every recipient gets the same line.
 function M.on_event(st, ev, now, cfg, omens, rng, online)
 	local out = {}
 	local s = st.session
 	if not s then return st, out end
 	local kind
 	if ev.kind == "worm" then
-		local key = tostring(ev.worm) .. (M.omen_target(ev.target) and ":players" or ":other")
-		local seen = st.worms_seen[key]
-		if seen and now - seen < cfg.worm_cooldown then return st, out end
-		st.worms_seen[key] = now
-		bump(s.worms, ev.target)
 		local target = M.omen_target(ev.target)
-		if target then kind = "worm-" .. target end
+		local class = target and "players" or "other"
+		local c = st.chases[class]
+		if not c or now - c.last > cfg.chase_gap then
+			c = { last = now, warned = false }
+			st.chases[class] = c
+			bump(s.worms, ev.target)
+		else
+			c.last = now
+		end
+		if not target or c.warned then return st, out end
+		kind = "worm-" .. target
 	elseif ev.kind == "storm" then
 		bump(s.storms, ev.region)
 		kind = "storm"
@@ -149,6 +156,7 @@ function M.on_event(st, ev, now, cfg, omens, rng, online)
 	if ev.region then text = text:gsub("{region}", (M.region_name(ev.region):gsub("%%", "%%%%"))) end
 	for i, name in ipairs(online) do out[i] = { to = name, text = text } end
 	st.last_omen[family] = now
+	if family == "worm" then st.chases.players.warned = true end
 	s.omens = s.omens + 1
 	return st, out
 end
@@ -164,7 +172,7 @@ function M.on_presence(st, connections, now, cfg)
 	end
 	if not s or now - s.last_seen < cfg.session_gap then return st, nil end
 	st.session = nil
-	st.worms_seen = {}
+	st.chases = {}
 	s.finish = s.last_seen
 	if s.finish - s.start < cfg.session_min or next(s.players) == nil then return st, nil end
 	return st, s

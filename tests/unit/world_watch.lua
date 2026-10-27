@@ -15,7 +15,7 @@ local function first(rng_n) return function(n) return rng_n or 1 end end
 do
 	local c = assert(ww.parse_config(env({})))
 	eq("default omens", c.omens, true); eq("default chronicle", c.chronicle, true); eq("default from", c.from, "Thufir")
-	eq("default worm cooldown", c.worm_cooldown, 60); eq("default storm cooldown", c.storm_cooldown, 1800)
+	eq("default chase gap", c.chase_gap, 180); eq("default worm cooldown", c.worm_cooldown, 60); eq("default storm cooldown", c.storm_cooldown, 1800)
 	eq("default session gap", c.session_gap, 900); eq("default session min", c.session_min, 600)
 	eq("default poll", c.poll, 2); eq("default roster", c.roster_every, 60)
 	c = assert(ww.parse_config(env({ DUNE_OMENS = "0", DUNE_CHRONICLE = "off", DUNE_OMEN_FROM = "Stilgar", DUNE_OMEN_COOLDOWN = "30",
@@ -127,27 +127,44 @@ do
 	eq("whisper text from rng", w[1].text, "Wormsign!"); eq("same text for both", w[2].text, "Wormsign!")
 	eq("tally character", st.session.worms.Character, 1); eq("omen counted", st.session.omens, 1)
 
-	-- The same worm's repeated attack line within the cooldown is the same attack: not tallied again.
+	-- A chase is every player-target line with gaps of at most WORM_CHASE_GAP (180 s), whatever the worm id or the
+	-- player target: ids change mid-chase (75, 20, 255, 1 in one crossing, 2026-10-27). Its later lines stay quiet
+	-- and are not tallied again.
 	st, w = ww.on_event(st, worm(1, "Character"), 1020, cfg, omens, first(), ONLINE)
-	eq("repeat suppressed", #w, 0); eq("repeat not tallied", st.session.worms.Character, 1)
-	-- Another worm inside the omen cooldown is tallied but stays quiet.
+	eq("chase line quiet", #w, 0); eq("chase line not tallied", st.session.worms.Character, 1)
 	st, w = ww.on_event(st, worm(2, "Vehicle"), 1030, cfg, omens, first(), ONLINE)
-	eq("cooldown quiet", #w, 0); eq("cooldown tallied", st.session.worms.Vehicle, 1)
-	-- After the cooldown it speaks again, with the vehicle line.
-	st, w = ww.on_event(st, worm(3, "Vehicle"), 1062, cfg, omens, first(), ONLINE)
-	eq("after cooldown", #w, 2); eq("vehicle text", w[1].text, "Your engine sings.")
-	-- Wrecks: tallied, never an omen, and they do not start the cooldown.
-	st, w = ww.on_event(st, worm(4, "ValuableDesertWreck"), 1200, cfg, omens, first(), ONLINE)
+	eq("other worm id, same chase", #w, 0); eq("switch to vehicle not tallied", st.session.worms.Vehicle, nil)
+	st, w = ww.on_event(st, worm(3, "Group"), 1200, cfg, omens, first(), ONLINE)
+	eq("gap under the chase gap", #w, 0); eq("group not tallied", st.session.worms.Group, nil)
+	-- Quiet for longer than the gap: the next line starts a new chase and warns, with that target's line.
+	st, w = ww.on_event(st, worm(3, "Vehicle"), 1400, cfg, omens, first(), ONLINE)
+	eq("new chase after the gap", #w, 2); eq("vehicle text", w[1].text, "Your engine sings."); eq("new chase tallied", st.session.worms.Vehicle, 1)
+	-- Wrecks: chases of their own, tallied, never an omen, and they do not keep a player chase alive.
+	st, w = ww.on_event(st, worm(4, "ValuableDesertWreck"), 1401, cfg, omens, first(), ONLINE)
 	eq("wreck quiet", #w, 0); eq("wreck tallied", st.session.worms.ValuableDesertWreck, 1)
-	st, w = ww.on_event(st, worm(5, "Thumper"), 1201, cfg, omens, first(), ONLINE)
-	eq("thumper after wreck", #w, 2); eq("thumper text", w[1].text, "The thumper calls.")
-	-- Nobody online per the roster: tallied, nothing sent.
-	st, w = ww.on_event(st, worm(6, "Character"), 1400, cfg, omens, first(), {})
+	st, w = ww.on_event(st, worm(4, "ValuableDesertWreck"), 1450, cfg, omens, first(), ONLINE)
+	eq("wreck chase tallied once", st.session.worms.ValuableDesertWreck, 1)
+	st, w = ww.on_event(st, worm(5, "Thumper"), 1590, cfg, omens, first(), ONLINE)
+	eq("wreck lines did not extend the player chase", #w, 2); eq("thumper text", w[1].text, "The thumper calls.")
+	-- A chase that starts with nobody online warns at its next line once someone is; tallied once.
+	st, w = ww.on_event(st, worm(6, "Character"), 2000, cfg, omens, first(), {})
 	eq("no recipients", #w, 0); eq("tallied without recipients", st.session.worms.Character, 2)
-	-- An omen nobody heard is not counted and does not start the cooldown.
 	eq("unheard not counted", st.session.omens, 3)
-	st, w = ww.on_event(st, worm(7, "Character"), 1401, cfg, omens, first(), ONLINE)
-	eq("unheard omen leaves no cooldown", #w, 2)
+	st, w = ww.on_event(st, worm(6, "Character"), 2001, cfg, omens, first(), ONLINE)
+	eq("unwarned chase warns at its next line", #w, 2); eq("not tallied twice", st.session.worms.Character, 2)
+	st, w = ww.on_event(st, worm(6, "Character"), 2002, cfg, omens, first(), ONLINE)
+	eq("warned once per chase", #w, 0)
+	-- A chase that starts inside the omen cooldown warns at its first line after the cooldown.
+	local quick = assert(ww.parse_config(env({ DUNE_WORM_CHASE_GAP = "5" })))
+	eq("chase gap setting", quick.chase_gap, 5)
+	local st3 = ww.on_presence(ww.new_state(), 1, 100, quick)
+	local w3, heard = nil, {}
+	st3, w3 = ww.on_event(st3, worm(1, "Character"), 100, quick, omens, first(), ONLINE)
+	for t = 120, 170, 4 do
+		st3, w3 = ww.on_event(st3, worm(1, "Character"), t, quick, omens, first(), ONLINE)
+		if #w3 > 0 then heard[#heard + 1] = t end
+	end
+	eq("cooldown holds the second chase until 160", table.concat(heard, ","), "160")
 
 	-- A worm that turns from a wreck to a player within the cooldown is a new hunt: the player hears it.
 	local st2 = ww.on_presence(ww.new_state(), 1, 5000, cfg)
@@ -172,11 +189,11 @@ do
 	-- Omens switched off: still tallied for the chronicle.
 	local off = assert(ww.parse_config(env({ DUNE_OMENS = "0" })))
 	st, w = ww.on_event(st, worm(9, "Character"), 5000, off, omens, first(), ONLINE)
-	eq("omens off quiet", #w, 0); eq("omens off tallied", st.session.worms.Character, 4)
+	eq("omens off quiet", #w, 0); eq("omens off tallied", st.session.worms.Character, 3)
 
 	-- The state survives a round trip through its file format.
 	local back = ww.decode(ww.encode(st))
-	eq("decode keeps tally", back.session.worms.Character, 4); eq("decode keeps start", back.session.start, 1000)
+	eq("decode keeps tally", back.session.worms.Character, 3); eq("decode keeps start", back.session.start, 1000)
 	eq("decode of nothing", ww.decode(nil).session, nil); eq("decode of junk", ww.decode("{not json").session, nil)
 end
 

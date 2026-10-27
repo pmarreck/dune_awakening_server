@@ -9,6 +9,7 @@ fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 work=$(mktemp -d "${TMPDIR:-/tmp}/dune-world-cli.XXXXXX") || exit 1
 trap 'rm -r -- "$work"' EXIT
 export DUNE_CONFIG_DIR="$work/config dir" DUNE_STATE_DIR="$work/state" DUNE_UNPACKED_DIR="$work/unpacked"
+unset DUNE_OMENS DUNE_OMEN_FROM DUNE_OMEN_COOLDOWN DUNE_WORM_CHASE_GAP DUNE_CHRONICLE_GAP
 unset DUNE_EXTERNAL_ADDRESS DUNE_IDLE_FPS DUNE_DEEP_IDLE_POLL DUNE_NOTIFY_TO DUNE_IDLE_THROTTLE DUNE_MAPS DUNE_MAPS_ALWAYS_ON DUNE_MAP_IDLE_AFTER DUNE_MAP_SCALER DUNE_MAP_POLL DUNE_MAP
 mkdir -p -m 700 "$DUNE_CONFIG_DIR"
 printf 'WORLD_UNIQUE_NAME=sh-abc-qwerty\nWORLD_DISPLAY_NAME=%q\nWORLD_REGION=%q\n' "My World" "North America" > "$DUNE_CONFIG_DIR/world.conf"
@@ -75,6 +76,7 @@ printf '%s %s|%s|%s\n' "$c" "\$*" "\${DUNE_PARTITION_INDEX:-}:\${DUNE_EXTERNAL_A
 [ "$c \$1" = "map-scaler start" ] && printf '%s\n' "\${DUNE_MAPS:-}|\${DUNE_MAPS_ALWAYS_ON:-}|\${DUNE_MAP_IDLE_AFTER:-}" > "$work/scaler-env"
 [ "$c \$1" = "idle-throttle start" ] && printf '%s\n' "\${DUNE_IDLE_FPS:-}|\${DUNE_DEEP_IDLE_POLL:-}|\${DUNE_NOTIFY_TO:-}|\${DUNE_IDLE_THROTTLE:-}" > "$work/idle-env"
 [ "$c \$1" = "gm-bridge start" ] && printf '%s\n' "\${DUNE_THUFIR_INBOX:-}" > "$work/bridge-env"
+[ "$c \$1" = "world-watch start" ] && printf '%s\n' "\${DUNE_OMENS:-}|\${DUNE_OMEN_FROM:-}|\${DUNE_OMEN_COOLDOWN:-}|\${DUNE_WORM_CHASE_GAP:-}|\${DUNE_CHRONICLE_GAP:-}" > "$work/watch-env"
 [ "\$1" = status ] && exit 1
 [ "$c \$*" = "\${FAIL_AT:-}" ] && exit 1
 exit 0
@@ -144,7 +146,9 @@ cp "$work/world.conf.bak" "$DUNE_CONFIG_DIR/world.conf"
 [ "$(cat "$work/idle-env" 2>/dev/null)" = "|||" ] || fail "idle settings invented when world.conf has none: $(cat "$work/idle-env" 2>/dev/null)"
 cp "$DUNE_CONFIG_DIR/world.conf" "$work/world.conf.bak"
 printf 'IDLE_FPS=3\nDEEP_IDLE_POLL=45\nNOTIFY_TO=%q\nIDLE_THROTTLE=0\nTHUFIR_INBOX=%q\n' "some one" "/x/thufir inbox" >> "$DUNE_CONFIG_DIR/world.conf"
+printf 'OMENS=0\nOMEN_FROM=%q\nOMEN_COOLDOWN=90\nWORM_CHASE_GAP=240\nCHRONICLE_GAP=600\n' "The Mentat" >> "$DUNE_CONFIG_DIR/world.conf"
 world start >/dev/null 2>&1
+[ "$(cat "$work/watch-env" 2>/dev/null)" = "0|The Mentat|90|240|600" ] || fail "world.conf world-watch settings not passed on: $(cat "$work/watch-env" 2>/dev/null)"
 [ "$(cat "$work/bridge-env" 2>/dev/null)" = "/x/thufir inbox" ] || fail "world.conf THUFIR_INBOX not passed to the GM bridge: $(cat "$work/bridge-env" 2>/dev/null)"
 [ "$(cat "$work/idle-env" 2>/dev/null)" = "3|45|some one|0" ] || fail "world.conf idle settings not passed on: $(cat "$work/idle-env" 2>/dev/null)"
 DUNE_IDLE_FPS=4 DUNE_IDLE_THROTTLE=1 world start >/dev/null 2>&1
