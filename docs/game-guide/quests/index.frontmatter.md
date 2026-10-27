@@ -8,7 +8,7 @@
   "tags": ["quests", "journey", "story", "walkthrough", "progression path", "what should i do next", "order", "main story", "side quests"],
   "aliases": ["quest index", "journey index", "story order"],
   "region": "All",
-  "related": ["quests/the-fall-of-the-proteus", "quests/a-new-beginning", "quests/trials-of-aql", "quests/faction-join-a-house", "quests/regional-journeys", "quests/contracts"],
+  "related": ["quests/the-fall-of-the-proteus", "quests/a-new-beginning", "quests/trials-of-aql", "quests/faction-join-a-house", "quests/regional-journeys", "quests/contracts", "quests/the-scourge"],
   "game_version": "1.5.x",
   "last_researched": "2026-10-13",
   "confidence": "medium"
@@ -75,6 +75,7 @@ Skill-tree trainers (each basic contract opens a tree):
 
 Systems and side content:
 - [Contracts](contracts.frontmatter.md): types, pay, chains by region.
+- [The Scourge](the-scourge.frontmatter.md): the Halloween 2026 event (Oct 23 to Nov 2), Frida Maltros, contracts, Blood Marks.
 - [Regional journey decks](regional-journeys.frontmatter.md): gear and exploration checklists per region.
 - [Lost Harvest](lost-harvest.frontmatter.md): paid DLC story.
 - [The Song of Shai-Hulud](song-of-shai-hulud.frontmatter.md): after a worm eats you.

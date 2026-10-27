@@ -26,6 +26,7 @@ annotate=[
 	docs/game-guide/endgame = Dune guide section: endgame (frontmatter-led entries + index.frontmatter.md)
 	docs/game-guide/npcs = Dune guide section: npcs (frontmatter-led entries + index.frontmatter.md)
 	docs/game-guide/quests = Dune guide section: quests (frontmatter-led entries + index.frontmatter.md)
+	docs/game-guide/quests/the-scourge.frontmatter.md = Guide entry: the Halloween 2026 Scourge event (start, contracts, Blood Marks, loaded on this server)
 	docs/game-guide/residences = Dune guide section: residences (frontmatter-led entries + index.frontmatter.md)
 	docs/game-guide/resources = Dune guide section: resources (frontmatter-led entries + index.frontmatter.md)
 	docs/game-guide/spice = Dune guide section: spice (frontmatter-led entries + index.frontmatter.md)

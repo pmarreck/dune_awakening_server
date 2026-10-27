@@ -48,7 +48,7 @@ Every substantive fact carries a tag. In decreasing order of authority:
 - `(patch notes ..., URL)`: Funcom's official notes.
 - `(wiki, URL)` and `(community, URL)`: useful but often written for an older version. Items marked "pre-1.5" predate the 1.5 release (2026-09-17).
 
-When a player's own observation contradicts a note, believe the player, then fix the note and tag the new fact `(verified on this server)`. For example, the Vehicle Backup Tool was first described here as holding one vehicle, but its screen showed "2/10" with two sandbikes stored.
+When a player's own observation contradicts a note, believe the player, then fix the note and tag the new fact `(verified on this server)`. For example, a "2/10" on the Vehicle Backup Tool was once read here as ten storage slots; a player's report and the database later showed it was the Recovery list of destroyed vehicles, and storage holds one vehicle per character.
 
 ## Checking and extending the notes
 

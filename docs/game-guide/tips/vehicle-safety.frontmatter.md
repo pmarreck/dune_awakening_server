@@ -34,7 +34,7 @@
 
 ## Backup and recovery
 
-- The Vehicle Backup Tool stores a Sandbike, Scout Ornithopter or Treadwheel (empty inventory, no passengers) and restores it later; on this server one tool held two sandbikes and read "2/10" (game text; verified on this server).
+- The Vehicle Backup Tool stores a Sandbike, Scout Ornithopter or Treadwheel (empty inventory, no passengers) and restores it later, one stored vehicle per character, through the tool's Backup mode; Recovery is for destroyed vehicles only (game text; database procedures and verified on this server, 2026-10-26).
 - Recovery mode rebuilds a recently destroyed vehicle for Solari and maximum durability; inventory modules are lost; it works in PvE areas or inside your own claim; vehicles whose chassis was at critically low maximum durability are permanently lost (game text).
 - Repair with a Welding Torch and welding wire (game text). Details in the [vehicles chapter](../vehicles.md).
 
