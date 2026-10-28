@@ -22,3 +22,6 @@ char-backups/
 /PLAN_LOG.md
 # Item names generated from the game's tables (dune-items refresh): derived from Funcom's content, never committed.
 generated.tsv
+
+# session handoff docs (skill: handoff)
+HANDOFF*
