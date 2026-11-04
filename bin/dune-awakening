@@ -389,6 +389,11 @@ local function cmd_start(dir, env)
 	step("map-scaler (starts the other maps when a player travels there)"); must("map-scaler", run(comp(dir, "map-scaler", "start")))
 	step("gm-bridge (in-game chat commands)"); must("gm-bridge", run(comp(dir, "gm-bridge", "start")))
 	step("world-watch (omens for worms and storms, session chronicle)"); must("world-watch", run(comp(dir, "world-watch", "start")))
+	-- Before the idle throttle, so a hazard pause on the new map server saves the timeout's values, not the defaults.
+	step("timeout (re-applied when one is on and the map server restarted)")
+	if not run(comp(dir, "live", "world", "timeout", "reapply")) then
+		io.stderr:write("⚠ the timeout could not be re-applied yet (map server still starting?); the next start tries again\n")
+	end
 	step("idle-throttle (lower frame rate while nobody is connected)"); must("idle-throttle", run(comp(dir, "idle-throttle", "start")))
 end
 

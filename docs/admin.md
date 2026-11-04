@@ -51,7 +51,7 @@ Item ids are the row names of the game's item tables (`DT_BaseItems_*` in the co
 | `SandbikeHull_1` | sandbike hull |
 | `SandbikeLocomotion_1` | sandbike treads; a sandbike takes 3 or 4 (unconfirmed) |
 | `SandbikeInventory_1` | sandbike storage |
-| `FuelCanister_Large`, `FuelCanister_Medium`, `FuelCanister` | vehicle fuel (**verified**: a large canister refuelled a sandbike) |
+| `FuelCanister_Large`, `FuelCanister_Medium`, `FuelCanister` | vehicle fuel (**verified**: a large canister refueled a sandbike) |
 | `FremenComponent1` | EMF Generator, the one crafting recipes accept (**verified**: the Survey Probe Launcher recipe took it) |
 | `D_FremenComponent3` | also shown as "EMF Generator", but recipes reject it; do not use |
 | `SolarisCoin` | Solari, the currency (**verified**: 5000 in one give arrived at once) |
@@ -94,7 +94,7 @@ An online character cannot be moved in the database: the map server holds it in 
 
 #### How chat lines render (found by trial, 2026-09-28)
 
-The format DASH documented (a spoofed sender name, `m_TimeStamp`) arrived but rendered as an empty `[]:` on this build. Sending labelled variants to a player and asking what appeared established:
+The format DASH documented (a spoofed sender name, `m_TimeStamp`) arrived but rendered as an empty `[]:` on this build. Sending labeled variants to a player and asking what appeared established:
 
 - **The sender's name comes from the AMQP `user_id` property,** which the client looks up among known players. The name fields inside the message (`m_SpoofedUserNameFrom`, `m_FuncomIdFrom`) are not what it shows: an exact copy of a player's own real message showed `[]:` until `user_id` was added, and then showed `[TheirName]:`.
 - **A line whose `user_id` is not a known player is dropped** (`GM`, `GM#00001`: nothing appeared). So a made-up sender such as "GM" cannot be shown as the sender.
@@ -132,6 +132,8 @@ The number of inventory slots is not adjustable. The server's 46 custom settings
 ### Timeout (a break without logging off)
 
 `dune-awakening world timeout on` (also `bio-break`, `call-timeout`, `safety-first`) records the current values of four world-level console variables, sets them off, verifies each change in the map server's log, and broadcasts it: `Dac.DamageEnabled` (all damage), `sandworm.dune.Enabled`, `Sandstorm.Enabled`, `Coriolis.Enabled`. `timeout off` restores the recorded values (kept in `runtime/timeout.state`), so a hazard you had disabled on purpose stays disabled. `timeout status` reads the live value.
+
+A timeout survives a map-server restart. A new map-server process starts with its configured values, so `start` (and the self-heal, which runs it) calls `world timeout reapply`. When a timeout is on and the map server is a different process from the one it was applied to (`runtime/timeout.state.server` holds that pid), it records the new process's values and switches the four variables off again. `timeout off` then returns to the values the new process came up with, for example storms you turned off in `UserEngine.ini` after the timeout began. If the map server does not answer yet, `start` only warns, and the next heal tries again.
 
 Why not a real pause: the engine drops a connection after 60 s without traffic (`ConnectionTimeout=60.0` in the shipped `DefaultEngine.ini`, keepalive every 0.2 s), so freezing the server process would disconnect everyone after a minute, and Funcom's server commands include no pause or time-dilation command (`PauseServer` and `SetTimeDilation` are rejected as unknown). Verified on the server: the four variables exist, are settable at runtime, and read back as changed. Not yet verified in game: whether no damage also covers thirst and heat.
 
@@ -272,7 +274,7 @@ Pressing Home (Fn+PgUp) on the first test did not open anything, and the configu
 
 **Conclusion: the shipping client cannot open the Admin Panel (verified statically, 2026-09-26).** Unreal's generated reflection tables pair each native `UFUNCTION` name with its exec thunk. In `DuneSandbox-Win64-Shipping.exe`:
 
-- the Escape menu's `OpenAdminPanel` and `OpenConsoleCommand` both point at the same thunk (`0x1412cf520`), which only advances the script bytecode pointer (`P_FINISH`) and calls nothing. Their neighbours (`OpenLeaveGameDialog`, `OpenRespawnDialog`, …) each have their own thunk.
+- the Escape menu's `OpenAdminPanel` and `OpenConsoleCommand` both point at the same thunk (`0x1412cf520`), which only advances the script bytecode pointer (`P_FINISH`) and calls nothing. Their neighbors (`OpenLeaveGameDialog`, `OpenRespawnDialog`, …) each have their own thunk.
 - the cheat manager's `ToggleAdminPanel` points at the same empty thunk, as does `ToggleAlignmentDebugUI`.
 
 So both entry points were compiled out of the shipping build, the same way as the console. The widget's own code (`UAdminPanelWidget`) is still in the binary, but nothing reachable opens it. The client's chat has no slash-command handling either. The GM passwords stay configured, since they cost nothing and would work if Funcom ever enables the panel.

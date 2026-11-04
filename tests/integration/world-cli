@@ -68,7 +68,7 @@ rm -r -- "$DUNE_CONFIG_DIR/UserSettings" "$DUNE_CONFIG_DIR/join_password.sample"
 fake="$work/fake bin"
 mkdir -p "$fake"
 allmaps=$(awk -F'\t' '!/^#/ && NF { print $1 }' data/maps.tsv)
-for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server map-scaler gm-bridge world-watch idle-throttle; do
+for c in postgres db-setup world-partitions rabbitmq textrouter director dotnet-prepare gateway server map-scaler gm-bridge world-watch live idle-throttle; do
 	cat > "$fake/dune-$c" <<EOF
 #!$BASH
 printf '%s %s|%s|%s\n' "$c" "\$*" "\${DUNE_PARTITION_INDEX:-}:\${DUNE_EXTERNAL_ADDRESS:-}" "\${DUNE_MAP:-}" >> "$work/calls"
@@ -117,7 +117,7 @@ out=$(DUNE_MAPS="SH_Arrakeen SH_HarkoVillage" DUNE_MAPS_ALWAYS_ON=Overmap world 
 out=$(DUNE_EXTERNAL_ADDRESS=10.9.8.7 world start 2>&1) || fail "start with healthy fakes failed: $out"
 got=$(cut -d'|' -f1 "$work/calls" | paste -sd, -)
 # By default every map of the table gets its partition (Survival_1 first) and the scaler starts after Survival_1.
-[ "$got" = "postgres init,postgres start,db-setup ,world-partitions $(paste -sd' ' - <<<"$allmaps"),rabbitmq init admin,rabbitmq start admin,rabbitmq init game,rabbitmq start game,textrouter status,dotnet-prepare $DUNE_UNPACKED_DIR/server-text-router/rootfs $DUNE_STATE_DIR/textrouter-root Tools/Battlegroups/TextRouter/TextRouter TextRouter,textrouter start,director status,dotnet-prepare $DUNE_UNPACKED_DIR/server-bg-director/rootfs $DUNE_STATE_DIR/director-root Tools/Battlegroups/Director/BattlegroupDirector Director,director start,gateway start,server start,map-scaler start,gm-bridge start,world-watch start,idle-throttle start" ] ||
+[ "$got" = "postgres init,postgres start,db-setup ,world-partitions $(paste -sd' ' - <<<"$allmaps"),rabbitmq init admin,rabbitmq start admin,rabbitmq init game,rabbitmq start game,textrouter status,dotnet-prepare $DUNE_UNPACKED_DIR/server-text-router/rootfs $DUNE_STATE_DIR/textrouter-root Tools/Battlegroups/TextRouter/TextRouter TextRouter,textrouter start,director status,dotnet-prepare $DUNE_UNPACKED_DIR/server-bg-director/rootfs $DUNE_STATE_DIR/director-root Tools/Battlegroups/Director/BattlegroupDirector Director,director start,gateway start,server start,map-scaler start,gm-bridge start,world-watch start,live world timeout reapply,idle-throttle start" ] ||
 	fail "start order wrong: $got"
 [ "$(grep '^server start' "$work/calls" | cut -d'|' -f2,3)" = "7:10.9.8.7|" ] || fail "server not given partition 7 and address: $(grep '^server' "$work/calls")"
 [ "$(cat "$work/scaler-env" 2>/dev/null)" = "||" ] || fail "map settings invented when world.conf has none: $(cat "$work/scaler-env" 2>/dev/null)"
@@ -159,6 +159,12 @@ cp "$work/world.conf.bak" "$DUNE_CONFIG_DIR/world.conf"
 out=$(FAIL_AT="rabbitmq start admin" world start 2>&1); [ $? -eq 1 ] || fail "start did not fail when a component failed"
 [[ "$out" == *"rabbitmq admin"* ]] || fail "start failure does not name the component: $out"
 grep -q '^textrouter' "$work/calls" && fail "start continued past a failed component"
+# A timeout that cannot be re-applied yet (map server still booting) is a warning, not a failed start; the next start
+# (the heal, 5 minutes later) tries again.
+: > "$work/calls"
+out=$(FAIL_AT="live world timeout reapply" world start 2>&1) || fail "start failed when the timeout reapply failed: $out"
+[[ "$out" == *timeout* ]] || fail "start did not warn about the timeout reapply: $out"
+grep -q '^idle-throttle start' "$work/calls" || fail "start stopped after the timeout reapply failed"
 
 # Status polls RabbitMQ with the cheap --quick check (the full check boots an Erlang VM per call).
 : > "$work/calls"

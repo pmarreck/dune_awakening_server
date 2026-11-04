@@ -24,10 +24,12 @@ Live-world commands, grouped by what they act on. dune-awakening runs them as \`
 
 World:
   say <message> [--duration S]    On-screen broadcast to everyone (default 20 s)
-  timeout on|off|status           Break for everyone without logging off: turns off all damage, sandworms,
+  timeout on|off|status|reapply   Break for everyone without logging off: turns off all damage, sandworms,
                                   sandstorms and Coriolis storms (each verified in the server log), announces it,
                                   and restores the previous values on \`off\`. Aliases for \`on\`: bio-break,
-                                  call-timeout, safety-first
+                                  call-timeout, safety-first. \`reapply\` (run by start) switches an active timeout
+                                  off again on a map server that restarted since; resuming then returns to the
+                                  values that server came up with
   kick-all                        Disconnect everyone online
   exec <console command...>       World-level engine console command or variable via ServerExec, e.g.
                                   \`exec t.MaxFPS 5\` (output is not returned; watch the server log)
@@ -211,6 +213,10 @@ number() { [[ "$1" =~ ^-?[0-9]+([.][0-9]+)?$ ]] || usage_error "not a number: $1
 DUNE_SERVER_LOG=${DUNE_SERVER_LOG:-$DUNE_STATE_DIR/server/server-console.log}
 DUNE_TIMEOUT_WAIT=${DUNE_TIMEOUT_WAIT:-10}
 TIMEOUT_STATE="$DUNE_STATE_DIR/timeout.state"
+# The map-server process the timeout was applied to: a different one started with its configured values.
+TIMEOUT_SERVER="$TIMEOUT_STATE.server"
+SERVER_PID_FILE="$DUNE_STATE_DIR/server/pid"
+server_pid() { local p=""; [ -r "$SERVER_PID_FILE" ] && read -r p < "$SERVER_PID_FILE"; [[ "$p" =~ ^[0-9]+$ ]] && echo "$p"; return 0; }
 TIMEOUT_CVARS=(Dac.DamageEnabled sandworm.dune.Enabled Sandstorm.Enabled Coriolis.Enabled)
 normalize() { case "$1" in false|0) echo 0 ;; true|1) echo 1 ;; *) echo "$1" ;; esac; }
 
@@ -238,26 +244,49 @@ broadcast() {
 		BroadcastPayload: {BroadcastDuration: 15, LocalizedText: [{Key: "en", Title: "", Body: $m}, {Key: "en-US", Title: "", Body: $m}]}}')" 2>/dev/null
 }
 
-timeout_on() {
-	local c v
-	if [ ! -s "$TIMEOUT_STATE" ]; then
-		local saved=""
-		for c in "${TIMEOUT_CVARS[@]}"; do
-			v=$(cvar_get "$c") || die "could not verify the current value of $c (is the map server up? log: $DUNE_SERVER_LOG)"
-			saved+="$c=$v"$'\n'
-		done
-		(umask 077; mkdir -p "${TIMEOUT_STATE%/*}" && printf '%s' "$saved" > "$TIMEOUT_STATE") || die "cannot write $TIMEOUT_STATE"
-	fi
+# Read the current values (what `off` restores) into the state file, replacing it only once all are read.
+save_timeout_values() {
+	local c v saved=""
+	for c in "${TIMEOUT_CVARS[@]}"; do
+		v=$(cvar_get "$c") || die "could not verify the current value of $c (is the map server up? log: $DUNE_SERVER_LOG)"
+		saved+="$c=$v"$'\n'
+	done
+	(umask 077; mkdir -p "${TIMEOUT_STATE%/*}" && printf '%s' "$saved" > "$TIMEOUT_STATE.new" && mv -f -- "$TIMEOUT_STATE.new" "$TIMEOUT_STATE") ||
+		die "cannot write $TIMEOUT_STATE"
+}
+
+switch_timeout_cvars_off() {
+	local c
 	for c in "${TIMEOUT_CVARS[@]}"; do cvar_set_verified "$c" 0; done
+	(umask 077; printf '%s\n' "$(server_pid)" > "$TIMEOUT_SERVER") || die "cannot write $TIMEOUT_SERVER"
+}
+
+timeout_on() {
+	[ -s "$TIMEOUT_STATE" ] || save_timeout_values
+	switch_timeout_cvars_off
 	broadcast "Timeout: no damage, no sandworms, no storms. Take your break."
 	echo "timeout on: damage, sandworms, sandstorms and Coriolis storms are off (dune-awakening world timeout off to resume)"
+}
+
+# start runs this (and the heal runs start every 5 minutes): it acts only when the map server is a different process
+# from the one the timeout was applied to.
+timeout_reapply() {
+	local now was=""
+	[ -s "$TIMEOUT_STATE" ] || return 0
+	now=$(server_pid); [ -n "$now" ] || return 0
+	[ -r "$TIMEOUT_SERVER" ] && read -r was < "$TIMEOUT_SERVER"
+	[ "$was" = "$now" ] && return 0
+	save_timeout_values
+	switch_timeout_cvars_off
+	broadcast "Timeout still on after a server restart: no damage, no sandworms, no storms."
+	echo "timeout re-applied on map server $now (dune-awakening world timeout off to resume)"
 }
 
 timeout_off() {
 	local c v
 	[ -s "$TIMEOUT_STATE" ] || { echo "timeout is not on"; return 0; }
 	while IFS='=' read -r c v; do [ -n "$c" ] && cvar_set_verified "$c" "$v"; done < "$TIMEOUT_STATE"
-	rm -f -- "$TIMEOUT_STATE"
+	rm -f -- "$TIMEOUT_STATE" "$TIMEOUT_SERVER"
 	broadcast "Timeout over: the desert is dangerous again."
 	echo "timeout off: previous values restored"
 }
@@ -397,7 +426,8 @@ case "$cmd" in
 		id=$(fls_id "$1") || exit 1
 		publish "$(jq -cn --arg p "$id" --argjson x "$2" --arg c "${3:-Combat}" '{ServerCommand: "AwardXP", PlayerId: $p, Experience: $x, Category: $c}')" ;;
 	timeout)
-		case "${1:-}" in on) timeout_on ;; off) timeout_off ;; status|"") timeout_status ;; *) usage_error "timeout takes on, off or status" ;; esac ;;
+		case "${1:-}" in on) timeout_on ;; off) timeout_off ;; reapply) timeout_reapply ;; status|"") timeout_status ;;
+			*) usage_error "timeout takes on, off, status or reapply" ;; esac ;;
 	bio-break|call-timeout|safety-first) timeout_on ;;
 	raw)
 		[ $# -ge 1 ] || usage_error "raw needs a ServerCommand name"

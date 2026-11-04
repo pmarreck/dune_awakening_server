@@ -164,6 +164,42 @@ for alias in call-timeout safety-first; do world "$alias" >/dev/null 2>&1 || fai
 touch "$work/server-silent"
 out=$(world timeout on 2>&1); [ $? -eq 1 ] && [[ "$out" == *verif* ]] || fail "unverified timeout not reported: $out"
 unlink "$work/server-silent"
+world timeout off >/dev/null 2>&1
+
+# reapply: a timeout survives a map-server restart (the new process starts with its configured values). start calls it
+# and the heal runs start every 5 minutes, so it acts once per map-server process; resuming returns to the values the
+# new process came up with, not the ones saved before the restart.
+mkdir -p "$DUNE_STATE_DIR/server"; echo 111 > "$DUNE_STATE_DIR/server/pid"
+printf 'Dac.DamageEnabled=true\nsandworm.dune.Enabled=1\nSandstorm.Enabled=0\nCoriolis.Enabled=1\n' > "$work/cvars"
+: > "$work/sent"
+out=$(world timeout reapply 2>&1) || fail "reapply with no timeout failed: $out"
+[ -s "$work/sent" ] && fail "reapply with no timeout sent commands: $(cat "$work/sent")"
+[ -e "$DUNE_STATE_DIR/timeout.state" ] && fail "reapply with no timeout turned it on"
+world timeout on >/dev/null 2>&1 || fail "timeout on with a map server pid failed"
+: > "$work/sent"
+out=$(world timeout reapply 2>&1) || fail "reapply on the same map server failed: $out"
+[ -s "$work/sent" ] && fail "reapply on the same map server sent commands: $(cat "$work/sent")"
+echo 222 > "$DUNE_STATE_DIR/server/pid"
+printf 'Dac.DamageEnabled=true\nsandworm.dune.Enabled=1\nSandstorm.Enabled=0\nCoriolis.Enabled=0\n' > "$work/cvars"
+out=$(world timeout reapply 2>&1) || fail "reapply after a map-server restart failed: $out"
+[ "$(paste -sd, "$work/cvars")" = "Dac.DamageEnabled=false,sandworm.dune.Enabled=0,Sandstorm.Enabled=0,Coriolis.Enabled=0" ] || fail "reapply did not switch everything off: $(paste -sd, "$work/cvars")"
+grep -q '^ServiceBroadcast' "$work/sent" || fail "reapply did not tell the players"
+: > "$work/sent"
+world timeout reapply >/dev/null 2>&1 || fail "second reapply failed"
+[ -s "$work/sent" ] && fail "second reapply on the same map server sent commands: $(cat "$work/sent")"
+world timeout off >/dev/null 2>&1 || fail "timeout off after reapply failed"
+[ "$(paste -sd, "$work/cvars")" = "Dac.DamageEnabled=true,sandworm.dune.Enabled=1,Sandstorm.Enabled=0,Coriolis.Enabled=0" ] || fail "timeout off after reapply did not return to the new server's values: $(paste -sd, "$work/cvars")"
+[ -e "$DUNE_STATE_DIR/timeout.state.server" ] && fail "timeout off left the map-server marker"
+# A reapply that cannot verify (map server not answering yet) keeps the timeout for the next try.
+world timeout on >/dev/null 2>&1 || fail "timeout on (pid 222) failed"
+echo 333 > "$DUNE_STATE_DIR/server/pid"; touch "$work/server-silent"
+out=$(world timeout reapply 2>&1); [ $? -eq 1 ] || fail "unverified reapply did not fail: $out"
+[ -s "$DUNE_STATE_DIR/timeout.state" ] || fail "unverified reapply dropped the timeout"
+unlink "$work/server-silent"
+world timeout reapply >/dev/null 2>&1 || fail "reapply retry failed"
+[ "$(sed -n 's/^Dac.DamageEnabled=//p' "$work/cvars")" = false ] || fail "reapply retry did not switch damage off"
+world timeout off >/dev/null 2>&1
+rm -r -- "$DUNE_STATE_DIR/server"
 
 # cvar: read one console variable back from the server log, or set it and verify (the idle throttle uses t.MaxFPS).
 printf 't.MaxFPS=20\n' >> "$work/cvars"
