@@ -120,7 +120,18 @@ same("bring", p.actions, { { "character", "move", "Bob", "to", "Alice" } })
 p = plan("&say Restart in 5 minutes; $(reboot) `x` 'q'")
 same("say keeps text verbatim as one argument", p.actions, { { "world", "say", "Restart in 5 minutes; $(reboot) `x` 'q'" } })
 same("timeout on", plan("&timeout on").actions, { { "world", "timeout", "on" } })
-same("timeout status", plan("&timeout").actions, { { "world", "timeout", "status" } })
+-- A bare &timeout calls the break (players type it in a hurry, with a worm behind them); status is asked for by name
+-- and answered from the live reading, not with a fixed text.
+same("bare timeout calls it", plan("&timeout").actions, { { "world", "timeout", "on" } })
+eq("timeout on reply", plan("&timeout on").reply, "timeout on: no damage, no worms, no storms (&timeout off to resume)")
+eq("timeout off reply", plan("&timeout off").reply, "timeout off: the desert is dangerous again")
+do
+	local st = plan("&timeout status")
+	same("timeout status reads", st.actions, { { "world", "timeout", "status" } })
+	eq("timeout status reply on", st.reply_from_output("timeout on (damage is off)"), "timeout on (damage is off)")
+	eq("timeout status reply off", st.reply_from_output("noise\ntimeout off"), "timeout off")
+	eq("timeout status reply empty", st.reply_from_output(""), "timeout state unknown")
+end
 same("give by id", plan("&give SandbikeChassis_1 2").actions, { { "character", "give", "Alice", "SandbikeChassis_1", "2" } })
 same("give default count", plan("&give Ammo").actions, { { "character", "give", "Alice", "Ammo", "1" } })
 same("kick", plan("&kick Bob").actions, { { "character", "kick", "Bob" } })

@@ -148,7 +148,7 @@ A trusted player can run a few admin commands from game chat, without host acces
 | `&goto <player>` | moves you to the player (`character move <you> to <player>`) |
 | `&bring <player>` | moves the player to you |
 | `&say <message>` | on-screen broadcast to everyone (`world say`) |
-| `&timeout on\|off\|status` | the break for everyone (`world timeout`) |
+| `&timeout [on\|off\|status]` | the break for everyone (`world timeout`); a bare `&timeout` calls it, `status` answers with the live state |
 | `&give <item> [count] [to <player>]` | puts items into your inventory, or with `to <player>` into another online player's (`character give`). The item is a name or an id ([Item names](#item-names-for-give)); count defaults to 1, at most one stack of the item (at least 10; 1000 when the stack size is unknown) unless `data/items.tsv` sets another max ([the cap per give](#the-cap-per-give)). Examples: `&give solari 5000`, `&give emf generator 2 to Alice`, `&give HarkAr2` |
 | `&kick <player>` | disconnects a player |
 | `&thufir <message>` | sends the message to the operator's assistant as an llmsend note in the directory named by `THUFIR_INBOX` in `world.conf` (unset: the command answers that it is not set up); the assistant replies with an in-game whisper from `Thufir`. Permission `thufir` |

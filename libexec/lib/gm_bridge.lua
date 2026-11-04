@@ -21,7 +21,7 @@ local MAX_NOTE = 2000
 -- Amount &water asks dune-live to put into the player's containers: more than any loadout holds, so every container
 -- ends up full (the game caps each at its capacity).
 M.WATER_FILL = "100000"
--- &fuel: large vehicle fuel cells (the game's vehicle "battery"; one refuelled a sandbike, verified) per request.
+-- &fuel: large vehicle fuel cells (the game's vehicle "battery"; one refueled a sandbike, verified) per request.
 -- No server command fills a vehicle's tank, so the player loads a cell themselves.
 M.FUEL_ITEM, M.FUEL_COUNT = "FuelCanister_Large", "5"
 local KNOWN = { help = true }
@@ -265,9 +265,18 @@ function M.plan(cmd, sender, policy, item_db, tips, pick)
 		if not ok_arg(cmd.rest) then return usage("&say <message>") end
 		return { actions = { { "world", "say", cmd.rest } }, reply = "announced" }
 	elseif n == "timeout" then
-		local a = (cmd.args[1] or "status"):lower()
+		-- Bare &timeout calls the break: players type it in a hurry, often with a worm behind them.
+		local a = (cmd.args[1] or "on"):lower()
 		if #cmd.args > 1 or not (a == "on" or a == "off" or a == "status") then return usage("&timeout on|off|status") end
-		return { actions = { { "world", "timeout", a } }, reply = "timeout " .. a }
+		if a == "status" then
+			return { actions = { { "world", "timeout", "status" } }, reply = "timeout state unknown",
+				reply_from_output = function(out)
+					local v = (out or ""):match("([^\n]*)$"):gsub("^%s+", ""):gsub("%s+$", "")
+					return v ~= "" and v or "timeout state unknown"
+				end }
+		end
+		return { actions = { { "world", "timeout", a } },
+			reply = a == "on" and "timeout on: no damage, no worms, no storms (&timeout off to resume)" or "timeout off: the desert is dangerous again" }
 	elseif n == "worm" then
 		local a = (cmd.args[1] or "status"):lower()
 		if #cmd.args > 1 or not (a == "on" or a == "off" or a == "status") then return usage("&worm on|off|status") end
