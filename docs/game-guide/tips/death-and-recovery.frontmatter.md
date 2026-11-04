@@ -9,7 +9,7 @@
   "aliases": ["I died", "where is my stuff", "death location", "corpse run", "Surrender to the Desert"],
   "related": ["tips/worm-avoidance", "tips/vehicle-safety", "tips/inventory-and-volume", "tips/this-server"],
   "game_version": "1.5.x",
-  "last_researched": "2026-10-13",
+  "last_researched": "2026-11-04",
   "confidence": "high"
 }
 ---
@@ -31,7 +31,8 @@
 
 ## Recovering the drop
 
-- The drop is a loot container that the server removes when emptied or when it expires (verified on this server). Its lifetime is not in game text; community reports say about 10 to 15 minutes and that dying again loses the older drop (community, unverified). Go straight back.
+- The drop is a loot container that the server removes when emptied or when it expires (verified on this server). On this server a drop (`BP_LootContainerDefeatDrop`) lives 2,700 seconds, 45 minutes, and again 45 minutes after you first open it (`m_LifeSpanInSeconds` and `m_LifeSpanAfterInteractionInSeconds`, verified on this server, 2026-11-04, build 26332623). Community reports of 10 to 15 minutes and that dying again loses the older drop are unverified here (community). Go straight back.
+- Operator help: the drop is an actor with its own inventory in the database, so an operator can see what it holds and where it is, and move the player beside it (`character move <player> X Y Z`). On 2026-11-04 the online move worked with one player online but landed him about 2,000 feet above the drop, so expect a fall (verified on this server).
 - In PvP zones other players may loot it; in PvE areas only you can (game text: corpse looting defaults to PvP zones only; this server keeps `PlayerDeathLootRule=DependsOnSecurityZone`, server config).
 
 ## Worm deaths
