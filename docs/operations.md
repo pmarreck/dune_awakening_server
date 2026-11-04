@@ -31,6 +31,8 @@ dune-awakening restart        # same guard
 dune-awakening doctor         # health check of the setup (read-only; exit 1 on a failure; --json)
 ```
 
+If a component does not stop cleanly, `stop` still stops the rest and names the ones that failed (`some components did not stop cleanly: gateway`). `restart` then starts the world anyway, leaving a component that would not stop running, and exits 1 with the same names, so a stuck component never leaves the world down.
+
 `dune-awakening doctor` checks, and names a fix for each problem:
 
 | Check | ✗ fail / ⚠ warn when |

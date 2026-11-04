@@ -248,4 +248,15 @@ grep -q '^server stop' "$work/calls" || fail "stop --force did not stop the serv
 printf '#!%s\necho '"'"'[{"name":"Alice","online":false}]'"'"'\n' "$BASH" > "$fake/dune-character"
 : > "$work/calls"
 world stop >/dev/null 2>&1 && grep -q '^server stop' "$work/calls" || fail "stop with everyone offline refused"
+
+# A component that does not stop cleanly is named. stop still stops the rest; restart then starts the world anyway
+# (start leaves running components alone) instead of leaving it down, and exits 1 so the failure is not missed.
+: > "$work/calls"
+out=$(FAIL_AT="gateway stop" world stop 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *"did not stop cleanly: gateway"* ]] || fail "stop failure does not name the component: rc=$rc $out"
+grep -q '^postgres stop' "$work/calls" || fail "stop gave up on the components after the failed one"
+: > "$work/calls"
+out=$(FAIL_AT="gateway stop" world restart 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *"did not stop cleanly: gateway"* ]] || fail "restart stop failure not reported: rc=$rc $out"
+grep -q '^server start' "$work/calls" && grep -q '^idle-throttle start' "$work/calls" || fail "restart left the world down after a failed stop: $(cut -d'|' -f1 "$work/calls" | paste -sd, -)"
 exit "$failures"

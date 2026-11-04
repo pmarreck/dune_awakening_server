@@ -33,7 +33,7 @@ Run the native Dune: Awakening world (no Docker, Kubernetes or Windows).
 Commands:
   start           Bring every component up in dependency order (already-running components are left alone)
   stop            Stop every component in reverse order; refuses while characters are online (--force overrides)
-  restart         stop, then start (same guard)
+  restart         stop, then start (same guard); a component that does not stop is named and the world is started anyway
   status          One line per component, ● up / ○ down; exit 0 only if all are up
   heal            For the self-heal timer: cheap liveness checks first; `start` only when a component or an
                   always-on map is down (stopped on-demand maps are left alone); nothing while an update runs
@@ -397,11 +397,12 @@ local function cmd_start(dir, env)
 	step("idle-throttle (lower frame rate while nobody is connected)"); must("idle-throttle", run(comp(dir, "idle-throttle", "start")))
 end
 
-local function cmd_stop(dir, env)
+-- Stops every component in reverse order, carrying on past one that fails; returns the names that did not stop.
+local function stop_all(dir, env)
 	world_env(env)
 	setenv("DUNE_PARTITION_INDEX", "0")
 	local _, maps = map_table()
-	local ok = true
+	local failed = {}
 	for i = #COMPONENTS, 1, -1 do
 		local c = COMPONENTS[i]
 		-- Every other map server goes down before Survival_1, whether or not MAPS still names it.
@@ -413,15 +414,32 @@ local function cmd_stop(dir, env)
 					if up then step("map server " .. m) end
 					if not run(map_server(dir, m, "stop")) then
 						if not up then step("map server " .. m) end
-						ok = false
+						failed[#failed + 1] = "map server " .. m
 					end
 				end
 			end
 		end
-		step(c[1] .. (c[2] and (" " .. c[2]) or ""))
-		if not run(comp(dir, c[1], "stop", c[2])) then ok = false end
+		local label = c[1] .. (c[2] and (" " .. c[2]) or "")
+		step(label)
+		if not run(comp(dir, c[1], "stop", c[2])) then failed[#failed + 1] = label end
 	end
-	if not ok then die(EXIT_ERR, "some components did not stop cleanly") end
+	return failed
+end
+
+local function stop_failure(failed) return "some components did not stop cleanly: " .. table.concat(failed, ", ") end
+
+local function cmd_stop(dir, env)
+	local failed = stop_all(dir, env)
+	if #failed > 0 then die(EXIT_ERR, "%s", stop_failure(failed)) end
+end
+
+-- A failed stop must not leave the world down: start brings up whatever is not running (a component that would not
+-- stop is left alone), then the stop failure is still reported with exit 1.
+local function cmd_restart(dir, env)
+	local failed = stop_all(dir, env)
+	if #failed > 0 then io.stderr:write("dune-awakening: ", stop_failure(failed), "; starting the world anyway\n") end
+	cmd_start(dir, env)
+	if #failed > 0 then die(EXIT_ERR, "%s (the world was started again)", stop_failure(failed)) end
 end
 
 local function iso_now()
@@ -659,7 +677,7 @@ local function main()
 		die(EXIT_ERR, "cannot run %s", argv[1])
 	elseif opts.cmd == "start" then defer_to_update(env); cmd_start(dir, env)
 	elseif opts.cmd == "stop" then refuse_if_online(opts, dir); cmd_stop(dir, env)
-	elseif opts.cmd == "restart" then refuse_if_online(opts, dir); defer_to_update(env); cmd_stop(dir, env); cmd_start(dir, env)
+	elseif opts.cmd == "restart" then refuse_if_online(opts, dir); defer_to_update(env); cmd_restart(dir, env)
 	else cmd_status(opts, dir, env, flake) end
 end
 
