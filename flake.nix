@@ -75,6 +75,8 @@
 				DUNE_MUSL_LOADER = "${musl.musl}/lib/ld-musl-x86_64.so.1";
 				DUNE_NETCOREDEPS = "${netcoredeps}";
 				DUNE_GLIBC_LOADER = "${pkgs.glibc}/lib/ld-linux-x86-64.so.2";
+				# Time zones for the GM bridge's &time (and its test): the build sandbox has no /etc/zoneinfo.
+				TZDIR = "${pkgs.tzdata}/share/zoneinfo";
 				DUNE_GCC_LIB = "${pkgs.stdenv.cc.cc.lib}/lib";
 				DUNE_LIBPQ = "${pkgs.postgresql_17.lib}/lib/libpq.so.5";
 				# Store paths of the Lua runtime closure; tests/integration/toolchain checks that it holds only the fork's LuaJIT.
@@ -84,7 +86,7 @@
 			checks.${system} = {
 				operator-tools = pkgs.runCommand "dune-operator-tools-check" {
 					nativeBuildInputs = tools;
-					inherit (shellEnv) DUNE_MUSL_LOADER DUNE_NETCOREDEPS DUNE_GLIBC_LOADER DUNE_GCC_LIB DUNE_LIBPQ DUNE_LUAJIT_CLOSURE;
+					inherit (shellEnv) DUNE_MUSL_LOADER DUNE_NETCOREDEPS DUNE_GLIBC_LOADER DUNE_GCC_LIB DUNE_LIBPQ DUNE_LUAJIT_CLOSURE TZDIR;
 					src = pkgs.lib.fileset.toSource {
 						root = ./.;
 						fileset = pkgs.lib.fileset.unions [ ./test ./tests ./bin ./libexec ./data ./.envrc ];
@@ -98,7 +100,7 @@
 			};
 			devShells.${system}.default = pkgs.mkShell {
 				packages = tools;
-				inherit (shellEnv) DUNE_MUSL_LOADER DUNE_NETCOREDEPS DUNE_GLIBC_LOADER DUNE_GCC_LIB DUNE_LIBPQ DUNE_LUAJIT_CLOSURE;
+				inherit (shellEnv) DUNE_MUSL_LOADER DUNE_NETCOREDEPS DUNE_GLIBC_LOADER DUNE_GCC_LIB DUNE_LIBPQ DUNE_LUAJIT_CLOSURE TZDIR;
 			};
 		};
 }

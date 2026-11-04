@@ -9,8 +9,8 @@
   "aliases": ["Scourge event", "Halloween event", "Frida Maltros", "Dr. Shaffat", "CB_MTXEvents_VG_Infected_ThopterWreck", "HalloweenCoin"],
   "region": "Hagga Basin, Arrakeen, Harko Village",
   "related": ["quests/contracts", "zones/the-anvil", "npcs/kirab"],
-  "game_version": "1.5.x (server build 26081962)",
-  "last_researched": "2026-10-26",
+  "game_version": "1.5.x (server builds 26081962, 26332623)",
+  "last_researched": "2026-11-03",
   "confidence": "medium"
 }
 ---
@@ -22,6 +22,8 @@ Quick answer: a plague event that runs from Oct 23 to Nov 2, 2026. Kill a glowin
 ## On this server
 
 The event content loads on a self-hosted world with no extra setting. On build 26081962 the map server loaded the event's content blocks `CB_MTXEvents_TP_Infected_Camp` (at tradeposts), `CB_MTXEvents_VG_Infected_Camp`, `CB_MTXEvents_J_Infected_Camp` and `CB_MTXEvents_VG_Infected_ThopterWreck` (the first contract's crash site, near Mirzabah's Head) (verified on this server, 2026-10-26, server log). The server binary also carries an item id `HalloweenCoin` and a console variable `dw.Inventory.Item.Event.Enabled`, which read `1` (verified on this server). What that variable gates is unverified.
+
+After the reported end date the event content still loaded on this server: on build 26081962 at 2026-11-02 23:19 UTC, and on build 26332623, released 2026-11-03, the map server again loaded `CB_MTXEvents_TP_Infected_Camp`, `CB_MTXEvents_VG_Infected_ThopterWreck` and other Infected blocks (verified on this server, server log). Whether Frida, her contracts and the reward store still work after Nov 2 is unverified; check in game.
 
 ## Starting it
 
