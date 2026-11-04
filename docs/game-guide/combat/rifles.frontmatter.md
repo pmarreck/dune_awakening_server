@@ -9,7 +9,7 @@
   "aliases": ["Karpov 38", "JABAL Spitdart", "battle rifle", "sniper rifle"],
   "related": ["combat/ranged-weapons-and-ammo", "combat/headshots-and-weak-points", "combat/mentat-build", "combat/unique-weapons"],
   "game_version": "1.5.x",
-  "last_researched": "2026-10-26",
+  "last_researched": "2026-11-03",
   "confidence": "high"
 }
 ---
@@ -33,7 +33,7 @@ The Spitdart applies its own "Spitdart Poison" debuff (game text). It fires Heav
 |---|---|---|
 | Burst rifles | Aren's Vengeance (Cu), Fila's Regret (Fe), Zaal's Companion (steel), Stammershot (Al), Mendek's Rattle (Dural), Indara's Lullaby (Plast) | Three-dart burst; the last dart deals extra damage. |
 | Explosive rifles | The Tapper, Pipecleaner, Scrubber, Salusan Vengeance | Explosive powder on every dart. |
-| Poison long rifles | Assassin's Rifle (3), Long Shot (4), Thufir's Best (5), Dunewatcher (`LongRifle_Unique_Poison_06`) | Long-range poison darts that burst on a shield so the poison passes through. |
+| Poison long rifles | Assassin's Rifle (3), Long Shot (4), Thufir's Best (5), Dunewatcher (`LongRifle_Unique_Poison_06`) | Long-range poison darts that burst on a shield so the poison passes through. The Dunewatcher fires Heavy Darts (a player on this server, 2026-11-03); the lower tiers are unverified. |
 | Tripleshot | Fivefinger's Tripleshot Rifle (Dural), Regis Tripleshot Repeating Rifle (`LongRifle_Unique_LargeMag_06`) | Unscoped, bigger magazine, horizontal triple shot of poison darts. |
 | EMP | Experimental Lightning Gun (`UniqueAr6_Electric`) | Uses power instead of ammo; EMP blasts disrupt shields. Drops in Testing Station 152 (wiki, https://awakening.wiki/Testing_Station_152). |
 | Chapter 4 | The Angry Adder (poison Karpov), Blind Fury (scopeless, faster, 5 rounds) | |
