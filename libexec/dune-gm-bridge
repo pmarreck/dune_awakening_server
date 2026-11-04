@@ -222,6 +222,8 @@ local function handle(d)
 	local ok, name = live({ "character", "whois", m.sender_fls }, true)
 	name = ok and name:match("^([^\n]+)") or nil
 	if not name then log("%s", gm.log_line(m.sender_fls, nil, m.text, "unknown account")); return end
+	-- The key this copy arrived under: a later identical line under another key is a late copy, under the same key a retype.
+	log("%s", gm.log_line(m.sender_fls, name, "routing key " .. tostring(d.routing_key), "delivered"))
 	local policy_text = read_file(getenv("DUNE_CONFIG_DIR", "") .. "/gm_bridge.conf")
 	local policy, errors = gm.parse_policy(policy_text)
 	for _, e in ipairs(errors) do log("gm_bridge.conf %s", e) end

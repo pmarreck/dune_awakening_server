@@ -242,6 +242,7 @@ do
 	-- The chronicle: gains, quests completed since the baseline (from the final quest read), worms, storms, commands.
 	st.session.worms = { Character = 2, ValuableDesertWreck = 3 }; st.session.storms = { HaggaBasin = 1 }; st.session.omens = 3
 	local bridge = table.concat({
+		"1970-01-01T00:00:05Z 0123456789ABCDEF Alice delivered: routing key Alice#1234",
 		"1970-01-01T00:00:05Z 0123456789ABCDEF Alice allowed: &help",
 		"1970-01-01T00:00:00Z 0123456789ABCDEF Alice allowed: &early",
 		"1970-01-01T00:00:15Z FEDCBA9876543210 Paul of Caladan denied: &water",

@@ -151,6 +151,10 @@ grep -q 'secret-phrase-xyz\|hello everyone' "$log" && fail "ordinary chat appear
 grep -q 'no-user-id-marker' "$log" && fail "a message without user_id was logged"
 grep -q "$CAROL Carol denied: &goto Alice" "$log" || fail "denied command not logged: $(cat "$log")"
 grep -q "$ALICE Alice allowed: &say" "$log" || fail "allowed command not logged: $(cat "$log")"
+# Each command that runs logs the routing key it arrived under, so a late copy (another recipient's key) can be told
+# from the same player typing it twice (the same key).
+grep -q "$ALICE Alice delivered: routing key Alice#1234" "$log" || fail "routing key of an allowed command not logged: $(grep -F "$ALICE" "$log")"
+grep -q "$CAROL Carol delivered: routing key Carol#77" "$log" || fail "routing key of a denied command not logged: $(grep -F "$CAROL" "$log")"
 grep -q "$DAVE .*dave-marker" "$log" || fail "unknown account's command not logged: $(cat "$log")"
 
 # Component interface: start, status, stop.
