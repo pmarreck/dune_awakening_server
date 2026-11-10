@@ -30,7 +30,7 @@ Solari ("Solaris" in many UI strings) are the Imperial currency used "for trade 
 | Bounties | Kill-count contracts such as "Bounty: Deserters" and "Kirab Bounty". The story contract "Zantara's Head" (from Count Fenring's associate in Harko Village) promises one million Solaris. | game text |
 | Landsraad missions | Repeatable; pay Solari Credits, character XP and Landsraad contribution, plus bonus rewards (specialization XP, faction standing, House Scrip) while you have Mnemonic Recollections. | patch notes, https://duneawakening.com/news/dune-awakening-chapter-3-patch-notes/ |
 | Selling to NPC vendors | Vendors buy back far below their own sell price (2025 report: Spice Melange sold by a vendor for 120,000, bought back for 650). | community, https://steamcommunity.com/app/1172710/discussions/0/595152778808005604/ (2025-06-24, pre-1.5) |
-| Selling to players (Exchange) | The usual way to realise value for spice, rare schematics, vehicle parts and high-tier gear. | game text; community guides |
+| Selling to players (Exchange) | The usual way to realize value for spice, rare schematics, vehicle parts and high-tier gear. | game text; community guides |
 | Loot routes | 2025 guides describe ornithopter loops of high-value points of interest (Pinnacle Station, comms arrays, testing stations) with schematic chests worth 2,000 to 4,000 Solaris each. | community, https://gamerant.com/how-to-make-solaris-money-fast-in-dune-awakening/ (2025-06-13, pre-1.5; loot tables have changed since) |
 | Player trades | Direct player-to-player trade window (request, both sides mark READY) with a **Transfer Solaris** option. | game text |
 
@@ -58,7 +58,7 @@ How it works (all game text unless noted):
 - **Selling:** pick an item from the backpack or vehicle storage, set price per unit and quantity, choose a duration of **1, 3, 7 or 14 days**. The dialog shows listing price, exchange fees and total profit.
 - **After a sale:** "Claim your Solaris in the Exchange, 'My Orders' section"; claimed Solari go to the bank account.
 - **Buying:** pay from banked Solari; collect bought items from My Orders, to the backpack or "Send to vehicle".
-- **Expired or cancelled:** claim or relist from My Orders. Cancelling forfeits the listing fee.
+- **Expired or canceled:** claim or relist from My Orders. Canceling forfeits the listing fee.
 - **Limits:** "No free slots in exchange" means you have hit your listing cap. A 2025 player report puts it at 12 to 15 slots (community, link above; unverified for 1.5). Some items cannot be listed ("Item can not be listed for sale"); the config has an exclude tag for that (game config).
 - **Single-player (1.5):** "The Exchange now acts as a vendor with a large selection of items" (patch notes).
 - **Character transfers:** exchange listings are deleted when you transfer; de-list what you want to keep first (game text).
@@ -134,7 +134,7 @@ Zone labels (game text): **KANLY - GUILD PEACE [NO COMBAT]** (towns and social h
 
 Official servers:
 
-- Since 1.3.20.0 (2026-04-28): "Hagga Basin is now fully PvE across the entire map, including the Shipwrecks"; every official world has at least one PvE and one PvP Deep Desert instance, labelled when you enter from the Overland map; the PvP instance has 2.5x resource yield (patch notes).
+- Since 1.3.20.0 (2026-04-28): "Hagga Basin is now fully PvE across the entire map, including the Shipwrecks"; every official world has at least one PvE and one PvP Deep Desert instance, labeled when you enter from the Overland map; the PvP instance has 2.5x resource yield (patch notes).
 - In the Deep Desert PvP instance "Players may attack each other anywhere in the desert beyond the midway point" (game text).
 - Death drops: backpack items drop where you die; a sandworm or Coriolis storm death loses everything (game text).
 
@@ -255,8 +255,10 @@ The client also has a **Store** tab, a **Battle Pass** ("Chronicle", with a prem
 | 2026-09-24 | 1.5.3.4 | stability (7X3 errors), custom settings file fix (`DifficultyLevel=Custom`), stuck characters after cross-realm transfers on private servers, base marker offset after restart | patch notes; project research notes |
 | 2026-09-30 | 1.5.3.5 | Filmic Archive mirrored Sardaukar pieces, garment customization, fabricator/refinery water fixes, Exchange order status fix. Same day: server build 25610213 and PTC 1.5.15.0 (guild rename, tool-vendor limit, BattlEye optional) | patch notes; project operations notes (build time) |
 | 2026-10-06 | **1.5.3.6** | BattlEye optional on Steam for single-player and for private/self-hosted servers that do not require it; stability; autosave recovery fix; ornithopter spawn-position fix in Hagga Basin and the Deep Desert. Self-host build 25689360 after about 30 minutes of downtime | patch notes; https://x.com/DuneAwakening/status/2107126596503003503; verified on this server |
+| 2026-11-09 | **1.5.20.0** | offline single-player; wrecked vehicles despawn after 2 hours instead of 6; small shipwrecks spawn reliably again; item loss with harnessed vehicles and Carrier Ornithopter duplication fixed; per-resource mining yields on infocards; "Sardaukar Killer" and "The Great Convention" achievements fixed (retroactive); Landsraad houses offer new rewards to players who already claimed the swatch; many collision and crash fixes | patch notes, https://duneawakening.com/news/dune-awakening-1-5-20-0-patch-notes/ |
+| 2026-11-10 | 1.5.20.1 | Recycler crash fix, inventory scrolling fix, character transfers re-enabled. Self-host build 26547981 (Steam, 12:55 UTC) | patch notes (same page); verified on this server |
 
-Self-host server builds seen: 25351779 (Sep 17), 25396338 (reported Sep 21), 25486303 (Sep 23), 25610213 (Sep 30), 25689360 (Oct 6) (project research and operations notes). Pairing each build with a hotfix number is inference; Funcom does not publish the mapping.
+Self-host server builds seen: 25351779 (Sep 17), 25396338 (reported Sep 21), 25486303 (Sep 23), 25610213 (Sep 30), 25689360 (Oct 6), 26051014 (Oct 20), 26081962 (late Oct), 26332623 (Nov 3), 26547981 (Nov 10) (project research and operations notes). Pairing each build with a hotfix number is inference; Funcom does not publish the mapping.
 
 ## Sources
 

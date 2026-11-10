@@ -46,9 +46,9 @@ Treadwheel: a one-person groundcar added in the Lost Harvest update. It "trades 
 
 Buggy: four treads, a front hull (driver plus passenger) and a choice of rear. The standard Rear has two passenger seats and one utility slot; the Utility Rear has a turret slot (game text). Turret options are the Buggy Cutteray (mining laser) and Buggy Rocket Launcher. The cutteray "does not allow analysis mode and requires an attached inventory module to hold mined resources" (game text). Buggy Shield Generators also exist (game text). 1.5.03.0 made the Lost & Found contract reward Buggy modules (wiki, https://awakening.wiki/1.5.03.0).
 
-Scout Ornithopter: the solo flyer, used for scouting and overland travel. Uniques: Albatross Wing Module, Stormrider Boost Module, Dyvetz and Mohandis engines, Hawkeye Scanner, Heaven's Wrath Rocket Module (game text). 1.5.15.0 cut the gliding speed penalty with a rocket pod from 20% to 10% (patch notes 1.5.15.0).
+Scout Ornithopter: the solo flier, used for scouting and overland travel. Uniques: Albatross Wing Module, Stormrider Boost Module, Dyvetz and Mohandis engines, Hawkeye Scanner, Heaven's Wrath Rocket Module (game text). 1.5.15.0 cut the gliding speed penalty with a rocket pod from 20% to 10% (patch notes 1.5.15.0).
 
-Assault Ornithopter: armored multi-crew combat flyer. Uniques include the Hummingbird Wing Module, Steady Assault Boost Module and Adept/Regis High-payload Rocket Module (game text).
+Assault Ornithopter: armored multi-crew combat flier. Uniques include the Hummingbird Wing Module, Steady Assault Boost Module and Adept/Regis High-payload Rocket Module (game text).
 
 Carrier Ornithopter: Plastanium-only heavy lifter. It can lift Sandcrawlers "or other vehicles" (game text) and the Carrier Ornithopter Cargo Container (`ContainerVehicle`, item data), a placeable crate "with anchor points" (game text). Cargo inside anything it carries can be reached at CHOAM Exchange banker and market terminals in settlements (wiki, https://awakening.wiki/Carrier_Ornithopter). The Backup Tool refuses to store while "harnessing is active" (game text).
 
@@ -120,7 +120,7 @@ Max-durability loss: the wiki gives the formula "Max Durability Decay = Repaired
 
 Restoring lost maximum durability: no in-game way is confirmed. A Repair Station rejects some items with "This item must be repaired with a welding torch" (game text), which suggests vehicle modules can't go there. A GameRant guide claims removed parts can be repaired at a Repair Station (community, pre-1.5, https://gamerant.com/how-fix-repair-equipment-weapons-armor-gear-vehicles-dune-awakening/). The two disagree; unverified. The dependable fix is to craft a new module and swap it in.
 
-Wear sources (community, pre-1.5, https://steamcommunity.com/app/1172710/discussions/0/595153695607375938/): driving wears treads, engine and PSU; firing weapons and using thrusters wears those modules; sandstorms damage every module; enemy fire damages what it hits. HUD warnings: "{ModuleClass} module about to break!" and "{ModuleClass} module broken!", "Critical health", "Wrecked" (game text). A wrecked vehicle cannot be repaired ("Vehicle is wrecked") (game text).
+Wear sources (community, pre-1.5, https://steamcommunity.com/app/1172710/discussions/0/595153695607375938/): driving wears treads, engine and PSU; firing weapons and using thrusters wears those modules; sandstorms damage every module; enemy fire damages what it hits. HUD warnings: "{ModuleClass} module about to break!" and "{ModuleClass} module broken!", "Critical health", "Wrecked" (game text). A wrecked vehicle cannot be repaired ("Vehicle is wrecked") (game text). Since 1.5.20.0 (2026-11-09) a wrecked vehicle despawns after 2 hours instead of 6 (patch notes, https://duneawakening.com/news/dune-awakening-1-5-20-0-patch-notes/); the same patch fixed item loss when traveling with a harnessed vehicle and Carrier Ornithopter cargo duplicating on travel.
 
 ## Vehicle Backup Tool
 
@@ -198,6 +198,7 @@ Vehicle Repair, Fuel Efficient Driver, Fuel Efficient Pilot, Vehicle Mining, Veh
 
 ## Sources
 
+- https://duneawakening.com/news/dune-awakening-1-5-20-0-patch-notes/ (1.5.20.0, 2026-11-09; 1.5.20.1, 2026-11-10)
 - https://duneawakening.com/news/public-test-client-patch-1-5-15-0/ (2026-09-30)
 - https://awakening.wiki/1.5.03.0 (1.5.03.0, 2026-09-17)
 - https://jeu.video/en/article/dune-awakening-patch-notes-hotfix-1-5-3-1
