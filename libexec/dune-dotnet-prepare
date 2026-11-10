@@ -2,7 +2,7 @@
 # Make a runnable native copy of one of Funcom's musl self-contained .NET apps (Director, TextRouter) without
 # containers. Copies the app dir and the image's DuneSandbox/ into DEST_ROOT, keeping the image layout (the apps
 # read ../../../../DuneSandbox/Config/*), repoints the ELF interpreter at nixpkgs musl, and links netcoredeps
-# (the app's RUNPATH is $ORIGIN/netcoredeps) to the flake's musl libraries. The payload is never modified.
+# (RUNPATH $ORIGIN/netcoredeps, set here because newer builds omit it) to the flake's musl libraries. The payload is never modified.
 # Usage: dune-dotnet-prepare IMAGE_ROOTFS DEST_ROOT APP_DIR BINARY
 set -u
 : "${DUNE_MUSL_LOADER:?set DUNE_MUSL_LOADER (provided by the flake devShell)}"
@@ -15,5 +15,6 @@ rootfs=$1 dest=$2 app=$3 binary=$4
 mkdir -p "$dest/$app" || die "cannot create $dest/$app"
 rsync -a --delete "$rootfs/DuneSandbox/" "$dest/DuneSandbox/" || die "copy of DuneSandbox failed"
 rsync -a --delete --exclude=/netcoredeps "$rootfs/$app/" "$dest/$app/" || die "copy of $app failed"
-patchelf --set-interpreter "$DUNE_MUSL_LOADER" "$dest/$app/$binary" || die "patchelf failed"
+# Set RUNPATH too: builds from 2026-11-10 ship without it, and musl then finds no libstdc++ or libgcc_s.
+patchelf --set-interpreter "$DUNE_MUSL_LOADER" --set-rpath '$ORIGIN/netcoredeps' "$dest/$app/$binary" || die "patchelf failed"
 ln -sfn "$DUNE_NETCOREDEPS" "$dest/$app/netcoredeps" || die "cannot link netcoredeps"

@@ -20,6 +20,9 @@ check_app() { # check_app NAME IMAGE_ROOTFS APP_DIR BINARY EXPECTED_DESCRIPTION
 	after=$(sha256sum < "$rootfs/$app/$bin")
 	[ "$before" = "$after" ] || fail "$name payload original was modified"
 	[ -e "$work/$name/$app/netcoredeps/libc.musl-x86_64.so.1" ] || fail "$name netcoredeps lacks musl libc"
+	# Builds from 2026-11-10 (26547981) ship without RUNPATH; prepare must set it, or musl finds no libstdc++.
+	out=$(patchelf --print-rpath "$work/$name/$app/$bin" 2>&1)
+	[ "$out" = '$ORIGIN/netcoredeps' ] || fail "$name RUNPATH is '$out', not \$ORIGIN/netcoredeps"
 	[ -f "$work/$name/$app/../../../../DuneSandbox/Config/perforce-keywords.json" ] || fail "$name lost the image layout (DuneSandbox/Config)"
 	out=$(cd "$work/$name/$app" && timeout 30 "./$bin" --help 2>&1)
 	case "$out" in *"$want"*) ;; *) fail "$name did not run natively: $(printf '%s' "$out" | tail -5)" ;; esac
