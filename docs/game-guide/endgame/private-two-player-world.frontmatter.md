@@ -29,7 +29,7 @@ This server is generous with resources and forgiving on death, has no third part
 | `WaterExtractionRate` | 0.5 | Half water from windtraps and similar; water is the refining bottleneck |
 | `InventoryVolumeMultiplier` | 10 | Ten times inventory volume; hauling is rarely the limit |
 | `ItemDurabilityDrainMultiplier`, `bEnableItemMaxDurabilityLoss` | 0.25, False | Slow wear, no max-durability loss on repair (and possibly on augmenting) |
-| `DropEquipmentOnDeath`, `SandwormConsequences` | Backpack, Backpack | Equipped gear should stay on you on death, including worm deaths (not tested here) |
+| `DropEquipmentOnDeath`, `SandwormConsequences` | Backpack, Backpack | Equipped gear should stay on you on death, including worm deaths (not tested here); a worm death still takes the whole backpack with no bag to recover, and the owner keeps it that way on purpose so worms stay a real danger (decision 2026-11-11) |
 | `GlobalXpMultiplier` | 1.5 | Faster character XP |
 | `LandsraadContributionMultiplier`, `LandsraadSpecializationXpMultiplier`, `LandsraadFactionStandingMultiplier` | 1, 1, 1 | Landsraad progression at official speed |
 | `PlayerDamageToNPC`, `NPCDamageToPlayer`, `PlayerShieldDamageAbsorptionMultiplier` | 1.2, 0.8, 2.0 | Combat tilted toward players; helps duo testing-station runs |
