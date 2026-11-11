@@ -244,7 +244,10 @@ local function handle(d)
 	local all_ok, last_out = true, ""
 	for _, argv in ipairs(plan.actions) do
 		local aok, out = live(argv, plan.reply_from_output ~= nil)
-		if not aok then answer = "failed: " .. reason(out); log("  failed: %s", reason(out)); all_ok = false; break end
+		if not aok then
+			answer = "failed: " .. reason(out) .. (plan.fail_hint and (" (" .. plan.fail_hint .. ")") or "")
+			log("  failed: %s", reason(out)); all_ok = false; break
+		end
 		last_out = out
 	end
 	-- A read (&worm status) answers with what dune-live printed.

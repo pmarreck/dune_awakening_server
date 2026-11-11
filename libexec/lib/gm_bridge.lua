@@ -303,14 +303,17 @@ function M.plan(cmd, sender, policy, item_db, tips, pick)
 	elseif n == "water" then
 		local who = cmd.rest ~= "" and cmd.rest or me
 		if not ok_arg(who) then return usage("&water [player]") end
-		return { actions = { { "character", "water", who, M.WATER_FILL } }, reply = who == me and "water refilled" or ("refilled " .. who .. "'s water") }
+		return { actions = { { "character", "water", who, M.WATER_FILL } }, reply = who == me and "water refilled" or ("refilled " .. who .. "'s water"),
+			fail_hint = who ~= me and "&water alone fills your water containers; &water <player> fills an online player's" or nil }
 	elseif n == "newbie" then
 		return { actions = {}, reply = newbie(cmd.rest, tips, pick or function(k) return math.random(k) end) }
 	elseif n == "fuel" then
 		local who = cmd.rest ~= "" and cmd.rest or me
 		if not ok_arg(who) then return usage("&fuel [player]") end
 		return { actions = { { "character", "give", who, M.FUEL_ITEM, M.FUEL_COUNT } },
-			reply = string.format("gave %s %s large vehicle fuel cells; load one into the vehicle to refuel it%s", who == me and "you" or who, M.FUEL_COUNT, FULL_INVENTORY) }
+			reply = string.format("gave %s %s large vehicle fuel cells; load one into the vehicle to refuel it%s", who == me and "you" or who, M.FUEL_COUNT, FULL_INVENTORY),
+			-- Players type item words after &fuel ("&Fuel Cell Me please"); a failed target then explains the command.
+			fail_hint = who ~= me and string.format("&fuel alone gives you %s large vehicle fuel cells; &fuel <player> gives them to an online player; ask &thufir for generator fuel", M.FUEL_COUNT) or nil }
 	elseif n == "give" then
 		local g = M.parse_give(cmd)
 		if not g or (g.target and not ok_arg(g.target)) then return usage(GIVE_USAGE) end

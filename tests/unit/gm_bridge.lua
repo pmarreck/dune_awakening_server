@@ -148,6 +148,13 @@ if not plan("&fuel").reply:find("fuel cell", 1, true) then fail("fuel reply does
 eq("fuel permission for yourself", gm.permission(gm.parse_command("&fuel"), "Alice"), "fuel")
 eq("fuel naming yourself is still fuel", gm.permission(gm.parse_command("&fuel Alice"), "Alice"), "fuel")
 eq("fuel for another needs fuel-others", gm.permission(gm.parse_command("&fuel Bob"), "Alice"), "fuel-others")
+-- A target that is not an online player fails in dune-live; the reply then says what the command does (2026-11-10:
+-- "&Fuel Cell Me please. My Genny is dry" was read as fuel for a player named "Cell Me please. My Genny is dry").
+eq("fuel for another explains itself on failure", plan("&fuel Cell Me please").fail_hint,
+	"&fuel alone gives you 5 large vehicle fuel cells; &fuel <player> gives them to an online player; ask &thufir for generator fuel")
+eq("water for another explains itself on failure", plan("&water Bob").fail_hint,
+	"&water alone fills your water containers; &water <player> fills an online player's")
+eq("fuel for yourself needs no hint", plan("&fuel").fail_hint, nil)
 -- &unlock <school> [to <player>]: dune-live normalizes the school name, so the bridge passes the words through.
 same("unlock for yourself", plan("&unlock Bene Gesserit").actions, { { "character", "unlock-tree", "Alice", "Bene Gesserit" } })
 same("unlock for another", plan("&unlock sword to Bob Two").actions, { { "character", "unlock-tree", "Bob Two", "sword" } })
