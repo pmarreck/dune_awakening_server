@@ -39,6 +39,8 @@
 
 Killed by a sandworm, "All items in your inventory have been lost and are not recoverable" and any vehicle you were using is destroyed (game text). The wiki says the Vehicle Backup Tool and quest items survive, and that your first worm death sends you through a spice vision and back with a sandbike (wiki, https://awakening.wiki/Sandworm; unverified in game). A destroyed vehicle can usually be bought back in the Vehicle Backup Tool's Recovery mode (game text).
 
+On this server, 2026-11-10: a player eaten on foot lost his whole backpack, and no death drop was saved. The map's death skull showed briefly and then vanished (player report), consistent with there being nothing to mark. A contract quest item stayed in the backpack, and a "WormTooth" item appeared there at the moment of death (server log and database, build 26547981). The operator can rebuild a swallowed backpack from a database backup with `character give`.
+
 ## This server
 
 `DropEquipmentOnDeath=Backpack` (only backpack contents drop) and `SandwormConsequences=Backpack` (a worm takes your backpack contents) (server config). Durability wear is a quarter of default (`ItemDurabilityDrainMultiplier=0.25`) and repairs do not lower maximum durability (`bEnableItemMaxDurabilityLoss=False`) (server config).
