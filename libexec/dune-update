@@ -134,6 +134,31 @@ This notice is sent once per build."
 	fi
 }
 
+# apply left the world stopped: say so where someone will read it, then die. On 2026-11-10 the new build's TextRouter
+# would not start, and the world stayed down with nobody told. DETAIL is the failing component's own output, if any.
+die_down() {
+	local msg=$1 detail=${2:-} subject body err
+	if [ -z "${DUNE_NOTIFY_TO:-}" ]; then
+		printf '%s: failure notice not sent: NOTIFY_TO is not set in world.private.conf or world.conf\n' "$NAME" >&2
+		die "$msg"
+	fi
+	subject="Dune world is down: update to build $latest failed${DUNE_WORLD_DISPLAY_NAME:+ ($DUNE_WORLD_DISPLAY_NAME)}"
+	body="dune-update apply stopped the world to install Steam build $latest (from ${installed:-none}) and could not finish:
+
+$msg
+${detail:+
+Last lines from the failing step:
+$detail
+}
+The world stays down until this is fixed. The self-heal retries a start every 5 minutes; dune-awakening status
+shows what is up."
+	if ! err=$("${DUNE_NOTIFY_CMD:-post}" to "$DUNE_NOTIFY_TO" --as "$NOTIFY_AS" --subject "$subject" --body "$body" --yes 2>&1 >/dev/null); then
+		err=$(printf '%s\n' "$err" | sed '/^[[:space:]]*$/d' | tail -n 1)
+		printf '%s: failure notice to %s failed%s\n' "$NAME" "$DUNE_NOTIFY_TO" "${err:+ ($err)}" >&2
+	fi
+	die "$msg"
+}
+
 # Components live beside this script (libexec/); the world front end lives in the checkout's bin/.
 component() {
 	local c="$DUNE_COMPONENTS_DIR/dune-$1"
@@ -157,23 +182,32 @@ cmd_apply() {
 	flock -w "$DUNE_UPDATE_LOCK_WAIT" 9 ||
 		die "the update lock ($DUNE_STATE_DIR/update.lock) is still held after ${DUNE_UPDATE_LOCK_WAIT} s (a self-heal start?); nothing changed"
 	step "backup"; component backup create --label "before update ${installed:-none} to $latest" >/dev/null || die "backup failed; nothing changed"
-	step "stop world"; component world stop $($force && echo --force) || die "world did not stop cleanly; nothing downloaded"
+	step "stop world"; component world stop $($force && echo --force) || die_down "world did not stop cleanly; nothing downloaded"
 	step "download build $latest (validated)"
 	run_steamcmd +@sSteamCmdForcePlatformType linux +force_install_dir "$DUNE_STEAM_SERVER_DIR" +login anonymous +app_update "$APP" validate +quit >&2 ||
-		die "download failed; the world is stopped (dune-awakening start runs the previous build)"
+		die_down "download failed; the world is stopped (dune-awakening start runs the previous build)"
 	for img in "${IMAGES[@]}"; do
 		tar="$DUNE_STEAM_SERVER_DIR/images/battlegroup/$img.tar"
 		step "unpack $img"
 		[ -e "$DUNE_UNPACKED_DIR/$img.new" ] && { mkdir -p "$DUNE_TRASH_DIR"; mv "$DUNE_UNPACKED_DIR/$img.new" "$DUNE_TRASH_DIR/$img.new.$(date +%s%N)"; }
-		component unpack "$tar" "$DUNE_UNPACKED_DIR/$img.new" >&2 || die "unpacking $img failed; the world is stopped on the previous images"
+		component unpack "$tar" "$DUNE_UNPACKED_DIR/$img.new" >&2 || die_down "unpacking $img failed; the world is stopped on the previous images"
 	done
 	ts=$(date +%Y%m%dT%H%M%S.%N)
 	for img in "${IMAGES[@]}"; do
-		if [ -e "$DUNE_UNPACKED_DIR/$img.prev" ]; then mkdir -p "$DUNE_TRASH_DIR" && mv "$DUNE_UNPACKED_DIR/$img.prev" "$DUNE_TRASH_DIR/$img.prev.$ts" || die "cannot retire $img.prev"; fi
-		if [ -e "$DUNE_UNPACKED_DIR/$img" ]; then mv "$DUNE_UNPACKED_DIR/$img" "$DUNE_UNPACKED_DIR/$img.prev" || die "cannot keep $img as .prev"; fi
-		mv "$DUNE_UNPACKED_DIR/$img.new" "$DUNE_UNPACKED_DIR/$img" || die "cannot install new $img"
+		if [ -e "$DUNE_UNPACKED_DIR/$img.prev" ]; then mkdir -p "$DUNE_TRASH_DIR" && mv "$DUNE_UNPACKED_DIR/$img.prev" "$DUNE_TRASH_DIR/$img.prev.$ts" || die_down "cannot retire $img.prev"; fi
+		if [ -e "$DUNE_UNPACKED_DIR/$img" ]; then mv "$DUNE_UNPACKED_DIR/$img" "$DUNE_UNPACKED_DIR/$img.prev" || die_down "cannot keep $img as .prev"; fi
+		mv "$DUNE_UNPACKED_DIR/$img.new" "$DUNE_UNPACKED_DIR/$img" || die_down "cannot install new $img"
 	done
-	step "start world (runs DB migrations)"; DUNE_UPDATE_LOCK_HELD=1 component world start || die "world failed to start on build $latest; previous images are in $DUNE_UNPACKED_DIR/*.prev"
+	step "start world (runs DB migrations)"
+	# Its stderr still reaches the terminal; a copy is kept so a failure notice can quote the failing component.
+	local start_err rc
+	start_err=$(mktemp "${TMPDIR:-/tmp}/dune-update-start.XXXXXX") || die_down "cannot create a temporary file; the world is stopped"
+	{ DUNE_UPDATE_LOCK_HELD=1 component world start 2>&1 1>&3 3>&- | tee "$start_err" >&2 9>&- 3>&-; rc=${PIPESTATUS[0]}; } 3>&1
+	if [ "$rc" -ne 0 ]; then
+		local detail; detail=$(tail -n 15 "$start_err"); rm -f -- "$start_err"
+		die_down "world failed to start on build $latest; previous images are in $DUNE_UNPACKED_DIR/*.prev" "$detail"
+	fi
+	rm -f -- "$start_err"
 	exec 9>&-
 	installed=$(installed_buildid)
 	[ "$installed" = "$(latest_info | cut -d' ' -f1)" ] || die "after the update the installed build ($installed) still differs from Steam's"

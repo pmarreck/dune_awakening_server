@@ -22,6 +22,7 @@ cat > "$DUNE_STEAMCMD" <<EOF
 #!$BASH
 printf 'steamcmd %s\n' "\$*" >> "$work/calls"
 [ -e "$work/steam-down" ] && { echo 'Connecting anonymously to Steam Public...FAILED'; exit 7; }
+[ -e "$work/download-fails" ] && case "\$*" in *app_update*) echo "ERROR! Download item failed"; exit 8 ;; esac
 case "\$*" in
 	*app_info_print*) printf '\e[0m"4754530"\n{\n\t"depots"\n\t{\n\t\t"branches"\n\t\t{\n\t\t\t"public"\n\t\t\t{\n\t\t\t\t"buildid"\t\t"%s"\n\t\t\t\t"timeupdated"\t\t"1790247533"\n\t\t\t}\n\t\t\t"beta"\n\t\t\t{\n\t\t\t\t"buildid"\t\t"999"\n\t\t\t}\n\t\t}\n\t}\n}\nUnloading Steam API...\e[0mOK\n' "\$(cat "$work/latest")" ;;
 	*app_update*) b=\$(cat "$work/latest"); printf '"AppState"\n{\n\t"buildid"\t\t"%s"\n}\n' "\$b" > "$DUNE_STEAM_SERVER_DIR/steamapps/appmanifest_4754530.acf"; echo "Success! App '4754530' fully installed." ;;
@@ -35,7 +36,7 @@ for fd in /proc/\$\$/fd/*; do [ "\$(readlink "\$fd")" = "$DUNE_STATE_DIR/update.
 [ "$c \$*" = "character list --json" ] && { if [ -e "$work/online" ]; then echo '[{"name":"A","online":true}]'; else echo '[{"name":"A","online":false}]'; fi; }
 [ "$c" = backup ] && [ "\$1" = create ] && echo "$work/backups/b1"
 [ "$c \$1" = "world start" ] && echo "\${DUNE_UPDATE_LOCK_HELD:-}" > "$work/start-lock-held"
-[ "$c \$*" = "\${FAIL_AT:-}" ] && exit 1
+[ "$c \$*" = "\${FAIL_AT:-}" ] && { echo "dune-textrouter: TextRouter exited during startup" >&2; exit 1; }
 exit 0
 EOF
 done
@@ -43,6 +44,7 @@ done
 cat > "$DUNE_COMPONENTS_DIR/dune-unpack" <<EOF
 #!$BASH
 printf 'unpack %s\n' "\${1##*/} \${2##*/}" >> "$work/calls"
+[ -e "$work/unpack-fails" ] && exit 1
 for fd in /proc/\$\$/fd/*; do [ "\$(readlink "\$fd")" = "$DUNE_STATE_DIR/update.lock" ] && echo unpack >> "$work/inherited"; done
 if [ "\${1##*/}" = server.tar ] && [ -p "$work/unpack-gate" ]; then echo started > "$work/unpack-started"; read -r _ < "$work/unpack-gate"; fi
 mkdir -p "\$2" && echo new > "\$2/marker"
@@ -77,7 +79,7 @@ rm "$work/online"; : > "$work/calls"
 out=$(libexec/dune-update apply 2>&1) || fail "apply failed: $out"
 [ "$(calls)" = "steamcmd +login,character list,backup create,world stop,steamcmd +@sSteamCmdForcePlatformType,unpack server.tar,unpack server-bg-director.tar,unpack server-text-router.tar,unpack server-gateway.tar,unpack server-db-utils.tar,world start,steamcmd +login" ] ||
 	fail "apply order wrong: $(calls)"
-grep -q 'backup create --label before update 100 to 101' "$work/calls" || fail "backup not labelled with the build change: $(grep backup "$work/calls")"
+grep -q 'backup create --label before update 100 to 101' "$work/calls" || fail "backup not labeled with the build change: $(grep backup "$work/calls")"
 grep -q "^unpack server.tar server.new" "$work/calls" || fail "unpack not into <image>.new"
 [ "$(cat "$DUNE_UNPACKED_DIR/server/marker")" = new ] && [ "$(cat "$DUNE_UNPACKED_DIR/server.prev/marker")" = old ] || fail "images not swapped with a .prev kept"
 [[ "$out" == *101* ]] || fail "apply does not report the new build: $out"
@@ -177,4 +179,35 @@ out=$(env -u DUNE_NOTIFY_TO libexec/dune-update check 2>&1 >/dev/null)
 [ "$(notices)" = 4 ] && [[ "$out" != *NOTIFY_TO* ]] || fail "plain check without NOTIFY_TO sent or complained: $out"
 libexec/dune-update check --no-notify --notify >/dev/null 2>&1
 [ "$(notices)" = 5 ] || fail "later --notify did not override --no-notify: $(notices)"
+
+# apply that leaves the world down (on 2026-11-10 the new TextRouter would not start, and the world stayed down with
+# nobody told): one notice naming the build and carrying the failing component's own error, then exit 1.
+manifest 108; echo 109 > "$work/latest"; rm -f "$work/notices" "$work/last-notice"
+out=$(FAIL_AT="world start" libexec/dune-update apply 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *"failed to start"* ]] || fail "failed start not reported: rc $rc: $out"
+[[ "$out" == *"TextRouter exited during startup"* ]] || fail "the component's error is no longer shown: $out"
+[ "$(notices)" = 1 ] || fail "no notice when the world failed to start: $(notices)"
+n=$(cat "$work/last-notice" 2>/dev/null)
+[[ "$n" == "to someone --as dune_awakening_server --subject "*109*" --body "*"failed to start"*"TextRouter exited during startup"*" --yes" ]] ||
+	fail "failed-start notice arguments: $n"
+# Every way apply can leave the world stopped is announced: a failed stop, download or unpack.
+manifest 108; rm -f "$work/notices"
+FAIL_AT="world stop" libexec/dune-update apply >/dev/null 2>&1 && fail "apply succeeded although the stop failed"
+[ "$(notices)" = 1 ] || fail "no notice when the stop failed: $(notices)"
+manifest 108; rm -f "$work/notices"; touch "$work/download-fails"
+libexec/dune-update apply >/dev/null 2>&1 && fail "apply succeeded although the download failed"
+rm "$work/download-fails"
+[ "$(notices)" = 1 ] || fail "no notice when the download failed: $(notices)"
+manifest 108; rm -f "$work/notices"; touch "$work/unpack-fails"
+libexec/dune-update apply >/dev/null 2>&1 && fail "apply succeeded although the unpack failed"
+rm "$work/unpack-fails"
+[ "$(notices)" = 1 ] || fail "no notice when the unpack failed: $(notices)"
+# A failed backup changes nothing (the world is still up): no notice.
+manifest 108; rm -f "$work/notices"
+FAIL_AT="backup create --label before update 108 to 109" libexec/dune-update apply >/dev/null 2>&1 && fail "apply succeeded although the backup failed"
+[ "$(notices)" = 0 ] || fail "notice sent although the world was never stopped: $(notices)"
+# Without NOTIFY_TO the failure is still reported, and the missing setting is named.
+manifest 108; rm -f "$work/notices"
+out=$(env -u DUNE_NOTIFY_TO FAIL_AT="world start" libexec/dune-update apply 2>&1)
+[ "$(notices)" = 0 ] && [[ "$out" == *NOTIFY_TO* && "$out" == *"failed to start"* ]] || fail "failed start without NOTIFY_TO: $out"
 exit "$failures"
