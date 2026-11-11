@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+# libexec/dune-director, dune-gateway and dune-server start, report and stop their process the way the live world
+# relies on, observed through a fake program in place of Funcom's (it records its argv, working directory and
+# environment, and the signal that stops it):
+#   - secrets (DB password, FLS token, broker secret) reach the program through its environment or 0600 ini files,
+#     never its argv; the console log is 0600 and the run directory 0700;
+#   - Director runs from its app dir with the conf.d/director.ini override (BattlegroupInternal, hub maps at
+#     MinServers=0) and stops on SIGTERM;
+#   - Gateway runs from a private copy of the payload whose conf.d/gateway.ini (0600) names this world and whose logs
+#     survive a fresh copy; its DB name comes from the payload's perforce keywords; it stops on SIGINT;
+#   - the map server runs from a symlink farm with only the binary copied and patched, rebuilt only when the payload
+#     binary changes, with Saved/ outside the farm surviving the rebuild; its launch line is the one `argv` prints;
+#     it stops on SIGINT;
+#   - a second start while running starts nothing; stop clears the pid file and status then fails.
+# Not covered: the stop escalations (TERM, KILL) for a program that ignores the first signal, which cost 15-60 s each.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-launchers.XXXXXX") || exit 1
+cleanup() {
+	local f p
+	for f in "$work"/state/*/pid; do p=$(cat "$f" 2>/dev/null) && [ -n "$p" ] && kill -KILL "$p" 2>/dev/null; done
+	rm -r -- "$work"
+}
+trap cleanup EXIT
+shopt -s nullglob
+
+real_python=$(command -v python3) || { fail "no python3"; exit 1; }
+fakebin="$work/fakebin"; mkdir -p "$fakebin"
+# The fake program: records itself to $FAKE_OUT (renamed into place when complete), then waits for INT or TERM,
+# appends the signal's name to $FAKE_OUT.sig and exits. Python sets its handlers even when the shell started it with
+# SIGINT ignored (a background job without job control), as Funcom's programs do.
+fake="$work/fake-program"
+cat > "$fake" <<EOF
+#!$real_python
+import os, signal, sys, time
+out = os.environ["FAKE_OUT"]
+with open(out + ".tmp", "w") as f:
+    f.write("cwd=%s\n" % os.getcwd())
+    for a in sys.argv[1:]:
+        f.write("arg=%s\n" % a)
+    for k in sorted(os.environ):
+        f.write("env=%s=%s\n" % (k, os.environ[k]))
+os.rename(out + ".tmp", out)
+def stop(sig, _):
+    with open(out + ".sig", "a") as f:
+        f.write(signal.Signals(sig).name + "\n")
+    sys.exit(0)
+signal.signal(signal.SIGINT, stop)
+signal.signal(signal.SIGTERM, stop)
+while True:
+    time.sleep(1)
+EOF
+chmod +x "$fake"
+cp "$fake" "$fakebin/python3"; cp "$fake" "$fakebin/systemd-run"
+printf '#!%s\nprintf "%%s\\n" "$*" >> "%s"\n' "$BASH" "$work/patchelf.calls" > "$fakebin/patchelf"; chmod +x "$fakebin/patchelf"
+export PATH="$fakebin:$PATH"
+
+export DUNE_STATE_DIR="$work/state" DUNE_SECRETS_DIR="$work/secrets"
+export DUNE_WORLD_NAME=sh-test DUNE_WORLD_DISPLAY_NAME="Test World" DUNE_WORLD_REGION="North America"
+export DUNE_EXTERNAL_ADDRESS=192.0.2.10 DUNE_PARTITION_INDEX=1
+unset DUNE_FLS_ENV DUNE_PG_PORT DUNE_RMQ_ADMIN_PORT DUNE_RMQ_GAME_PORT DUNE_RMQ_GAME_HTTP_PORT DUNE_DIRECTOR_PORT DUNE_MAP \
+	DUNE_BIND_ADDRESS DUNE_SERVER_MEMORY_MAX DUNE_USERSETTINGS_DEFAULTS DUNE_USERSETTINGS_OVERRIDES
+mkdir -p -m 700 "$DUNE_SECRETS_DIR" "$DUNE_STATE_DIR"
+printf 'secret-dbpw\n' > "$DUNE_SECRETS_DIR/postgres_dune_password"
+printf 'secret-flstoken\n' > "$DUNE_SECRETS_DIR/fls_token"
+printf 'secret-rmq\n' > "$DUNE_SECRETS_DIR/rmq_http_token_auth_secret"
+
+# Wait for the fake to record itself (up to 10 s).
+recorded() { local i; for i in $(seq 1 100); do [ -s "$1" ] && return 0; sleep 0.1; done; return 1; }
+signaled() { local i; for i in $(seq 1 100); do [ -s "$1.sig" ] && return 0; sleep 0.1; done; return 1; }
+has() { grep -qxF -- "$2" "$1" || fail "$3 lacks '$2'"; }
+mode() { stat -c %a "$1" 2>/dev/null; }
+# No secret value in the program's argv.
+no_secret_args() {
+	local s
+	for s in secret-dbpw secret-flstoken secret-rmq "$@"; do grep -q "^arg=.*$s" "$rec" && fail "$name passes a secret on argv: $s"; done
+}
+# The lifecycle every launcher shares: a second start is a no-op, stop sends $2 and clears the pid file.
+lifecycle() {
+	local launcher=$1 sig=$2 pid_file=$3 pid
+	pid=$(cat "$pid_file" 2>/dev/null)
+	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || { fail "$launcher: no live pid after start"; return; }
+	"libexec/$launcher" status || fail "$launcher status: not running"
+	out=$("libexec/$launcher" start 2>&1) || fail "$launcher second start failed: $out"
+	[ "$(cat "$pid_file")" = "$pid" ] || fail "$launcher second start replaced the process"
+	out=$("libexec/$launcher" stop 2>&1) || fail "$launcher stop failed: $out"
+	signaled "$rec" && [ "$(cat "$rec.sig")" = "$sig" ] || fail "$launcher stopped with '$(cat "$rec.sig" 2>/dev/null)', want $sig"
+	kill -0 "$pid" 2>/dev/null && fail "$launcher: process $pid still alive after stop"
+	[ -s "$pid_file" ] && fail "$launcher: pid file not cleared"
+	"libexec/$launcher" status && fail "$launcher status: running after stop"
+	out=$("libexec/$launcher" stop 2>&1) || fail "$launcher stop when stopped failed: $out"
+}
+
+# --- Director ---
+name=director
+export DUNE_DIRECTOR_ROOT="$work/director-root"
+app="$DUNE_DIRECTOR_ROOT/Tools/Battlegroups/Director/BattlegroupDirector"
+out=$(libexec/dune-director start 2>&1) && fail "director started without a prepared Director"
+[[ "$out" == *"not prepared"* ]] || fail "director: unprepared start not explained: $out"
+mkdir -p "$app" && cp "$fake" "$app/Director"
+mv "$DUNE_SECRETS_DIR/rmq_http_token_auth_secret" "$work/rmq.held"
+out=$(libexec/dune-director start 2>&1) && fail "director started without the broker secret"
+[[ "$out" == *textrouter* ]] || fail "director: missing broker secret does not point at TextRouter: $out"
+mv "$work/rmq.held" "$DUNE_SECRETS_DIR/rmq_http_token_auth_secret"
+rec="$work/director.rec"
+out=$(FAKE_OUT="$rec" libexec/dune-director start 2>&1) || fail "director start failed: $out"
+if recorded "$rec"; then
+	has "$rec" "cwd=$app" director
+	[ "$(sed -n 's/^arg=//p' "$rec" | paste -sd' ' -)" = "--RMQGameHostname 127.0.0.1 --RMQGamePort 31982 --RMQAdminHostname 127.0.0.1 --RMQAdminPort 5673 -fls retail" ] ||
+		fail "director argv: $(sed -n 's/^arg=//p' "$rec" | paste -sd' ' -)"
+	for kv in Database__address=127.0.0.1 Database__port=15431 Database__user=dune Database__password=secret-dbpw \
+		RMQ_HTTP_TOKEN_AUTH_SECRET=secret-rmq FuncomLiveServices__ServiceAuthToken=secret-flstoken \
+		FuncomLiveServices__RmqTlsEnabled=true FuncomLiveServices__DefaultFlsEnvironment=retail \
+		ASPNETCORE_URLS=http://127.0.0.1:18082 DOTNET_EnableDiagnostics=0 DOTNET_RUNNING_IN_CONTAINER=false \
+		BATTLEGROUP_DISPLAY_NAME=sh-test OPT_SERVERNAME=sh-test "WORLD_NAME=Test World" "OPT_DISPLAY_NAME=Test World" \
+		"BATTLEGROUP_REGION_NAME=North America" "HOST_DATACENTER_ID=North America" HOST_DATACENTER_IP_ADDRESS=192.0.2.10; do
+		has "$rec" "env=$kv" director
+	done
+	no_secret_args
+else
+	fail "director: the program did not start"
+fi
+[ "$(cat "$app/conf.d/director.ini" 2>/dev/null)" = "[ Battlegroup ]
+AuthorizationPreset = BattlegroupInternal
+
+[ SH_Arrakeen ]
+MinServers=0
+
+[ SH_HarkoVillage ]
+MinServers=0" ] || fail "director.ini override: $(cat "$app/conf.d/director.ini" 2>&1)"
+[ "$(mode "$DUNE_STATE_DIR/director")" = 700 ] || fail "director run dir mode $(mode "$DUNE_STATE_DIR/director")"
+[ "$(mode "$DUNE_STATE_DIR/director/director.log")" = 600 ] || fail "director log mode $(mode "$DUNE_STATE_DIR/director/director.log")"
+lifecycle dune-director SIGTERM "$DUNE_STATE_DIR/director/pid"
+
+# --- Gateway ---
+name=gateway
+export DUNE_GATEWAY_SRC="$work/gateway-src"
+svc="$DUNE_STATE_DIR/gateway/root/Tools/Battlegroups/GatewayService"
+out=$(libexec/dune-gateway start 2>&1) && fail "gateway started without a payload"
+[[ "$out" == *"no gateway payload"* ]] || fail "gateway: missing payload not explained: $out"
+mkdir -p "$DUNE_GATEWAY_SRC/DuneSandbox/Config" "$DUNE_GATEWAY_SRC/Tools/Battlegroups/GatewayService/service/configs"
+printf '{"path":"$File: //seabass/sb-1.5.20.0/DuneSandbox/Config/perforce-keywords.json $"}\n' > "$DUNE_GATEWAY_SRC/DuneSandbox/Config/perforce-keywords.json"
+: > "$DUNE_GATEWAY_SRC/Tools/Battlegroups/GatewayService/service/configs/service.conf"
+# Left from an earlier build: a file the new payload dropped (removed) and the gateway's own logs (kept).
+mkdir -p -m 700 "$DUNE_STATE_DIR/gateway" "$DUNE_STATE_DIR/gateway/root" && mkdir -p "$svc/service" "$svc/logs"
+: > "$svc/service/dropped.py"; printf 'old\n' > "$svc/logs/gateway.log"
+rec="$work/gateway.rec"
+out=$(FAKE_OUT="$rec" libexec/dune-gateway start 2>&1) || fail "gateway start failed: $out"
+if recorded "$rec"; then
+	has "$rec" "cwd=$svc" gateway
+	[ "$(sed -n 's/^arg=//p' "$rec" | paste -sd' ' -)" = "-m service -c service/configs/service.conf --RMQGameHostname 192.0.2.10 --RMQGamePort 31982 --RMQGameHttpPort 15673" ] ||
+		fail "gateway argv: $(sed -n 's/^arg=//p' "$rec" | paste -sd' ' -)"
+	for kv in DuneDatabaseInterfacePSQL_DatabaseHost=127.0.0.1:15431 DuneDatabaseInterfacePSQL_DatabaseUser=dune \
+		DuneDatabaseInterfacePSQL_DatabasePassword=secret-dbpw DuneDatabaseInterfacePSQL_DatabaseName=dune_sb_1_5_20_0 \
+		FuncomLiveServices__ServiceAuthToken=secret-flstoken gateway_farm_api_key=secret-flstoken \
+		FuncomLiveServices__RmqTlsEnabled=true FuncomLiveServices__DefaultFlsEnvironment=retail \
+		FuncomLiveServices__BattlegroupAuthorizationPreset=BattlegroupInternal RMQ_HTTP_TOKEN_AUTH_SECRET=secret-rmq \
+		"BATTLEGROUP_DISPLAY_NAME=Test World" "OPT_DISPLAY_NAME=Test World" OPT_SERVERNAME=sh-test \
+		"HOST_DATACENTER_ID=North America" HOST_DATACENTER_IP_ADDRESS=192.0.2.10; do
+		has "$rec" "env=$kv" gateway
+	done
+	no_secret_args
+else
+	fail "gateway: the program did not start"
+fi
+[ "$(cat "$svc/conf.d/gateway.ini" 2>/dev/null)" = "[OnlineSubsystem]
+ServerName=sh-test
+DatacenterId=North America
+
+[gateway]
+display_name=Test World" ] || fail "gateway.ini: $(cat "$svc/conf.d/gateway.ini" 2>&1)"
+[ "$(mode "$svc/conf.d/gateway.ini")" = 600 ] || fail "gateway.ini mode $(mode "$svc/conf.d/gateway.ini")"
+[ -e "$svc/service/configs/service.conf" ] || fail "gateway: payload not copied"
+[ -e "$svc/service/dropped.py" ] && fail "gateway: a file the payload no longer has survived the copy"
+[ "$(cat "$svc/logs/gateway.log" 2>/dev/null)" = old ] || fail "gateway: the copy deleted its logs"
+[ "$(mode "$DUNE_STATE_DIR/gateway")" = 700 ] || fail "gateway run dir mode $(mode "$DUNE_STATE_DIR/gateway")"
+[ "$(mode "$DUNE_STATE_DIR/gateway/gateway-console.log")" = 600 ] || fail "gateway log mode $(mode "$DUNE_STATE_DIR/gateway/gateway-console.log")"
+lifecycle dune-gateway SIGINT "$DUNE_STATE_DIR/gateway/pid"
+
+# --- Map server (Survival_1) ---
+name=server
+export DUNE_SERVER_SRC="$work/server-src" DUNE_GLIBC_LOADER=/fake/ld-linux.so DUNE_GCC_LIB=/fake/gcc-lib
+bin_rel=DuneSandbox/Binaries/Linux/DuneSandboxServer-Linux-Shipping
+run="$DUNE_STATE_DIR/server" tree="$DUNE_STATE_DIR/server/tree"
+mkdir -p "$DUNE_SERVER_SRC/DuneSandbox/Binaries/Linux" "$DUNE_SERVER_SRC/DuneSandbox/Content/Paks" "$DUNE_SERVER_SRC/Engine"
+printf 'build-1\n' > "$DUNE_SERVER_SRC/$bin_rel"; chmod 555 "$DUNE_SERVER_SRC/$bin_rel"
+: > "$DUNE_SERVER_SRC/DuneSandbox/Content/Paks/a.pak"; : > "$DUNE_SERVER_SRC/Engine/e.txt"
+rec="$work/server.rec"
+out=$(FAKE_OUT="$rec" libexec/dune-server start 2>&1) || fail "server start failed: $out"
+if recorded "$rec"; then
+	has "$rec" "cwd=$tree" server
+	[ "$(sed -n 's/^arg=//p' "$rec")" = "$(libexec/dune-server argv | tail -n +2)" ] ||
+		fail "server: the launch line differs from argv: $(sed -n 's/^arg=//p' "$rec" | paste -sd' ' -)"
+	has "$rec" "env=HOME=$run/home" server
+	has "$rec" "env=RMQ_HTTP_TOKEN_AUTH_SECRET=secret-rmq" server
+	no_secret_args "$(cat "$DUNE_SECRETS_DIR/admin_password")" "$(cat "$DUNE_SECRETS_DIR/server_commands_token")"
+else
+	fail "server: the program did not start"
+fi
+[ -L "$tree/DuneSandbox/Content/Paks/a.pak" ] && [ -L "$tree/Engine/e.txt" ] || fail "server: payload files are not symlinked into the farm"
+[ -f "$tree/$bin_rel" ] && [ ! -L "$tree/$bin_rel" ] || fail "server: the binary in the farm is not a private copy"
+[ "$(cat "$tree/$bin_rel" 2>/dev/null)" = build-1 ] || fail "server: farm binary content"
+[ "$(cat "$work/patchelf.calls" 2>/dev/null)" = "--set-interpreter /fake/ld-linux.so --add-rpath /fake/gcc-lib $tree/$bin_rel" ] ||
+	fail "server: patchelf calls: $(cat "$work/patchelf.calls" 2>&1)"
+[ "$(readlink "$tree/DuneSandbox/Saved")" = "$run/Saved" ] || fail "server: Saved is not the run dir's: $(readlink "$tree/DuneSandbox/Saved")"
+[ "$(readlink "$run/home/.config/Epic/Unreal Engine/Engine/Config")" = "$run/Saved/UserSettings" ] || fail "server: HOME engine config link"
+[ "$(mode "$run")" = 700 ] || fail "server run dir mode $(mode "$run")"
+[ "$(mode "$run/server-console.log")" = 600 ] || fail "server log mode $(mode "$run/server-console.log")"
+lifecycle dune-server SIGINT "$run/pid"
+
+# Same payload binary: the farm is reused, no second patch. A new build: rebuilt and patched again, Saved/ kept.
+printf 'world data\n' > "$run/Saved/marker"
+mv "$rec" "$work/server-1.rec"; mv "$rec.sig" "$work/server-1.rec.sig"
+out=$(FAKE_OUT="$rec" libexec/dune-server start 2>&1) || fail "server restart failed: $out"
+recorded "$rec" || fail "server: restart did not start the program"
+[ "$(wc -l < "$work/patchelf.calls")" -eq 1 ] || fail "server: the farm was rebuilt for an unchanged binary"
+libexec/dune-server stop >/dev/null 2>&1 || fail "server: stop after restart failed"
+mv "$rec" "$work/server-2.rec"; mv "$rec.sig" "$work/server-2.rec.sig" 2>/dev/null
+chmod u+w "$DUNE_SERVER_SRC/$bin_rel"; printf 'build-2, larger\n' > "$DUNE_SERVER_SRC/$bin_rel"; chmod 555 "$DUNE_SERVER_SRC/$bin_rel"
+out=$(FAKE_OUT="$rec" libexec/dune-server start 2>&1) || fail "server start on a new build failed: $out"
+recorded "$rec" || fail "server: new build did not start the program"
+[ "$(wc -l < "$work/patchelf.calls")" -eq 2 ] || fail "server: the farm was not rebuilt for a new binary"
+[ "$(cat "$tree/$bin_rel" 2>/dev/null)" = "build-2, larger" ] || fail "server: farm binary not replaced by the new build"
+[ "$(cat "$DUNE_SERVER_SRC/$bin_rel")" = "build-2, larger" ] || fail "server: the payload binary was modified"
+[ "$(cat "$run/Saved/marker" 2>/dev/null)" = "world data" ] || fail "server: Saved/ lost across the rebuild"
+[ "$(readlink "$tree/DuneSandbox/Saved")" = "$run/Saved" ] || fail "server: Saved link missing after the rebuild"
+compgen -G "$run/tree.old.*" >/dev/null && fail "server: the old farm was left behind"
+libexec/dune-server stop >/dev/null 2>&1 || fail "server: final stop failed"
+exit "$failures"
