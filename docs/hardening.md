@@ -1,6 +1,6 @@
 # Runtime hardening: measured requirements
 
-Funcom ships these components as containers. Here they run as ordinary processes of the operator's user, with no confinement. This page records what each component actually needs (files, network, kernel features), so that systemd sandboxing directives can be derived from evidence instead of guesses. It is step 1 of the hardening work; step 2 teaches `dune-units render` to emit the directives, and step 3 decides between systemd user units and system units with a dedicated service user.
+Funcom ships these components as containers. Here they run as ordinary processes of the operator's user, with no confinement. This page records what each component actually needs (files, network, kernel features), so that systemd sandboxing directives can be derived from evidence instead of guesses. It is step 1 of the hardening work; step 2 teaches `dune-units render` to emit the directives (done 2026-11-11 for the shared units; see "Rendered now" below), and step 3 decides between systemd user units and system units with a dedicated service user.
 
 Measured 2026-09-29, 13:58 to 14:25 EDT, on the live world (game build 1.5.3.4, Steam build 25486303), NixOS with kernel 6.18, systemd 261.2, one map (`Survival_1`), nobody online. Every claim is tagged:
 
@@ -77,7 +77,7 @@ Every component also reads `/nix/store` (its own closure) and `/etc` (`localtime
 |---|---|---|---|
 | .NET 8 (musl, single-file) | TextRouter, Director | double-maps code through `memfd:doublemapper` (TextRouter 582 and Director 778 such mappings live [M]); 640 `mprotect(…, PROT_READ\|PROT_EXEC)` calls during one TextRouter test run [T] | **core dump** at startup, both apps [P] |
 | LuaJIT 2.1 | GM bridge, idle throttle, `bin/dune-awakening` (so the world, heal, backup, backup-verify and update-check units) | one anonymous executable mapping live (the trace buffer) [M]; 63 and 73 `mprotect(PROT_READ\|PROT_EXEC)` in the bridge and throttle suites [T] | stock: **panic** as soon as a trace compiles, works with `luajit -joff` [P]. The fork now in the dev shell (since 2026-09-30): runs with the JIT on, code in `r-xp /memfd:luajit-mcode` mappings; needs `memfd_create` (see below) [P] |
-| Erlang/OTP 27.3 JIT | both brokers, epmd, every `rabbitmqctl` (from `dune-live`, the GM bridge, the idle throttle, status checks) | at boot maps one 4 KiB `PROT_READ\|PROT_WRITE\|PROT_EXEC` page (a probe), then dual-maps JIT code through `memfd_create("vmem", MFD_EXEC)` as a shared `r-x` view plus a `rw-` view [T]; live brokers show exactly that pair [M] | runs (JIT flavour reported as `jit`) [P] |
+| Erlang/OTP 27.3 JIT | both brokers, epmd, every `rabbitmqctl` (from `dune-live`, the GM bridge, the idle throttle, status checks) | at boot maps one 4 KiB `PROT_READ\|PROT_WRITE\|PROT_EXEC` page (a probe), then dual-maps JIT code through `memfd_create("vmem", MFD_EXEC)` as a shared `r-x` view plus a `rw-` view [T]; live brokers show exactly that pair [M] | runs (JIT flavor reported as `jit`) [P] |
 | CPython 3.12 | Gateway, db-setup (`updatedb.py`) | no executable anonymous or shared mappings [M][T] | runs, including `psycopg2`, `dateutil`, `ssl`, `ctypes` imports [P] |
 | PostgreSQL 17.10 | postgres, `pg_dump`, `pg_restore`, `psql` | no `llvmjit` module in the nixpkgs build [M] | [I] runs: no code generation path exists |
 | Unreal Engine 5 shipping binary | map server | no RWX, anonymous executable or memfd mappings live [M] | [I] untested: run a copy with the directive at the next planned restart |
@@ -202,7 +202,7 @@ Candidate directives for these, in the order of what they allow:
 
 ## User units versus system units
 
-Measured with transient user units under systemd 261.2 [P] (the "System unit" column is systemd's documented behaviour, not measured here):
+Measured with transient user units under systemd 261.2 [P] (the "System unit" column is systemd's documented behavior, not measured here):
 
 | Directive | User unit (measured) | System unit |
 |---|---|---|
@@ -229,6 +229,10 @@ What this means for the choice in step 3:
 - A user unit can give every component a private `/tmp`, a private `/dev`, a read-only system with named writable paths, a syscall and address-family filter, and W^X where the runtime allows it. Its mount-namespace directives depend on unprivileged user namespaces, which this host allows.
 - A user unit cannot restrict IP destinations, hide other processes, or change who owns the files. Under the operator's uid, anything else that user runs (agents, browsers, shells) can still read `$SECRETS` and `/proc/<pid>/environ` [M: readable today], and probably reach the .NET diagnostics sockets inside a unit's private `/tmp` through `/proc/<pid>/root` [I: not tried].
 - A system unit with a dedicated user adds `IPAddressDeny`, `ProtectProc`, a real capability bounding set, and above all a different uid, which is the only one of these that closes findings 3 and 4.
+
+## Rendered now (step 2, shared units)
+
+Since 2026-11-11 `dune-units render` adds one block to `dune-world.service`, `dune-world-heal.service`, `dune-backup.service` and `dune-backup-verify.service`: `NoNewPrivileges=yes`, `LockPersonality=yes`, `RestrictRealtime=yes`, `RestrictSUIDSGID=yes`, `RestrictNamespaces=yes` and `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`. Every component inherits the sandbox of the unit that starts it (finding 6), so the block holds only directives every component tolerates, and none that needs a mount namespace: under a user manager those create an implicit user namespace per unit, and the world and heal units would then start components in two different ones. `tests/integration/units-sandbox` reads the block back from the rendered world unit, checks in a transient unit that it is in force (`NoNewPrivs: 1`, `unshare -U` refused, both allowed outside), and runs the postgres, rabbitmq, GM bridge, idle-throttle, backup, .NET app and TextRouter auth suites inside it [P]; the same harness with `MemoryDenyWriteExecute=yes` added makes both .NET apps dump core, so it does catch a sandbox a component cannot run under. The map server is not covered by that test; its candidates (W^X, `SystemCallFilter=@system-service`) still wait for a planned restart. `dune-update-check.service` keeps no block, because steamcmd needs namespaces (finding 10). The installed units come from the host configuration, so the block reaches the live world only when the host administrator adds it there.
 
 ## What blocks strict sandboxing
 

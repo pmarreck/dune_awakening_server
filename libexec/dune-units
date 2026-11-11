@@ -51,6 +51,18 @@ env_path=$(sq "PATH=$path")
 world=$(sq "$root/bin/dune-awakening")
 
 unit() { printf '%s\n' "$2" > "$dest/$1" || die "cannot write $dest/$1"; }
+# Sandbox for the units that start components (world, heal) or run the database tools (backup, restore drill). Every
+# component runs as a child of the world or heal unit, so only directives every component tolerates, and none that
+# needs a mount namespace (heal and the world would otherwise start components in different namespaces).
+# W^X (.NET), a syscall filter and private /tmp or /dev wait for one unit per component (docs/hardening.md).
+# tests/integration/units-sandbox runs the components under exactly these lines.
+sandbox="# Shared sandbox: see docs/hardening.md, \"Runtime hardening\".
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK"
 
 unit dune-world.service "[Unit]
 Description=Dune: Awakening world (native, $root)
@@ -65,6 +77,7 @@ ExecStart=$world start
 ExecStop=$world stop --force
 TimeoutStartSec=20min
 TimeoutStopSec=6min
+$sandbox
 
 [Install]
 WantedBy=default.target"
@@ -79,7 +92,8 @@ ExecCondition=$(sq "$systemctl") --user is-active --quiet dune-world.service
 ExecStart=$world heal
 # Components it starts must outlive this oneshot.
 KillMode=process
-TimeoutStartSec=20min"
+TimeoutStartSec=20min
+$sandbox"
 
 unit dune-world-heal.timer "[Unit]
 Description=Check the Dune world every 5 minutes
@@ -99,7 +113,8 @@ Type=oneshot
 WorkingDirectory=$root
 Environment=$env_path
 ExecStart=$world backup create --label scheduled
-ExecStartPost=$world backup prune"
+ExecStartPost=$world backup prune
+$sandbox"
 
 unit dune-backup.timer "[Unit]
 Description=Daily Dune world backup
@@ -118,7 +133,8 @@ Description=Restore drill: restore the newest Dune backup into a scratch databas
 Type=oneshot
 WorkingDirectory=$root
 Environment=$env_path
-ExecStart=$world backup verify latest"
+ExecStart=$world backup verify latest
+$sandbox"
 
 unit dune-backup-verify.timer "[Unit]
 Description=Weekly Dune backup restore drill

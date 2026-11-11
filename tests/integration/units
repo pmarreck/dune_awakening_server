@@ -37,4 +37,24 @@ grep -qFx 'OnCalendar=*-*-* 00/3:00:00' "$out/dune-update-check.timer" || fail "
 grep -q '^ExecStart=.*dune-awakening" update check --json --notify$' "$out/dune-update-check.service" || fail "update check does not notify: $(grep ExecStart "$out/dune-update-check.service")"
 grep -q 'apply' "$out/dune-update-check.service" && fail "update check unit applies updates"
 p=$(sed -n 's/^Environment="PATH=\(.*\)"$/\1/p' "$out/dune-world.service"); [ "$(tr : '\n' <<<"$p" | collate | uniq -d)" = "" ] || fail "duplicate PATH entries: $p"
+
+# Sandbox (docs/hardening.md, step 2): every component runs as a child of the world or heal unit, so these units carry
+# only directives that every component tolerates and that need no mount namespace (heal and the world would otherwise
+# start components in different namespaces). tests/integration/units-sandbox runs the components under exactly the
+# directives rendered here.
+sandbox="NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK"
+for u in dune-world.service dune-world-heal.service dune-backup.service dune-backup-verify.service; do
+	while IFS= read -r d; do grep -qFx "$d" "$out/$u" || fail "$u lacks $d"; done <<<"$sandbox"
+done
+# Not allowed while components share one unit: W^X breaks .NET; a syscall filter, private /tmp or /dev, and the
+# ProtectSystem/ProtectHome/ProtectKernel* family are untested on the map server or need a mount namespace.
+grep -E '^(MemoryDenyWriteExecute|SystemCallFilter|PrivateTmp|PrivateDevices|ProtectSystem|ProtectHome|ProtectKernel[A-Za-z]*|ProtectControlGroups|ProtectClock|PrivateUsers)=' "$out"/dune-world*.service "$out"/dune-backup*.service &&
+	fail "a directive that one of the components cannot run under is set"
+# steamcmd (steam-run, bubblewrap) needs user and mount namespaces: the update check keeps its own rules.
+grep -q '^RestrictNamespaces=yes$' "$out/dune-update-check.service" && fail "update check forbids the namespaces steamcmd needs"
 exit "$failures"

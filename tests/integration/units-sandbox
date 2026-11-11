@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Host tier (needs the systemd user manager and the local payload): the sandbox directives that libexec/dune-units
+# renders into the world, heal and backup units, applied to a transient user unit, with the component suites run
+# inside it: postgres, both brokers and epmd, the GM bridge, the idle throttle (netlink), backup, and Funcom's .NET
+# apps (TextRouter, Director). The directives are read back from the rendered world unit, so this tests what would be
+# installed. A probe first proves they are in force, so a pass cannot come from a unit that silently lacks them.
+# Not covered: the map server (too heavy for a test run; docs/hardening.md lists it for the next planned restart).
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-units-sandbox.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+
+out=$(libexec/dune-units render "$work/units" --luajit "$(command -v luajit)" 2>&1) ||
+	{ fail "render failed: $out"; exit 1; }
+# The directive lines that follow the shared-sandbox marker in the world unit.
+props=()
+while IFS= read -r d; do props+=(-p "$d"); done < <(awk '/^# Shared sandbox/ { on = 1; next } on && /^[A-Za-z]+=/ { print; next } { on = 0 }' "$work/units/dune-world.service")
+[ "${#props[@]}" -ge 12 ] || { fail "found only $((${#props[@]} / 2)) sandbox directives in the rendered world unit"; exit 1; }
+# The suites need the dev shell's environment (PATH, the flake's DUNE_* store paths, TMPDIR); the user manager has
+# its own. Single-line variables only; exported functions stay behind.
+envs=()
+while IFS= read -r -d '' kv; do
+	case "$kv" in BASH_FUNC_*|*$'\n'*) continue ;; esac
+	envs+=(-E "$kv")
+done < <(env -0)
+sandboxed() { systemd-run --user --wait --pipe --collect --quiet "${props[@]}" "${envs[@]}" --working-directory="$PWD" "$@"; }
+
+# Control and probe: outside the unit an unprivileged user namespace can be made and NoNewPrivs is 0; inside, both
+# change.
+probe='printf "nnp=%s\n" "$(sed -n "s/^NoNewPrivs:[[:space:]]*//p" /proc/self/status)"; if unshare -U true 2>/dev/null; then echo ns=allowed; else echo ns=refused; fi'
+out=$(bash -c "$probe"); [[ "$out" == *nnp=0* && "$out" == *ns=allowed* ]] || fail "control outside the unit: $out"
+out=$(sandboxed bash -c "$probe" 2>&1); [[ "$out" == *nnp=1* && "$out" == *ns=refused* ]] || fail "sandbox not in force: $out"
+
+for t in tests/integration/postgres tests/integration/rabbitmq tests/integration/gm-bridge tests/integration/idle-throttle \
+	tests/integration/backup tests/payload/dotnet-apps tests/payload/textrouter-auth; do
+	out=$(sandboxed bash "$t" 2>&1); rc=$?
+	[ "$rc" -eq 0 ] || fail "$t under the unit sandbox exited $rc: $(tail -5 <<<"$out")"
+done
+exit "$failures"
