@@ -6,6 +6,7 @@ set -u
 NAME=dune-doctor VERSION=0.1.0
 : "${HOME:=$(cd ~ 2>/dev/null && pwd)}"
 . "$(dirname -- "${BASH_SOURCE[0]}")/dune-dirs.bash"
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/token_notice.bash"
 DUNE_CONFIG_DIR=${DUNE_CONFIG_DIR:-$DUNE_CONFIG_ROOT}
 DUNE_STATE_DIR=${DUNE_STATE_DIR:-$DUNE_DATA_ROOT/runtime}
 DUNE_SECRETS_DIR=${DUNE_SECRETS_DIR:-$DUNE_STATE_DIR/secrets}
@@ -122,12 +123,9 @@ check_world_config() {
 
 # The Funcom token is a JWT; its exp claim says when the world stops being able to register.
 check_fls_token() {
-	local f="$DUNE_CONFIG_DIR/fls_secret" payload exp days left
+	local f="$DUNE_CONFIG_DIR/fls_secret" exp days left
 	if [ ! -s "$f" ]; then report fls-token fail "$f is missing or empty (token from https://account.duneawakening.com/)"; return; fi
-	payload=$(tr -d '\r\n' < "$f" | cut -d. -f2 | tr '_-' '/+')
-	while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="$payload="; done
-	exp=$(base64 -d <<<"$payload" 2>/dev/null | jq -r '.exp // empty' 2>/dev/null)
-	if ! [[ "$exp" =~ ^[0-9]+$ ]]; then report fls-token warn "cannot read the token's expiry (not a JWT?)"; return; fi
+	if ! exp=$(fls_token_exp "$f"); then report fls-token warn "cannot read the token's expiry (not a JWT?)"; return; fi
 	left=$(( exp - $(now_epoch) ))
 	days=$(( left / 86400 ))
 	if [ "$left" -le 0 ]; then report fls-token fail "the Funcom token expired on $(date -u -d "@$exp" +%F); get a new one"

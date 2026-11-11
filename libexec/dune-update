@@ -7,6 +7,7 @@
 set -u
 . "$(dirname -- "${BASH_SOURCE[0]}")/dune-dirs.bash"
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib/update_notice.bash"
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/token_notice.bash"
 NAME=dune-update VERSION=0.1.0 APP=4754530
 EXIT_CURRENT=0 EXIT_STALE=1 EXIT_USAGE=2 EXIT_UNKNOWN=3
 : "${HOME:=$(cd ~ 2>/dev/null && pwd)}"
@@ -16,6 +17,7 @@ DUNE_STEAMCMD=${DUNE_STEAMCMD:-steamcmd}
 DUNE_STEAMCMD_HOME=${DUNE_STEAMCMD_HOME:-$DUNE_DATA_ROOT/steamcmd}
 DUNE_TRASH_DIR=${DUNE_TRASH_DIR:-$HOME/.Trash}
 DUNE_STATE_DIR=${DUNE_STATE_DIR:-$DUNE_DATA_ROOT/runtime}
+DUNE_CONFIG_DIR=${DUNE_CONFIG_DIR:-$DUNE_CONFIG_ROOT}
 DUNE_UPDATE_LOCK_WAIT=${DUNE_UPDATE_LOCK_WAIT:-1800}
 NOTIFY_AS=dune_awakening_server
 DUNE_COMPONENTS_DIR=${DUNE_COMPONENTS_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}
@@ -39,6 +41,9 @@ Options:
             NOTIFY_CMD (default post) to NOTIFY_TO (world.private.conf or world.conf); the build last announced
             is kept in \$DUNE_STATE_DIR/update-notified. A failed notice is retried at the next check. It never
             applies. The default when NOTIFY_TO is set; --notify also reports a missing NOTIFY_TO.
+            The same check announces the Funcom token's expiry (DUNE_CONFIG_DIR/fls_secret): once under 30 days
+            left, once under 7, once expired, per token (\$DUNE_STATE_DIR/token-notified), even when Steam is
+            unreachable.
   --no-notify  check: send no notice
   --force   apply: proceed with players online or when already current (re-download and re-unpack)
   --about, -h/--help
@@ -48,10 +53,12 @@ apply holds \$DUNE_STATE_DIR/update.lock from stopping the world until it has st
 seconds (1800) for a heal or start that holds it.
 
 Environment: DUNE_STEAM_SERVER_DIR, DUNE_UNPACKED_DIR, DUNE_STEAMCMD, DUNE_STEAMCMD_HOME, DUNE_TRASH_DIR,
-DUNE_STATE_DIR, DUNE_UPDATE_LOCK_WAIT, DUNE_NOTIFY_TO, DUNE_NOTIFY_CMD.
+DUNE_STATE_DIR, DUNE_CONFIG_DIR, DUNE_UPDATE_LOCK_WAIT, DUNE_NOTIFY_TO, DUNE_NOTIFY_CMD, DUNE_NOW (a date(1) time
+standing in for now, for tests).
 EOF
 }
 die() { printf '%s: %s\n' "$NAME" "$1" >&2; exit "${2:-1}"; }
+now_epoch() { if [ -n "${DUNE_NOW:-}" ]; then date -d "$DUNE_NOW" +%s; else date +%s; fi; }
 step() { printf '▸ %s\n' "$*" >&2; }
 
 cmd="" json=false force=false notify=auto
@@ -85,6 +92,10 @@ latest_info() {
 
 cmd_check() {
 	local installed latest t info
+	case $notify in
+		on) notify_token ;;
+		auto) [ -n "${DUNE_NOTIFY_TO:-}" ] && notify_token ;;
+	esac
 	installed=$(installed_buildid)
 	[ -n "$installed" ] || die "no installed server build under $DUNE_STEAM_SERVER_DIR (see docs/acquisition.md)" "$EXIT_UNKNOWN"
 	info=$(latest_info); read -r latest t <<<"$info"
@@ -131,6 +142,48 @@ This notice is sent once per build."
 		# The notifier's last error line goes to the journal: a failure with no reason went unexplained for days.
 		err=$(printf '%s\n' "$err" | sed '/^[[:space:]]*$/d' | tail -n 1)
 		printf '%s: update notice for build %s failed%s; retrying at the next check\n' "$NAME" "$latest" "${err:+ ($err)}" >&2
+	fi
+}
+
+# The Funcom token's expiry (token_notice_stage/token_notice_due): one notice under 30 days, one under 7, one once
+# expired, recorded as EXP:STAGE only once sent, so a failed notice is retried and a renewed token starts over. It
+# runs before Steam is asked, so a Steam outage does not hold it back. Messages go to stderr.
+notify_token() {
+	local f="$DUNE_CONFIG_DIR/fls_secret" state="$DUNE_STATE_DIR/token-notified" exp left stage when days subject body err
+	if ! exp=$(fls_token_exp "$f"); then
+		printf '%s: token expiry not checked: cannot read the expiry in %s\n' "$NAME" "$f" >&2
+		return 0
+	fi
+	left=$(( exp - $(now_epoch) ))
+	stage=$(token_notice_stage "$left")
+	token_notice_due "$exp" "$stage" "$(cat "$state" 2>/dev/null)" || return 0
+	if [ -z "${DUNE_NOTIFY_TO:-}" ]; then
+		printf '%s: token expiry notice not sent: NOTIFY_TO is not set in world.private.conf or world.conf\n' "$NAME" >&2
+		return 0
+	fi
+	when=$(date -u -d "@$exp" '+%F %H:%M UTC')
+	days=$(( left / 86400 ))
+	case $stage in
+		expired) subject="Dune world's Funcom token expired on ${when%% *}" ;;
+		*) case $days in 0) subject="Dune world's Funcom token expires in less than a day (${when%% *})" ;;
+			1) subject="Dune world's Funcom token expires in 1 day (${when%% *})" ;;
+			*) subject="Dune world's Funcom token expires in $days days (${when%% *})" ;; esac ;;
+	esac
+	subject="$subject${DUNE_WORLD_DISPLAY_NAME:+ ($DUNE_WORLD_DISPLAY_NAME)}"
+	body="The world's Funcom self-host token $([ "$stage" = expired ] && echo expired || echo expires) at $when. Without a valid token the world cannot register with Funcom's services.
+
+To renew: get a new self-host token from https://account.duneawakening.com/, write it as one line to
+$DUNE_CONFIG_DIR/fls_secret (mode 0600), then restart the world when nobody is online:
+  dune-awakening restart
+dune-awakening doctor reports the token's expiry date.
+
+This notice is sent once each at 30 days, 7 days and on expiry."
+	if err=$("${DUNE_NOTIFY_CMD:-post}" to "$DUNE_NOTIFY_TO" --as "$NOTIFY_AS" --subject "$subject" --body "$body" --yes 2>&1 >/dev/null); then
+		mkdir -p -m 700 "$DUNE_STATE_DIR" && printf '%s:%s\n' "$exp" "$stage" > "$state" || printf '%s: cannot record the notice in %s\n' "$NAME" "$state" >&2
+		printf '%s: sent token expiry notice (%s) to %s\n' "$NAME" "$stage" "$DUNE_NOTIFY_TO" >&2
+	else
+		err=$(printf '%s\n' "$err" | sed '/^[[:space:]]*$/d' | tail -n 1)
+		printf '%s: token expiry notice failed%s; retrying at the next check\n' "$NAME" "${err:+ ($err)}" >&2
 	fi
 }
 

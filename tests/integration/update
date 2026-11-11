@@ -180,6 +180,62 @@ out=$(env -u DUNE_NOTIFY_TO libexec/dune-update check 2>&1 >/dev/null)
 libexec/dune-update check --no-notify --notify >/dev/null 2>&1
 [ "$(notices)" = 5 ] || fail "later --notify did not override --no-notify: $(notices)"
 
+# The same scheduled check announces the Funcom token's expiry (DUNE_CONFIG_DIR/fls_secret, a JWT): one notice once
+# under 30 days are left, one under 7, one once expired, each once per token (DUNE_STATE_DIR/token-notified holds
+# EXP:STAGE), whatever Steam says; a renewed token starts over. The check's exit status and JSON stay the same.
+manifest 108; echo 108 > "$work/latest"; rm -f "$work/notices" "$work/last-notice"
+b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
+token() { mkdir -p "$DUNE_CONFIG_DIR"; (umask 077; printf '%s.%s.sig\n' "$(printf '{"alg":"none"}' | b64url)" "$(printf '{"exp":%s}' "$1" | b64url)" > "$DUNE_CONFIG_DIR/fls_secret"); }
+export DUNE_NOW=2027-08-01T12:00:00Z
+now=$(date -d "$DUNE_NOW" +%s) day=86400
+exp=$((now + 365 * day)); token "$exp"
+libexec/dune-update check --notify >/dev/null 2>&1; [ $? -eq 0 ] || fail "token check changed the exit status"
+[ "$(notices)" = 0 ] || fail "token notice with a year left"
+exp=$((now + 20 * day + 3600)); token "$exp"
+json=$(libexec/dune-update check --json --notify 2>"$work/err"); rc=$?
+[ "$rc" -eq 0 ] && jq -e '.up_to_date' >/dev/null 2>&1 <<<"$json" || fail "token notice changed check's result: rc=$rc $json"
+[ "$(notices)" = 1 ] || fail "no token notice with 20 days left: $(notices) $(cat "$work/err")"
+n=$(cat "$work/last-notice" 2>/dev/null)
+[[ "$n" == "to someone --as dune_awakening_server --subject "*"token expires in 20 days"*"$(date -u -d "@$exp" +%F)"*" --body "*account.duneawakening.com*"$DUNE_CONFIG_DIR/fls_secret"*" --yes" ]] ||
+	fail "token notice arguments: $n"
+[ "$(cat "$DUNE_STATE_DIR/token-notified" 2>/dev/null)" = "$exp:30" ] || fail "token notice not recorded: $(cat "$DUNE_STATE_DIR/token-notified" 2>&1)"
+for _ in 1 2; do libexec/dune-update check --notify >/dev/null 2>&1; done
+[ "$(notices)" = 1 ] || fail "30-day token notice repeated: $(notices)"
+DUNE_NOW=@$((exp - 3 * day)) libexec/dune-update check --notify >/dev/null 2>&1
+[ "$(notices)" = 2 ] && [[ "$(cat "$work/last-notice")" == *"expires in 3 days"* ]] || fail "no 7-day token notice: $(notices) $(cat "$work/last-notice")"
+DUNE_NOW=@$((exp - 2 * day)) libexec/dune-update check --notify >/dev/null 2>&1
+[ "$(notices)" = 2 ] || fail "7-day token notice repeated: $(notices)"
+DUNE_NOW=@$((exp + day)) libexec/dune-update check --notify >/dev/null 2>&1
+[ "$(notices)" = 3 ] && [[ "$(cat "$work/last-notice")" == *"token expired"* ]] || fail "no expired-token notice: $(notices) $(cat "$work/last-notice")"
+[ "$(cat "$DUNE_STATE_DIR/token-notified")" = "$exp:expired" ] || fail "expired notice not recorded"
+DUNE_NOW=@$((exp + 9 * day)) libexec/dune-update check --notify >/dev/null 2>&1
+[ "$(notices)" = 3 ] || fail "expired-token notice repeated: $(notices)"
+# A renewed token with a year left: nothing. One that is already close: announced again, from scratch.
+exp=$((now + 365 * day)); token "$exp"; libexec/dune-update check --notify >/dev/null 2>&1
+[ "$(notices)" = 3 ] || fail "token notice for a renewed token with a year left"
+# A failed notice is retried at the next check; Steam being down does not hold it back.
+exp=$((now + 10 * day)); token "$exp"; touch "$work/notify-fails" "$work/steam-down"
+out=$(libexec/dune-update check --notify 2>&1); rc=$?
+[ "$rc" -eq 3 ] || fail "token notice changed the Steam-down exit status: $rc"
+[ "$(notices)" = 4 ] && [[ "$out" == *"token"*"failed"*"module 'luv' not found"* ]] || fail "failed token notice not attempted or not reported: $(notices) $out"
+[ "$(cat "$DUNE_STATE_DIR/token-notified")" != "$exp:30" ] || fail "failed token notice recorded as sent"
+rm "$work/notify-fails"
+libexec/dune-update check --notify >/dev/null 2>&1
+[ "$(notices)" = 5 ] && [ "$(cat "$DUNE_STATE_DIR/token-notified")" = "$exp:30" ] || fail "failed token notice not retried with Steam down: $(notices)"
+rm "$work/steam-down"
+# --no-notify, or no NOTIFY_TO on a plain check: nothing sent, nothing said.
+exp=$((now + 2 * day)); token "$exp"
+libexec/dune-update check --no-notify >/dev/null 2>&1
+out=$(env -u DUNE_NOTIFY_TO libexec/dune-update check 2>&1 >/dev/null)
+[ "$(notices)" = 5 ] && [[ "$out" != *token* ]] || fail "token notice without notices on: $(notices) $out"
+# --notify without NOTIFY_TO says so; an unreadable token is reported on stderr, not mailed.
+out=$(env -u DUNE_NOTIFY_TO libexec/dune-update check --notify 2>&1 >/dev/null)
+[ "$(notices)" = 5 ] && [[ "$out" == *token*NOTIFY_TO* ]] || fail "token notice without NOTIFY_TO: $(notices) $out"
+printf 'garbage\n' > "$DUNE_CONFIG_DIR/fls_secret"
+out=$(libexec/dune-update check --notify 2>&1 >/dev/null); rc=$?
+[ "$rc" -eq 0 ] && [ "$(notices)" = 5 ] && [[ "$out" == *"cannot read"*fls_secret* ]] || fail "unreadable token: rc=$rc $(notices) $out"
+mv "$DUNE_CONFIG_DIR/fls_secret" "$work/fls_secret.unreadable"; unset DUNE_NOW
+
 # apply that leaves the world down (on 2026-11-10 the new TextRouter would not start, and the world stayed down with
 # nobody told): one notice naming the build and carrying the failing component's own error, then exit 1.
 manifest 108; echo 109 > "$work/latest"; rm -f "$work/notices" "$work/last-notice"

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# libexec/lib/token_notice.bash: reading the Funcom token's expiry (a JWT exp claim, base64url without padding) and the
+# pure decision behind the scheduled check's expiry notices (one at 30 days, one at 7 days, one once expired, per
+# token), tested as a classifier over the stage boundaries and the last-announced state.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+. libexec/lib/token_notice.bash
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-token-notice.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
+token() { printf '%s.%s.sig' "$(printf '{"alg":"none"}' | b64url)" "$(printf '%s' "$1" | b64url)"; }
+
+# Expiry: every payload length (padding 0, 1 or 2), a trailing newline or CRLF, and the failures.
+for payload in '{"exp":1790000000}' '{"exp":1790000000,"a":1}' '{"exp":1790000000,"ab":1}' '{"sub":"x/y?","exp":1790000000}'; do
+	token "$payload" > "$work/t"
+	got=$(fls_token_exp "$work/t") || fail "fls_token_exp failed for $payload"
+	[ "$got" = 1790000000 ] || fail "fls_token_exp $payload: got '$got'"
+done
+printf '%s\r\n' "$(token '{"exp":1790000000}')" > "$work/t"
+[ "$(fls_token_exp "$work/t")" = 1790000000 ] || fail "fls_token_exp with CRLF"
+for bad in 'not-a-jwt' "$(token '{"sub":"x"}')" "$(token '{"exp":"soon"}')" ''; do
+	printf '%s\n' "$bad" > "$work/t"
+	fls_token_exp "$work/t" >/dev/null 2>&1 && fail "fls_token_exp accepted '$bad'"
+done
+fls_token_exp "$work/missing" >/dev/null 2>&1 && fail "fls_token_exp accepted a missing file"
+
+# Stage from the seconds left: 30 below 30 days, 7 below 7 days, expired at or past exp, nothing otherwise.
+d=86400
+cases=(
+	"$((365 * d)) -"
+	"$((30 * d)) -"
+	"$((30 * d - 1)) 30"
+	"$((7 * d)) 30"
+	"$((7 * d - 1)) 7"
+	"1 7"
+	"0 expired"
+	"$((-5 * d)) expired"
+)
+for c in "${cases[@]}"; do
+	read -r left want <<<"$c"; [ "$want" = - ] && want=""
+	got=$(token_notice_stage "$left")
+	[ "$got" = "$want" ] || fail "token_notice_stage $left: got '$got', want '$want'"
+done
+
+# Due: a stage not yet announced for this token. A new token (another exp) starts over.
+# exp stage last -> due?
+cases=(
+	"1790000000 -       -                   no"
+	"1790000000 30      -                   yes"
+	"1790000000 30      1790000000:30       no"
+	"1790000000 7       1790000000:30       yes"
+	"1790000000 7       1790000000:7        no"
+	"1790000000 expired 1790000000:7        yes"
+	"1790000000 expired 1790000000:expired  no"
+	"1820000000 30      1790000000:expired  yes"
+	"1820000000 -       1790000000:expired  no"
+)
+for c in "${cases[@]}"; do
+	read -r exp stage last want <<<"$c"
+	[ "$stage" = - ] && stage=""; [ "$last" = - ] && last=""
+	if token_notice_due "$exp" "$stage" "$last"; then got=yes; else got=no; fi
+	[ "$got" = "$want" ] || fail "token_notice_due '$exp' '$stage' '$last': got $got, want $want"
+done
+exit "$failures"
