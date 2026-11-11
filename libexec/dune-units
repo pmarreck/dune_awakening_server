@@ -2,7 +2,7 @@
 # Render the systemd user units that run the Dune world unattended: the world itself (start at boot, stop at
 # shutdown), a self-heal timer (`dune-awakening heal` every 5 minutes while the world is meant to be up: cheap liveness
 # checks, and the idempotent `start` only when something is down),
-# a daily backup with pruning, a weekly restore drill and a Steam update check every 3 hours that announces each new build once. Paths are filled in from this
+# a daily backup with pruning, a weekly restore drill and a Steam update check every 3 hours that announces each new build once (after the news digest). Paths are filled in from this
 # checkout and the host's nix/luajit, so nothing is hardcoded. Installing them is a host change for the host administrator.
 set -u
 NAME=dune-units
@@ -20,6 +20,7 @@ Write systemd user units for this checkout ($root) into DEST:
   dune-backup.timer/.service      daily 04:30 backup, then prune (7 days, then weekly for 3 months)
   dune-backup-verify.timer/...    weekly restore drill of the newest backup
   dune-update-check.timer/...     Steam build check every 3 hours; JSON result in the journal (exit 1 = update available);
+                                  first the news digest (dune-awakening news check --notify, every 3 days);
                                   one notice per new build through NOTIFY_CMD/NOTIFY_TO (never applies it)
 
 Install (host change): copy DEST/* to ~/.config/systemd/user/, then
@@ -153,6 +154,8 @@ Description=Check whether Steam has a newer Dune self-hosted server build
 Type=oneshot
 WorkingDirectory=$root
 Environment=$env_path
+# The news digest keeps its own interval (every 3 days); '-': a news failure never stops the update check.
+ExecStart=-$world news check --notify
 ExecStart=$world update check --json --notify
 # 1 = update available: a result, not a failure.
 SuccessExitStatus=1"

@@ -36,6 +36,10 @@ grep -q '^SuccessExitStatus=1$' "$out/dune-update-check.service" || fail "update
 grep -qFx 'OnCalendar=*-*-* 00/3:00:00' "$out/dune-update-check.timer" || fail "update check not every 3 hours: $(grep OnCalendar "$out/dune-update-check.timer")"
 grep -q '^ExecStart=.*dune-awakening" update check --json --notify$' "$out/dune-update-check.service" || fail "update check does not notify: $(grep ExecStart "$out/dune-update-check.service")"
 grep -q 'apply' "$out/dune-update-check.service" && fail "update check unit applies updates"
+# The same timer runs the news digest first (it keeps its own interval); a news failure ("-") never stops the
+# update check, whose exit status stays the unit's result.
+[ "$(grep '^ExecStart=' "$out/dune-update-check.service" | paste -sd'|' -)" = "ExecStart=-\"$PWD/bin/dune-awakening\" news check --notify|ExecStart=\"$PWD/bin/dune-awakening\" update check --json --notify" ] ||
+	fail "update check unit does not run the news digest first: $(grep '^ExecStart=' "$out/dune-update-check.service" | paste -sd'|' -)"
 p=$(sed -n 's/^Environment="PATH=\(.*\)"$/\1/p' "$out/dune-world.service"); [ "$(tr : '\n' <<<"$p" | collate | uniq -d)" = "" ] || fail "duplicate PATH entries: $p"
 
 # Sandbox (docs/hardening.md, step 2): every component runs as a child of the world or heal unit, so these units carry

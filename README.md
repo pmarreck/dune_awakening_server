@@ -74,6 +74,7 @@ Everything runs through one command, `bin/dune-awakening`. It works from any dir
 | `status [--json] [--watch SECS]` | One line per component; `--json` adds world identity, characters online, map-server memory and CPU (for admin pages) |
 | `world …` | Whole-world live commands: `say`, `timeout on/off` (a break for everyone: no damage, sandworms or storms), `kick-all`, `exec`, `cvar` (read or set-and-verify a console variable), `partitions`, `raw` |
 | `update …` | Steam build: `check` (exit 0 current, 1 update available, 3 unknown), `apply` (backup, stop, download, unpack, start, re-check) |
+| `news check [--json] [--notify]` | News not seen before: Funcom's Steam announcements and community self-host releases; `--notify` mails a digest at most every 3 days |
 | `backup …` | `create`, `list`, `verify` (restore drill), `restore --yes`, `prune` (retention policy in `backup.conf`) |
 | `character …` | One character: `list`, `show`, `set-intel`/`add-intel`, `set-skill-points`/`add-skill-points`, `export`, `validate`, `import`, and live or offline: `move` (to another player or X Y Z), `where`, `kick`, `water`, `xp`, `whisper`, `worm`, `give` |
 | `items …` | Item names for the in-game `&give`: `refresh` writes the private list of item ids and names from the game's own tables (needs `DUNE_RETOC`; run after each update), `find <name>` resolves a name as the bridge does (see [docs/admin.md](docs/admin.md#giving-items)) |

@@ -48,7 +48,9 @@ Commands:
                   components, database logins, backups (read-only; exit 1 on a failure)
   items ...       Item names for the in-game &give: refresh (the private list from the game's own tables;
                   needs DUNE_RETOC), find <name> (resolve a name as the chat bridge does)
-  init ...        One-time setup: write world.private.conf from your Funcom token
+  news ...        check: Funcom's Steam announcements and community self-host releases not seen before;
+                  --notify mails a digest at most every 3 days
+  init ...      One-time setup: write world.private.conf from your Funcom token
   units ...       render DEST: systemd user units for unattended running
 
   `dune-awakening <subcommand> --help` shows each subcommand's options.
@@ -172,7 +174,7 @@ end
 
 -- Subcommands that hand their arguments to a tool in libexec/.
 local TOOLS = { world = "dune-live", update = "dune-update", backup = "dune-backup", character = "dune-character",
-	init = "dune-world-init", units = "dune-units", doctor = "dune-doctor", items = "dune-items" }
+	init = "dune-world-init", units = "dune-units", doctor = "dune-doctor", items = "dune-items", news = "dune-news" }
 -- Arguments put before the user's for a tool that serves several subcommands.
 local TOOL_ARGS = { world = { "world" } }
 

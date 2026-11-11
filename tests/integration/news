@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# libexec/dune-news: news that matters to a self-hosted world, from data/news-sources.tsv (Funcom's own Steam
+# announcements for the game, releases of community self-host projects), driven against a fake curl serving fixture
+# feeds. `check` lists items not seen before; `check --notify` mails one digest through NOTIFY_CMD to NOTIFY_TO at most
+# every NEWS_INTERVAL_DAYS and records what it announced in DUNE_STATE_DIR/news-seen. A source met for the first time
+# is recorded silently (no backlog mail); a failed notice is retried; one failing source does not hold back the others.
+set -u
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." || exit 1
+failures=0
+fail() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
+work=$(mktemp -d "${TMPDIR:-/tmp}/dune-news-test.XXXXXX") || exit 1
+trap 'rm -r -- "$work"' EXIT
+export DUNE_STATE_DIR="$work/state" DUNE_NEWS_SOURCES="$work/sources.tsv" DUNE_NEWS_CURL="$work/curl"
+export DUNE_NOTIFY_CMD="$work/notify" DUNE_NOTIFY_TO=someone DUNE_NOW=2026-11-11T12:00:00Z
+unset DUNE_NEWS_INTERVAL_DAYS DUNE_WORLD_DISPLAY_NAME
+N=libexec/dune-news
+mkdir -p "$work/feeds"
+
+# Fake curl: the URL is the last argument; it answers from feeds/<name>.json, or fails when fail-<name> exists.
+cat > "$work/curl" <<EOF
+#!$BASH
+printf '%s\n' "\$*" >> "$work/curl-calls"
+url=\${!#}
+case "\$url" in
+	*api.steampowered.com*appid=1172710*) f=steam ;;
+	*api.github.com/repos/example/selfhost/releases*) f=selfhost ;;
+	*api.github.com/repos/example/admin/releases*) f=admin ;;
+	*) echo "curl: (22) unexpected URL \$url" >&2; exit 22 ;;
+esac
+[ -e "$work/fail-\$f" ] && { echo "curl: (6) Could not resolve host" >&2; exit 6; }
+cat "$work/feeds/\$f.json"
+EOF
+cat > "$work/notify" <<EOF
+#!$BASH
+printf '%s\n' "\$*" > "$work/last-notice"; echo attempt >> "$work/notices"
+[ -e "$work/notify-fails" ] && { echo "mail relay refused" >&2; exit 1; }
+exit 0
+EOF
+chmod +x "$work/curl" "$work/notify"
+notices() { [ -e "$work/notices" ] && wc -l < "$work/notices" || echo 0; }
+calls() { [ -e "$work/curl-calls" ] && wc -l < "$work/curl-calls" || echo 0; }
+
+printf '# kind\tid\tlabel\nsteam\t1172710\tFuncom (Steam announcements)\ngithub-releases\texample/selfhost\tSelfhost kit\n' > "$DUNE_NEWS_SOURCES"
+steam() { # gid:unix:title ...
+	local items="" sep="" a gid t title
+	for a in "$@"; do IFS=: read -r gid t title <<<"$a"; items+="$sep$(jq -cn --arg g "$gid" --argjson d "$t" --arg ti "$title" '{gid: $g, date: $d, title: $ti, feedname: "steam_community_announcements"}')"; sep=,; done
+	printf '{"appnews":{"appid":1172710,"newsitems":[%s]}}\n' "$items" > "$work/feeds/steam.json"
+}
+releases() { # file id:tag:name ...
+	local f=$1 items="" sep="" a id tag name; shift
+	for a in "$@"; do IFS=: read -r id tag name <<<"$a"; items+="$sep$(jq -cn --argjson i "$id" --arg t "$tag" --arg n "$name" '{id: $i, tag_name: $t, name: $n, draft: false, published_at: "2026-11-10T13:29:07Z", html_url: ("https://github.com/x/releases/tag/" + $t)}')"; sep=,; done
+	printf '[%s]\n' "$items" > "$work/feeds/$f.json"
+}
+steam "100:1793000000:Hotfix 1.5.20.1 Patch Notes" "99:1792900000:1.5.20.0 Patch Notes"
+releases selfhost "11:v1.0:v1.0" "10:v0.9:"
+
+$N --help >/dev/null 2>&1 || fail "--help exited nonzero"
+$N check --bogus >/dev/null 2>&1; [ $? -eq 2 ] || fail "unknown option did not exit 2"
+$N >/dev/null 2>&1; [ $? -eq 2 ] || fail "no command did not exit 2"
+
+# Plain check before any baseline: lists everything, writes nothing.
+out=$($N check 2>&1) || fail "plain check failed: $out"
+[[ "$out" == *"Hotfix 1.5.20.1 Patch Notes"* && "$out" == *v1.0* ]] || fail "plain check did not list the items: $out"
+[[ "$out" == *"https://store.steampowered.com/news/app/1172710/view/100"* ]] || fail "Steam item link: $out"
+[ -e "$DUNE_STATE_DIR/news-seen" ] && fail "plain check recorded state"
+grep -q 'feeds=steam_community_announcements' "$work/curl-calls" || fail "Steam query not limited to Funcom's announcements: $(cat "$work/curl-calls")"
+grep 'api.github.com' "$work/curl-calls" | grep -qE -- '(^| )(-[A-Za-z]*L|--location)( |$)' || fail "GitHub query does not follow a renamed repository"
+# The release without a name falls back to its tag.
+[[ "$out" == *"Selfhost kit: v0.9"$'\n'* ]] || fail "unnamed release not shown by its tag: $out"
+json=$($N check --json 2>/dev/null) || fail "check --json failed"
+[ "$(jq -r 'length' <<<"$json" 2>/dev/null)" = 4 ] && [ "$(jq -r '[.[] | has("source", "key", "date", "title", "url") ] | all' <<<"$json")" = true ] ||
+	fail "check --json: $json"
+
+# First notify run: the existing items become the baseline, silently.
+out=$($N check --notify 2>&1) || fail "baseline run failed: $out"
+[ "$(notices)" = 0 ] || fail "baseline mailed the backlog"
+[[ "$out" == *baseline* ]] || fail "baseline not reported: $out"
+[ -s "$DUNE_STATE_DIR/news-checked" ] || fail "baseline run not recorded as a check"
+[ -z "$($N check 2>&1)" ] || fail "plain check after the baseline still lists items: $($N check 2>&1)"
+
+# Within the interval nothing is fetched; after it, new items go out in one digest.
+steam "101:1793100000:Chapter 4 \"Sand\" — Patch Notes" "100:1793000000:Hotfix 1.5.20.1 Patch Notes" "99:1792900000:1.5.20.0 Patch Notes"
+releases selfhost "12:v1.1:Release v1.1" "11:v1.0:v1.0" "10:v0.9:"
+: > "$work/curl-calls"
+out=$(DUNE_NOW=2026-11-13T12:00:00Z $N check --notify 2>&1) || fail "check within the interval failed: $out"
+[ "$(calls)" = 0 ] && [ "$(notices)" = 0 ] || fail "check within the interval fetched or mailed: $(calls) calls, $(notices) notices"
+export DUNE_NOW=2026-11-14T12:00:01Z
+out=$($N check --notify 2>&1) || fail "check after the interval failed: $out"
+[ "$(notices)" = 1 ] || fail "no digest for new items: $(notices) $out"
+n=$(cat "$work/last-notice" 2>/dev/null)
+[[ "$n" == "to someone --as dune_awakening_server --subject "*"2 new"*" --body "* ]] || fail "digest arguments: $n"
+[[ "$n" == *'Chapter 4 "Sand" — Patch Notes'* && "$n" == *"/view/101"* && "$n" == *"Release v1.1"* && "$n" == *Selfhost\ kit* ]] || fail "digest content: $n"
+[[ "$n" == *"Hotfix 1.5.20.1"* || "$n" == *v1.0\ * ]] && fail "digest repeats announced items: $n"
+[[ "$n" == *" --yes" ]] || fail "digest not sent with --yes"
+DUNE_NOW=2026-11-18T12:00:00Z $N check --notify >/dev/null 2>&1
+[ "$(notices)" = 1 ] || fail "digest repeated without new items: $(notices)"
+
+# A failed notice is not recorded; --force skips the interval and retries.
+releases selfhost "13:v1.2:Release v1.2" "12:v1.1:Release v1.1"
+touch "$work/notify-fails"
+out=$($N check --notify --force 2>&1); rc=$?
+[ "$(notices)" = 2 ] && [[ "$out" == *failed*"mail relay refused"* ]] || fail "failed digest not attempted or not reported: rc=$rc $out"
+rm "$work/notify-fails"
+$N check --notify --force >/dev/null 2>&1
+[ "$(notices)" = 3 ] && [[ "$(cat "$work/last-notice")" == *"Release v1.2"* ]] || fail "failed digest not retried: $(notices)"
+
+# One source down: the others still announce; exit 3 names it. All down: exit 3, the check is not recorded.
+steam "102:1793200000:Hotfix 1.5.20.2" "101:1793100000:x"
+touch "$work/fail-selfhost"
+out=$($N check --notify --force 2>&1); rc=$?
+[ "$rc" -eq 3 ] && [[ "$out" == *example/selfhost*"Could not resolve host"* ]] || fail "failing source not reported: rc=$rc $out"
+[ "$(notices)" = 4 ] && [[ "$(cat "$work/last-notice")" == *"Hotfix 1.5.20.2"* ]] || fail "a failing source held back the others: $(notices)"
+touch "$work/fail-steam"; before=$(cat "$DUNE_STATE_DIR/news-checked")
+out=$(DUNE_NOW=2026-11-30T00:00:00Z $N check --notify 2>&1); rc=$?
+[ "$rc" -eq 3 ] && [ "$(cat "$DUNE_STATE_DIR/news-checked")" = "$before" ] || fail "all sources down: rc=$rc, checked $(cat "$DUNE_STATE_DIR/news-checked") (was $before)"
+rm "$work/fail-selfhost" "$work/fail-steam"
+
+# A source added later: its backlog is recorded, not mailed; its next release is.
+printf 'github-releases\texample/admin\tAdmin tool\n' >> "$DUNE_NEWS_SOURCES"
+releases admin "21:v0.2:admin v0.2" "20:v0.1:admin v0.1"
+out=$($N check --notify --force 2>&1) || fail "new source run failed: $out"
+[ "$(notices)" = 4 ] || fail "new source backlog mailed: $(notices) $(cat "$work/last-notice")"
+releases admin "22:v0.3:admin v0.3" "21:v0.2:admin v0.2"
+$N check --notify --force >/dev/null 2>&1
+[ "$(notices)" = 5 ] && [[ "$(cat "$work/last-notice")" == *"admin v0.3"* && "$(cat "$work/last-notice")" != *"admin v0.2"* ]] || fail "new source's next release: $(notices) $(cat "$work/last-notice")"
+
+# Without NOTIFY_TO: nothing sent or recorded, and it says so.
+releases admin "23:v0.4:admin v0.4" "22:v0.3:admin v0.3"
+out=$(env -u DUNE_NOTIFY_TO $N check --notify --force 2>&1)
+[ "$(notices)" = 5 ] && [[ "$out" == *NOTIFY_TO* ]] || fail "without NOTIFY_TO: $(notices) $out"
+[[ "$($N check 2>&1)" == *"admin v0.4"* ]] || fail "item recorded although no notice was sent"
+
+# The interval is configurable.
+$N check --notify --force >/dev/null 2>&1; c=$(notices)
+releases admin "24:v0.5:admin v0.5" "23:v0.4:admin v0.4"
+DUNE_NEWS_INTERVAL_DAYS=1 DUNE_NOW=2026-11-15T12:00:02Z $N check --notify >/dev/null 2>&1
+[ "$(notices)" = $((c + 1)) ] || fail "DUNE_NEWS_INTERVAL_DAYS=1 not honored: $(notices)"
+exit "$failures"

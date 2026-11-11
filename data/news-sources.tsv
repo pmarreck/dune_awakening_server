@@ -1,0 +1,7 @@
+# News sources for libexec/dune-news (tab-separated). kind: steam (an app's announcements from its developer, via the
+# Steam news API) or github-releases (a repository's published releases). The label heads the item in the digest.
+# kind	id	label
+steam	1172710	Funcom (Dune: Awakening announcements on Steam)
+github-releases	snapetech-org/DuneAwakeningSelfHost	DASH (community self-host, Docker Compose)
+github-releases	Red-Blink/dune-awakening-selfhost-docker	dune-awakening-selfhost-docker (community, rebased for each game build)
+github-releases	Icehunter/dune-admin	dune-admin (community admin tool)

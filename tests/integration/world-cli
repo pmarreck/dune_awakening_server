@@ -177,7 +177,7 @@ out=$(world status --json --watch 0.05 --count 3 2>/dev/null); rc=$?
 world status --json --watch 0 >/dev/null 2>&1; [ $? -eq 2 ] || fail "watch interval 0 not a usage error"
 
 # Tool subcommands pass everything after them to their libexec tool (options included), exit status preserved.
-for pair in update:dune-update backup:dune-backup character:dune-character init:dune-world-init units:dune-units doctor:dune-doctor; do
+for pair in update:dune-update backup:dune-backup character:dune-character init:dune-world-init units:dune-units doctor:dune-doctor news:dune-news; do
 	sub=${pair%%:*} tool=${pair#*:}
 	printf '#!%s\nprintf "%s %%s\\n" "$*" >> "%s"\nexit 4\n' "$BASH" "$tool" "$work/calls" > "$fake/$tool"; chmod +x "$fake/$tool"
 	: > "$work/calls"

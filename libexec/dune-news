@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# News that matters to a self-hosted world: Funcom's own announcements for the game on Steam (patch notes, which come
+# with new server builds) and new releases of community self-host projects, listed in data/news-sources.tsv. `check`
+# lists the items not seen before. `check --notify` (the scheduled timer) mails one digest of them through NOTIFY_CMD
+# to NOTIFY_TO at most every NEWS_INTERVAL_DAYS days and records them in $DUNE_STATE_DIR/news-seen. Network use is
+# anonymous GETs of public JSON APIs (Steam news, GitHub releases).
+set -u
+: "${HOME:=$(cd ~ 2>/dev/null && pwd)}"
+. "$(dirname -- "${BASH_SOURCE[0]}")/dune-dirs.bash"
+NAME=dune-news VERSION=0.1.0
+EXIT_USAGE=2 EXIT_SOURCE=3
+DUNE_STATE_DIR=${DUNE_STATE_DIR:-$DUNE_DATA_ROOT/runtime}
+DUNE_NEWS_SOURCES=${DUNE_NEWS_SOURCES:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/data/news-sources.tsv}
+DUNE_NEWS_INTERVAL_DAYS=${DUNE_NEWS_INTERVAL_DAYS:-3}
+DUNE_NEWS_CURL=${DUNE_NEWS_CURL:-curl}
+NOTIFY_AS=dune_awakening_server
+seen="$DUNE_STATE_DIR/news-seen" checked="$DUNE_STATE_DIR/news-checked"
+
+usage() {
+	cat <<EOF
+Usage: $NAME check [--json] [--notify [--force]]
+
+News for a self-hosted Dune: Awakening world from $DUNE_NEWS_SOURCES:
+Funcom's announcements on Steam and releases of community self-host projects.
+
+  check       List the items not seen before (all of them before the first --notify run). Writes nothing.
+  --json      the items as a JSON array of {source, key, date, title, url}
+  --notify    Mail one digest of the new items through NOTIFY_CMD (default post) to NOTIFY_TO and record them in
+              \$DUNE_STATE_DIR/news-seen. Runs at most every NEWS_INTERVAL_DAYS days (default 3; the last check is
+              in \$DUNE_STATE_DIR/news-checked). A source met for the first time is recorded without a notice, so
+              no backlog is mailed. A failed notice is retried at the next run.
+  --force     with --notify: ignore the interval
+  --about, -h/--help
+
+Exit 0 when every source answered, 3 when one did not (the others are still handled), 2 on a usage error, 1 when
+the digest could not be sent.
+
+Environment: DUNE_STATE_DIR, DUNE_NEWS_SOURCES, DUNE_NEWS_INTERVAL_DAYS, DUNE_NEWS_CURL, DUNE_NOTIFY_TO,
+DUNE_NOTIFY_CMD, DUNE_NOW (a date(1) time standing in for now, for tests).
+EOF
+}
+die() { printf '%s: %s\n' "$NAME" "$1" >&2; exit "${2:-1}"; }
+now_epoch() { if [ -n "${DUNE_NOW:-}" ]; then date -d "$DUNE_NOW" +%s; else date +%s; fi; }
+
+cmd="" json=false notify=false force=false
+for a in "$@"; do
+	case "$a" in
+		-h|--help) usage; exit 0 ;;
+		--about) printf '%s %s: news watcher for a self-hosted Dune world (%s %s)\n' "$NAME" "$VERSION" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)"; exit 0 ;;
+		--json) json=true ;;
+		--notify) notify=true ;;
+		--force) force=true ;;
+		-*) die "unknown option $a (see --help)" "$EXIT_USAGE" ;;
+		*) [ -z "$cmd" ] || die "unexpected argument $a (see --help)" "$EXIT_USAGE"; cmd=$a ;;
+	esac
+done
+[ "$cmd" = check ] || { usage >&2; exit "$EXIT_USAGE"; }
+[[ "$DUNE_NEWS_INTERVAL_DAYS" =~ ^[0-9]+$ ]] || die "DUNE_NEWS_INTERVAL_DAYS must be a whole number of days" "$EXIT_USAGE"
+
+# fetch KIND ID: one tab-separated line per item: key, date (ISO 8601, UTC), title, link. Fails when the source does not
+# answer with the JSON shape expected. Steam is limited to the developer's own announcements (no press feeds).
+fetch() {
+	local kind=$1 id=$2 body
+	case $kind in
+		steam)
+			body=$("$DUNE_NEWS_CURL" -fsSL --max-time 30 "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=$id&count=20&maxlength=1&feeds=steam_community_announcements&format=json") || return 1
+			jq -r --arg id "$id" '.appnews.newsitems | if type == "array" then . else error("no news list in the answer") end | .[] |
+				["steam:\($id):\(.gid)", (.date | todate), .title, "https://store.steampowered.com/news/app/\($id)/view/\(.gid)"] | @tsv' <<<"$body" ;;
+		github-releases)
+			body=$("$DUNE_NEWS_CURL" -fsSL --max-time 30 -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$id/releases?per_page=10") || return 1
+			jq -r --arg id "$id" 'if type == "array" then . else error("no release list in the answer") end | .[] | select(.draft | not) |
+				["github:\($id)#\(.id)", .published_at, (if (.name // "") == "" then .tag_name else .name end), .html_url] | @tsv' <<<"$body" ;;
+		*) echo "unknown source kind $kind" >&2; return 1 ;;
+	esac
+}
+
+prefix_of() { case $1 in steam) printf 'steam:%s:' "$2" ;; github-releases) printf 'github:%s#' "$2" ;; esac; }
+
+# The digest: items grouped under their source's label, in source order.
+digest_body() {
+	awk -F'\t' -v days="$DUNE_NEWS_INTERVAL_DAYS" '
+		$1 != last { if (NR > 1) print ""; print $1; last = $1 }
+		{ print "  " substr($3, 1, 10) "  " $4; print "    " $5 }
+		END { print ""; print "Sources: data/news-sources.tsv. At most one digest every " days " days; each item is announced once." }' "$1"
+}
+
+cmd_check() {
+	local now last kind id label prefix items key date title url known rc=0 answered=0 count
+	now=$(now_epoch)
+	if $notify && ! $force && [ -s "$checked" ]; then
+		last=$(cat "$checked")
+		if [[ "$last" =~ ^[0-9]+$ ]] && [ $(( now - last )) -lt $(( DUNE_NEWS_INTERVAL_DAYS * 86400 )) ]; then
+			printf '%s: next news check after %s\n' "$NAME" "$(date -u -d "@$(( last + DUNE_NEWS_INTERVAL_DAYS * 86400 ))" '+%F %H:%M UTC')" >&2
+			return 0
+		fi
+	fi
+	[ -r "$DUNE_NEWS_SOURCES" ] || die "cannot read $DUNE_NEWS_SOURCES"
+	tmp=$(mktemp -d "${TMPDIR:-/tmp}/dune-news.XXXXXX") || die "cannot create a temporary directory"
+	trap 'rm -r -- "$tmp"' EXIT
+	: > "$tmp/new"; : > "$tmp/baseline"
+	while IFS=$'\t' read -r -u 3 kind id label; do
+		case "$kind" in ''|'#'*) continue ;; esac
+		if ! items=$(fetch "$kind" "$id" 2>"$tmp/err"); then
+			printf '%s: %s %s did not answer: %s\n' "$NAME" "$kind" "$id" "$(sed '/^[[:space:]]*$/d' "$tmp/err" | tail -n 1)" >&2
+			rc=$EXIT_SOURCE; continue
+		fi
+		answered=$((answered + 1))
+		prefix=$(prefix_of "$kind" "$id")
+		# Before the first --notify run every item counts as new; a --notify run records a source's existing items
+		# silently the first time it meets that source.
+		known=true
+		$notify && ! grep -qxF "source:$prefix" "$seen" 2>/dev/null && known=false
+		while IFS=$'\t' read -r key date title url; do
+			[ -n "$key" ] || continue
+			grep -qxF -- "$key" "$seen" 2>/dev/null && continue
+			if $known; then printf '%s\t%s\t%s\t%s\t%s\n' "$label" "$key" "$date" "$title" "$url" >> "$tmp/new"
+			else printf '%s\n' "$key" >> "$tmp/baseline"; fi
+		done <<<"$items"
+		$known || printf 'source:%s\n' "$prefix" >> "$tmp/baseline"
+	done 3< "$DUNE_NEWS_SOURCES"
+
+	if $json; then
+		jq -Rn '[inputs | split("\t") | {source: .[0], key: .[1], date: .[2], title: .[3], url: .[4]}]' < "$tmp/new"
+	else
+		while IFS=$'\t' read -r label key date title url; do printf '• %s  %s: %s\n  %s\n' "${date:0:10}" "$label" "$title" "$url"; done < "$tmp/new"
+	fi
+	$notify && [ "$answered" -gt 0 ] || return "$rc"
+
+	mkdir -p -m 700 "$DUNE_STATE_DIR" || die "cannot create $DUNE_STATE_DIR"
+	if [ -s "$tmp/baseline" ]; then
+		cat "$tmp/baseline" >> "$seen" || die "cannot record the baseline in $seen"
+		printf '%s: baseline: recorded %d existing items without a notice\n' "$NAME" "$(grep -vc '^source:' "$tmp/baseline")" >&2
+	fi
+	count=$(wc -l < "$tmp/new")
+	if [ "$count" -gt 0 ]; then
+		if [ -z "${DUNE_NOTIFY_TO:-}" ]; then
+			printf '%s: digest of %d items not sent: NOTIFY_TO is not set in world.private.conf or world.conf\n' "$NAME" "$count" >&2
+			return "$rc"
+		fi
+		local subject body err
+		subject="Dune self-host news: $count new $([ "$count" -eq 1 ] && echo item || echo items)${DUNE_WORLD_DISPLAY_NAME:+ ($DUNE_WORLD_DISPLAY_NAME)}"
+		body=$(digest_body "$tmp/new")
+		if ! err=$("${DUNE_NOTIFY_CMD:-post}" to "$DUNE_NOTIFY_TO" --as "$NOTIFY_AS" --subject "$subject" --body "$body" --yes 2>&1 >/dev/null); then
+			err=$(printf '%s\n' "$err" | sed '/^[[:space:]]*$/d' | tail -n 1)
+			printf '%s: digest failed%s; retrying at the next run\n' "$NAME" "${err:+ ($err)}" >&2
+			return 1
+		fi
+		cut -f2 "$tmp/new" >> "$seen" || die "cannot record the digest in $seen"
+		printf '%s: sent a digest of %d items to %s\n' "$NAME" "$count" "$DUNE_NOTIFY_TO" >&2
+	fi
+	printf '%s\n' "$now" > "$checked" || die "cannot write $checked"
+	return "$rc"
+}
+
+cmd_check
